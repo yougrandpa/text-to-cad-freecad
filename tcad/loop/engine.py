@@ -251,10 +251,24 @@ class LoopEngine:
                         )
                     elif hook_res.decision == HookDecision.ASK:
                         turn.state = TurnState.AWAITING_APPROVAL
+                        # Record the request so the turn can actually be RESUMED.
+                        # Without this the harness could suspend on a hook's ASK
+                        # and had nothing to approve: the privileged gate looks up
+                        # an approval that no component ever created, so the call
+                        # could never be let through. The id is surfaced in the
+                        # message so a client knows what to POST /approvals.
+                        approval_id = self._request_approval(tc.name, tc.args)
+                        extra = (
+                            f" approval_id={approval_id}." if approval_id else
+                            " (no approval store configured — this turn cannot be resumed)."
+                        )
                         outcome = ToolOutcome(
                             result=ToolResult(
                                 ok=False,
-                                content=f"Approval required for {tc.name}: {hook_res.reason}. Turn suspended.",
+                                content=(
+                                    f"Approval required for {tc.name}: {hook_res.reason}."
+                                    f" Turn suspended;{extra}"
+                                ),
                             )
                         )
                     else:
@@ -380,6 +394,26 @@ class LoopEngine:
             data_dir=self.config.data_dir,
             worker=getattr(self.services, "worker", None),
         )
+
+    def _request_approval(self, tool_name: str, args: dict) -> str | None:
+        """Create an approval record for a suspended call, if a store is wired.
+
+        Returns the record id, or None when no approval store is available (the
+        turn still suspends — it just cannot be resumed, and says so).
+        """
+        store = getattr(self.services, "approvals", None)
+        if store is None:
+            return None
+        try:
+            import hashlib
+            import json as _json
+
+            digest = hashlib.sha256(
+                _json.dumps(args, sort_keys=True, default=str).encode("utf-8")
+            ).hexdigest()[:16]
+            return store.request(tool_name, args_hash=digest).id
+        except Exception:  # noqa: BLE001 — never let bookkeeping break the loop
+            return None
 
     def _finalize(self, turn: Turn, messages: list[dict], gate_report: GateReport | None) -> TurnResult:
         return TurnResult(
