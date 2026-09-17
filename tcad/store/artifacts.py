@@ -93,9 +93,16 @@ class ArtifactStore:
 
     def write_digest(self, model_id: str, version: int,
                      digest: GeometryDigest | dict) -> Path:
-        """Persist a :class:`GeometryDigest` (or its dict form) as ``digest.json``."""
+        """Persist a :class:`GeometryDigest` (or its dict form) as ``digest.json``.
+
+        The filename is ``digest.json`` — this module's own layout comment, the
+        design doc (§4.4) and ``tcad/verify/context.py::_load_digest`` all agree
+        on it. The code previously wrote ``model.json`` while documenting
+        ``digest.json``, so the Gate's disk reader never found the digest and
+        silently fell back to "cannot measure". One name, one reader.
+        """
         d = self.ensure(model_id, version)
-        path = d / "model.json"  # _EXT["digest"] == "json"
+        path = d / "digest.json"
         if isinstance(digest, GeometryDigest):
             data = digest.model_dump_json()
         else:
@@ -105,7 +112,7 @@ class ArtifactStore:
 
     def read_digest(self, model_id: str, version: int) -> GeometryDigest | None:
         """Load ``digest.json`` if present, else ``None``."""
-        path = self.dir_for(model_id, version) / "model.json"
+        path = self.dir_for(model_id, version) / "digest.json"
         if not path.exists():
             return None
         return GeometryDigest.model_validate_json(path.read_text())

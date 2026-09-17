@@ -394,42 +394,37 @@ class LoopEngine:
             error=turn.error,
         )
 
-    # ─── production wiring (lazy imports of collaborators) ────────────────
+    # ─── production wiring ────────────────────────────────────────────────
 
     @staticmethod
-    def build_default_services(config: LoopConfig) -> Services:
-        """Wire concrete collaborators.
+    def build_default_services(config: Any = None) -> Services:
+        """Forwarder to :func:`tcad.core.wiring.build_services`.
 
-        Every teammate module is imported *lazily inside this function* so an
-        import error here cannot break the engine's unit tests (which inject
-        fakes instead). Module paths below are the collaborators' agreed homes.
+        The real wiring cannot live here: it needs the FreeCAD binary path, the
+        verify thresholds, the hook policy and the storage layout, none of which
+        ``LoopConfig`` carries. It used to be a stub in this file with invented
+        import paths (``tcad.worker.handle``, ``ContextService``, ``Renderer``)
+        that raised ``ImportError`` the moment anything called it — a placeholder
+        that only survived because nothing did.
+
+        Pass a full :class:`tcad.config.schema.Config`.
         """
-        from tcad.context.digest import ContextService as _C  # type: ignore
-        from tcad.hooks.dispatcher import HookDispatcher as _H  # type: ignore
-        from tcad.render.raster import Renderer as _R  # type: ignore
-        from tcad.store.ir_store import IrStore as _S  # type: ignore
-        from tcad.verify.gate import Gate as _G  # type: ignore
-        from tcad.worker.handle import WorkerHandle as _W  # type: ignore
-        from tcad.llm.client import OpenAIClient as _L  # type: ignore
-
-        class _Services:
-            store = _S(data_dir=config.data_dir)
-            worker = _W()
-            gate = _G()
-            renderer = _R()
-            hooks = _H()
-            context = _C()
-            llm = _L(
-                base_url=config.llm_base_url,
-                api_key=config.llm_api_key,
-                model=config.llm_model,
-                request_timeout_s=config.llm_request_timeout_s,
-                max_retries=config.llm_max_retries,
-                temperature=config.llm_temperature,
-                max_tokens=config.llm_max_tokens,
+        if config is None:
+            raise TypeError(
+                "build_default_services() requires a full Config — call "
+                "tcad.core.wiring.build_services(config) instead"
             )
+        from tcad.config.schema import Config as _Config
 
-        return _Services()  # type: ignore[return-value]
+        if not isinstance(config, _Config):
+            raise TypeError(
+                f"expected tcad.config.schema.Config, got {type(config).__name__}; "
+                "LoopConfig alone cannot express the FreeCAD path, verify thresholds "
+                "or hook policy — call tcad.core.wiring.build_services()"
+            )
+        from tcad.core.wiring import build_services
+
+        return build_services(config)
 
 
 def _result_text(result: ToolResult) -> str:
