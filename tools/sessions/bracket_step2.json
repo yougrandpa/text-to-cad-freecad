@@ -1,0 +1,51 @@
+[
+  {"name": "ir_digest", "args": {}},
+
+  {"name": "ir_patch", "args": {
+    "base_version": "current",
+    "summary": "cut the 40x20 through slot, centred in the plate",
+    "ops": [
+      {"op": "add_sketch",
+       "reason": "slot outline: 40 x 20 rectangle centred in the 80 x 50 plate, so it spans x 20..60 and y 15..35; positioned with absolute coordinates rather than bound to the origin",
+       "payload": {
+         "id": "sk_slot",
+         "name": "slot_outline",
+         "plane": {"kind": "origin_plane", "plane": "XY"},
+         "geometry": [
+           {"id": "g0", "kind": "line", "points": [{"x": 20, "y": 15, "z": 0}, {"x": 60, "y": 15, "z": 0}]},
+           {"id": "g1", "kind": "line", "points": [{"x": 60, "y": 15, "z": 0}, {"x": 60, "y": 35, "z": 0}]},
+           {"id": "g2", "kind": "line", "points": [{"x": 60, "y": 35, "z": 0}, {"x": 20, "y": 35, "z": 0}]},
+           {"id": "g3", "kind": "line", "points": [{"x": 20, "y": 35, "z": 0}, {"x": 20, "y": 15, "z": 0}]}
+         ],
+         "constraints": [
+           {"type": "Coincident", "refs": [0, 2, 1, 1]},
+           {"type": "Coincident", "refs": [1, 2, 2, 1]},
+           {"type": "Coincident", "refs": [2, 2, 3, 1]},
+           {"type": "Coincident", "refs": [3, 2, 0, 1]},
+           {"type": "Horizontal", "refs": [0]},
+           {"type": "Horizontal", "refs": [2]},
+           {"type": "Vertical", "refs": [1]},
+           {"type": "Vertical", "refs": [3]},
+           {"type": "DistanceX", "refs": [0, 1], "value": 20.0},
+           {"type": "DistanceY", "refs": [0, 1], "value": 15.0},
+           {"type": "DistanceX", "refs": [0, 2], "value": 60.0},
+           {"type": "DistanceY", "refs": [1, 2], "value": 35.0}
+         ]
+       }},
+
+      {"op": "add_feature",
+       "reason": "cut the slot all the way through the 8mm plate",
+       "payload": {
+         "id": "ft_slot",
+         "name": "centre_slot",
+         "op": "pocket",
+         "profile_sketch": "sk_slot",
+         "params": {"length": 8.0, "type": "ThroughAll"},
+         "refs": ["ft_pad"]
+       }}
+    ]
+  }},
+
+  {"name": "ir_commit", "args": {"message": "add the through slot"}},
+  {"name": "geo_view", "args": {"views": ["iso", "top"], "style": "flat_edges"}}
+]

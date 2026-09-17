@@ -1,0 +1,16 @@
+[
+  {"name": "ir_patch", "args": {
+    "base_version": "current",
+    "summary": "reverse the pocket direction so it cuts into the plate",
+    "ops": [
+      {"op": "update_feature",
+       "target_id": "ft_slot",
+       "reason": "the pocket removed nothing. It was built on the XY plane, whose normal is +Z, and PartDesign::Pocket cuts in the direction OPPOSITE the profile normal by default (-Z). The plate sits on the +Z side of that plane, so the cut went into empty space and the feature silently did nothing. Reversing it makes the cut go up through the 8mm plate.",
+       "payload": {"params": {"reversed": true, "type": "ThroughAll"}}}
+    ]
+  }},
+
+  {"name": "ir_commit", "args": {"message": "slot now cuts through the plate"}},
+  {"name": "ir_digest", "args": {}},
+  {"name": "geo_view", "args": {"views": ["iso", "top"], "style": "flat_edges"}}
+]

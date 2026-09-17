@@ -335,3 +335,129 @@ def test_engine_forwarder_refuses_incomplete_config():
 
     with pytest.raises(TypeError, match="Config"):
         LoopEngine.build_default_services(None)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 5. a broken sketch must reach the caller as a solver error, not a silent pass
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def _over_determined_ir(model_id: str):
+    """A rectangle with a deliberately over-determined constraint set.
+
+    Dimensioning both a line's start point and its end point in absolute
+    coordinates, on top of Horizontal/Vertical constraints, is a solver conflict.
+    This is not a contrived input — it is the mistake a real author made, and it
+    is the case that exposed the whole silent-failure chain.
+    """
+    from tests.contract.test_e2e_pipeline import make_ir
+    from tcad.ir.schema import SketchConstraint
+
+    ir = make_ir(model_id=model_id)
+    sk = ir.bodies[0].sketches[0]
+    sk.geometry = [
+        g.model_copy(update={"points": [p.model_copy(update={"x": 20.0, "y": 15.0})
+                                        if i == 0 else p
+                                        for i, p in enumerate(g.points)]})
+        for g in sk.geometry
+    ]
+    sk.constraints = [
+        SketchConstraint(**c) for c in (
+            {"type": "Coincident", "refs": [0, 2, 1, 1]},
+            {"type": "Coincident", "refs": [1, 2, 2, 1]},
+            {"type": "Coincident", "refs": [2, 2, 3, 1]},
+            {"type": "Coincident", "refs": [3, 2, 0, 1]},
+            {"type": "Horizontal", "refs": [0]},
+            {"type": "Horizontal", "refs": [2]},
+            {"type": "Vertical", "refs": [1]},
+            {"type": "Vertical", "refs": [3]},
+            # both endpoints of line 0 pinned in X and Y, plus the opposite corner:
+            # over-determined against the H/V constraints.
+            {"type": "DistanceX", "refs": [0, 1], "value": 20.0},
+            {"type": "DistanceY", "refs": [0, 1], "value": 15.0},
+            {"type": "DistanceX", "refs": [0, 2], "value": 60.0},
+            {"type": "DistanceY", "refs": [1, 2], "value": 35.0},
+        )
+    ]
+    return ir
+
+
+def test_broken_sketch_is_reported_as_a_solver_error(services):
+    """The chain that made a broken model look like a *successful* build.
+
+    Three defects lined up and this test pins all three:
+
+      1. the worker wrapped a handler's own ``ok=false`` in an outer ``ok=true``,
+         so a failed compile looked like a successful call;
+      2. ``run_commit`` ignored the compile result and walked on to the Gate;
+      3. the Gate, having no measurements, could only say "cannot attest".
+
+    Net effect for the model: no idea that its sketch had conflicting constraints.
+    Now the solver error must reach the caller, naming the sketch.
+    """
+    model_id = "wired_broken"
+    created = services.store.create(model_id, _over_determined_ir(model_id))
+    version = int(created.version)
+
+    result, report = asyncio.run(
+        run_commit(
+            services, model_id=model_id, ir_version=version, message="broken sketch",
+            workdir=str(REPO_ROOT), data_dir=str(services.store.data_dir),
+        )
+    )
+
+    text = result.content
+    assert report is None or report.passed is False, "a broken sketch must never pass"
+    assert result.ok is False, f"expected a tool error, got: {text[:400]}"
+    assert result.error is not None
+    assert result.error.kind.value == "solver", result.error.kind
+    assert result.error.feature_id == "sk0", result.error.feature_id
+    assert "conflict" in result.error.message.lower(), result.error.message
+
+
+def test_worker_envelope_never_flattens_nested_failure(services):
+    """Call-level check on the same defect, without the commit pipeline in between."""
+    ir = _over_determined_ir("wired_envelope")
+    services.store.create("wired_envelope", ir)
+    env = services.worker.request(
+        "compile_ir",
+        {"ir": ir.model_dump(), "out_dir": str(services.store.artifact_dir("wired_envelope", 0))},
+        timeout_s=120.0,
+    )
+    assert env["ok"] is False, "a failed compile must not be reported as a successful call"
+    assert env["error"]["kind"] == "solver"
+    assert env["error"]["feature_id"] == "sk0"
+
+
+def test_upstream_failures_are_named_when_the_gate_cannot_attest(services):
+    """When export/measure fail, the report must say so instead of leaving the
+    model with an unexplained "cannot attest"."""
+    model_id = "wired_upstream"
+    created = services.store.create(model_id, rect_pad_ir(model_id))
+    version = int(created.version)
+
+    # Make the worker refuse to export or measure, exactly as it would if the
+    # solid were not there.
+    real_request = services.worker.request
+
+    def picky(method, params=None, *, timeout_s=30.0):
+        if method in ("export_artifacts", "introspect_document"):
+            return {"ok": False, "error": {"kind": "compile", "message": f"{method} refused"}}
+        return real_request(method, params, timeout_s=timeout_s)
+
+    services.worker.request = picky
+    try:
+        result, report = asyncio.run(
+            run_commit(
+                services, model_id=model_id, ir_version=version, message="degraded",
+                workdir=str(REPO_ROOT), data_dir=str(services.store.data_dir),
+            )
+        )
+    finally:
+        services.worker.request = real_request
+
+    assert report is not None and report.passed is False
+    assert "artefact export failed" in result.content
+    assert "geometry measurement failed" in result.content
+    assert "export_artifacts refused" in result.content
+    assert "introspect_document refused" in result.content

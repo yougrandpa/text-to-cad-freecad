@@ -67,10 +67,29 @@ def _format_report(report: GateReport) -> str:
     for r in report.results:
         if r.severity.value == "blocking" and r.status.value in ("fail", "error"):
             loc = f" (feature_id={r.feature_id})" if r.feature_id else ""
-            meas = ""
-            if r.measurements:
-                meas = " measured=" + ", ".join(f"{k}={v}" for k, v in r.measurements.items())
-            lines.append(f"  - [{r.check_id}{loc}] {r.message}{meas}")
+            # Show the delta, not just the measurement. A bare "measured=value=32000"
+            # (the key is literally "value" because a scalar measurement is wrapped)
+            # told the model what happened but not what was wanted, so it had to
+            # guess the direction and magnitude of the repair. Emitting
+            # measured vs expected vs the miss is what makes one iteration enough.
+            parts: list[str] = []
+            measured = r.measurements or {}
+            expected = r.expected or {}
+            if measured:
+                parts.append("measured=" + ", ".join(f"{k}={_num(v)}" for k, v in measured.items()))
+            if expected:
+                parts.append("expected=" + ", ".join(f"{k}={_num(v)}" for k, v in expected.items()))
+            if measured and expected:
+                miss = " ".join(
+                    f"{k}: off by {_num(_delta(measured.get(k), expected.get(k)))}"
+                    for k in expected
+                    if _delta(measured.get(k), expected.get(k)) is not None
+                )
+                if miss:
+                    parts.append(f"({miss})")
+            lines.append(f"  - [{r.check_id}{loc}] {r.message}")
+            if parts:
+                lines.append("      " + "; ".join(parts))
     if report.skipped_checks:
         lines.append(f"skipped checks: {', '.join(report.skipped_checks)}")
     if report.advisory_findings:
@@ -79,6 +98,28 @@ def _format_report(report: GateReport) -> str:
             lines.append(f"  - {a}")
     lines.append("Repair the blocking failures (see feature_id above), then call ir_patch + ir_commit again.")
     return "\n".join(lines)
+
+
+def _num(value) -> str:
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, (int, float)):
+        return f"{value:.6g}"
+    return str(value)
+
+
+def _delta(measured, expected) -> float | None:
+    """Signed miss, or None when the pair is not numeric-comparable.
+
+    Values are matched by key, and the spec checks happen to use matching keys for
+    the simple cases (volume vs volume). Where they do not match, we simply omit the
+    delta rather than inventing a pairing.
+    """
+    if isinstance(measured, bool) or isinstance(expected, bool):
+        return None
+    if isinstance(measured, (int, float)) and isinstance(expected, (int, float)):
+        return float(measured) - float(expected)
+    return None
 
 
 async def run_commit(
@@ -124,18 +165,37 @@ async def run_commit(
     if not comp.get("ok"):
         return (_worker_error(comp.get("error")), None)
 
+    # Steps 4/5 failures used to be swallowed (`except: pass`, and an unchecked
+    # inner `ok`). That turned a real problem — a sketch that will not solve, a
+    # solid that will not export — into a Gate that could only report "cannot
+    # attest", with no hint of the cause. The model then had nothing to repair.
+    # Collect the causes and tell it.
+    pipeline_notes: list[str] = []
+
+    # Honour the configured export list when a full Config is wired; fall back to
+    # the design's default otherwise (a bare service bundle in a unit test).
+    storage_cfg = getattr(getattr(services, "config", None), "storage", None)
+    export_formats = list(getattr(storage_cfg, "artifact_exports", None) or ["step", "stl"])
+
     # 4. export artefacts (step/stl/brep/fcstd).
     try:
         exp = services.worker.request(
             M_EXPORT,
-            {"ir": ir.model_dump(), "exports": ["step", "stl"], "name": model_id, "out_dir": artifact_dir},
+            {
+                "ir": ir.model_dump(),
+                "exports": list(export_formats),
+                "name": model_id,
+                "out_dir": artifact_dir,
+            },
             timeout_s=120.0,
         )
-        files = (exp.get("result") or {}).get("files", {}) if exp.get("ok") else {}
-    except Exception:
-        files = {}
+        if not exp.get("ok"):
+            pipeline_notes.append(f"artefact export failed: {_describe(exp)}")
+    except Exception as exc:  # noqa: BLE001
+        pipeline_notes.append(f"artefact export raised: {type(exc).__name__}: {exc}")
 
-    # 5. persist digest (best-effort; digest is advisory, never blocks the gate).
+    # 5. persist digest (advisory for the Gate's *measurements*, but its absence
+    #    is exactly why the Gate would otherwise say "no measurements available").
     try:
         dig = services.worker.request(
             M_INTROSPECT,
@@ -145,8 +205,10 @@ async def run_commit(
         if dig.get("ok"):
             digest = GeometryDigest.model_validate(dig.get("result"))
             services.store.persist_digest(model_id, ir_version, digest)
-    except Exception:
-        pass
+        else:
+            pipeline_notes.append(f"geometry measurement failed: {_describe(dig)}")
+    except Exception as exc:  # noqa: BLE001
+        pipeline_notes.append(f"geometry measurement raised: {type(exc).__name__}: {exc}")
 
     # 6/7. Gate.evaluate builds CheckContext FROM DISK and grades independently.
     report = services.gate.evaluate(model_id, ir_version)
@@ -157,5 +219,25 @@ async def run_commit(
         {"model_id": model_id, "ir_version": ir_version, "passed": report.passed},
     )
 
-    result = _ok(_format_report(report))
-    return (result, report)
+    text = _format_report(report)
+    if pipeline_notes:
+        text += "\n\nUpstream failures that hid the geometry from the Gate:\n" + "\n".join(
+            f"  - {n}" for n in pipeline_notes
+        )
+    return (_ok(text), report)
+
+
+def _describe(env: dict) -> str:
+    """Readable one-liner from a worker error envelope."""
+    err = env.get("error") or {}
+    if not isinstance(err, dict):
+        return str(err)
+    msg = err.get("message") or "unknown failure"
+    fid = err.get("feature_id")
+    kind = err.get("kind")
+    out = f"{msg}"
+    if kind:
+        out = f"[{kind}] {out}"
+    if fid:
+        out += f" (feature_id={fid})"
+    return out

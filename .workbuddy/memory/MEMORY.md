@@ -35,6 +35,33 @@
 - 详细清单与源码行号见 `docs/02-架构设计.md` 附录 A；`docs/` 里的未核实项不得照抄。
 
 ## 构建 / 运行约定
-- FreeCAD 构建：`cd free-cad/FreeCAD && pixi run configure && pixi run build` → `build/debug/bin/FreeCADCmd`。**当前尚未构建。**
-- worker 启动：`FreeCADCmd -c --console -P <repo_root> tcad/worker/bootstrap.py`。
+- FreeCAD 构建：`cd free-cad/FreeCAD && pixi run configure && pixi run build` → `build/debug/bin/FreeCADCmd`。**已构建可用。**
+- worker 启动：`FreeCADCmd -c --console -P <repo_root> tcad/worker/bootstrap.py --pass --worker-id=wN`
+  （**`--pass` 必须放在脚本自身参数之前**，否则 FreeCADCmd 先解析并拒绝未知选项，脚本一行都不执行）
 - 渲染只在 supervisor 侧（numpy + Pillow，PNG 有纯 stdlib zlib 兜底后端），不往 FreeCAD 进程塞第三方依赖。
+
+## 唯一入口与常用命令
+- **唯一生产装配入口**：`tcad.core.wiring.build_services(config)`。它把各子系统「库形状」适配成 `tcad/tools/base.py` 里的窄 Protocol。
+  不要在其他地方重新接线；`LoopEngine.build_default_services(cfg)` 只是转发（传 LoopConfig 会报错）。
+- 装一个完整栈不启 worker（测试用）：`build_services(cfg, start_worker=False)`
+- 跑全部测试：`.venv/bin/python -m pytest tests/ -q`（当前 **240 例全绿**）
+- 真端到端（打真 FreeCADCmd）：`pytest tests/contract/ -q`
+- CLI：`.venv/bin/python -m tcad.server.cli --data-dir <dir> new|chat|repl|approvals|approve ...`
+- HTTP：`uvicorn tcad.server.app:create_app --factory`（或注入 services）
+- **「操作者即 LLM」驱动器**（不接模型供应商，自己当模型走真实工具面）：
+  `python -m tools.agent_driver --list-tools --full --only ir_patch`（看模型可见的工具面/schema）
+  `python -m tools.agent_driver --model-id X --calls tools/sessions/stepN.json`（执行一串工具调用）
+  `python -m tools.agent_driver --model-id X --worker-probe`（直接问 worker 要原始结果，排查静默失败用这个）
+- 重新生成渲染样图：`.venv/bin/python tools/render_sample.py` → `docs/renders/`
+- FreeCAD API 探测：`FreeCADCmd tools/probes/smoke_freecad.py` / `probe2.py`
+
+## 建模时最容易踩的两条（已写进 ir_patch 工具描述）
+1. **Pocket 方向**：草图在 XY（法向 +Z）时 `PartDesign::Pocket` **默认朝 -Z 切**，而底板在 +Z 侧 → 切进空气，特征什么都不做**却报告成功**（`ok=true`、`errors=[]`、体积不变）。要用 `"reversed": true`。
+2. **草图定位**：把一条线的**起点与终点**都用绝对坐标标注 + H/V 约束 = 求解器冲突。正确做法：轮廓建在**草图自己的原点**上（绑一条线到草图原点 + 标注对侧端点），再用 sketch 的 `offset` 整体定位。
+3. 通用：**静默无效比报错危险**。凡"特征没生效"，先怀疑方向/基准面，再看体积有没有变。
+
+## 已知环境限制
+- **无法 push 到 GitHub**：认证与体积都正常，pack 能完整上传，但代理不转发 `receive-pack` 的响应流（HTTP/2 → 408，HTTP/1.1 → curl 52 empty reply）。`ls-remote` 正常（下载类 OK）。`~/.ssh` 无密钥。**需要换代理或加 SSH key**；`127.0.0.1:7890` 与默认 50683 都试过，后者连不上 GitHub。
+- 执行沙箱禁止写 OS 临时目录 → pytest 必须用 `--basetemp=.pytest_tmp`（已在 pyproject.toml）。**该目录每次运行会被清空，别把产物放那里。**
+- macOS BSD `grep` 不支持 `\|` 交替 → 用 Grep 工具或 `grep -E`。
+- 无 `timeout` 命令。

@@ -28,3 +28,6 @@ data/
 tools/probes/*.step
 tools/probes/*.stl
 tools/probes/*.FCStd
+
+# 「操作者即 LLM」的建模工作区（会话记录在 tools/sessions/ 下，需要提交）
+.tcad_hand/

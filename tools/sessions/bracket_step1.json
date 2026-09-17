@@ -1,0 +1,60 @@
+[
+  {"name": "ir_list_features", "args": {}},
+
+  {"name": "ir_patch", "args": {
+    "base_version": "current",
+    "summary": "add the 80x50 base plate outline, pad it 8mm, and record the stated requirements",
+    "ops": [
+      {"op": "add_sketch",
+       "reason": "the base plate outline: 80 wide, 50 deep, on the XY plane",
+       "payload": {
+         "id": "sk_base",
+         "name": "base_outline",
+         "plane": {"kind": "origin_plane", "plane": "XY"},
+         "geometry": [
+           {"id": "g0", "kind": "line", "points": [{"x": 0, "y": 0, "z": 0}, {"x": 80, "y": 0, "z": 0}]},
+           {"id": "g1", "kind": "line", "points": [{"x": 80, "y": 0, "z": 0}, {"x": 80, "y": 50, "z": 0}]},
+           {"id": "g2", "kind": "line", "points": [{"x": 80, "y": 50, "z": 0}, {"x": 0, "y": 50, "z": 0}]},
+           {"id": "g3", "kind": "line", "points": [{"x": 0, "y": 50, "z": 0}, {"x": 0, "y": 0, "z": 0}]}
+         ],
+         "constraints": [
+           {"type": "Coincident", "refs": [0, 1, -1, 1]},
+           {"type": "Coincident", "refs": [0, 2, 1, 1]},
+           {"type": "Coincident", "refs": [1, 2, 2, 1]},
+           {"type": "Coincident", "refs": [2, 2, 3, 1]},
+           {"type": "Coincident", "refs": [3, 2, 0, 1]},
+           {"type": "Horizontal", "refs": [0]},
+           {"type": "Horizontal", "refs": [2]},
+           {"type": "Vertical", "refs": [1]},
+           {"type": "Vertical", "refs": [3]},
+           {"type": "DistanceX", "refs": [0, 2], "value": 80.0},
+           {"type": "DistanceY", "refs": [1, 2], "value": 50.0}
+         ]
+       }},
+
+      {"op": "add_feature",
+       "reason": "extrude the outline 8mm into a plate",
+       "payload": {
+         "id": "ft_pad",
+         "name": "base_pad",
+         "op": "pad",
+         "profile_sketch": "sk_base",
+         "params": {"length": 8.0, "type": "Length"}
+       }},
+
+      {"op": "update_requirement",
+       "reason": "record the stated size and volume so the Gate can check them independently",
+       "payload": {
+         "raw_text": "安装底板 80x50x8，中间 40x20 通槽",
+         "constraints": [
+           {"kind": "bbox", "value": {"x": 80.0, "y": 50.0, "z": 8.0},
+            "tol": 0.05, "source_text": "底板 80x50x8", "confirmed": true},
+           {"kind": "volume", "value": 25600.0,
+            "tol": 0.01, "source_text": "80x50x8 减去 40x20 通槽", "confirmed": true}
+         ]
+       }}
+    ]
+  }},
+
+  {"name": "ir_commit", "args": {"message": "base plate, no slot yet"}}
+]
