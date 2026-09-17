@@ -1,0 +1,31 @@
+# Strict policy overlay. Use it when running against untrusted input, or on a
+# machine where you cannot afford a runaway turn.
+#
+#   load_config(configs/default.yaml, overlays=[configs/policies/strict.yaml])
+#
+# Nothing here enables anything — overlays can only tighten. That is intentional:
+# a security overlay that loosens would be worse than useless.
+
+loop:
+  max_steps_per_turn: 12
+  max_tokens_per_turn: 60000
+  turn_wall_clock_s: 240.0
+  max_compile_retries: 1
+
+llm:
+  temperature: 0.0
+
+tools:
+  privileged: []
+
+policy:
+  allow_privileged: false
+  approval_ttl_s: 300              # shorter-lived approvals
+
+verify:
+  # Keep every blocking check, but make the approximations advisory-only too.
+  require_requirement_confirmation: true
+
+sandbox:
+  enabled: true
+  no_network: true

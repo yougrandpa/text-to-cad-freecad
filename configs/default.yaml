@@ -1,0 +1,118 @@
+# tcad default configuration
+# Every key maps to a field in tcad/config/schema.py. See docs/02-架构设计.md §8.
+# ${VAR} and ${VAR:-default} are interpolated from the environment.
+
+version: 1
+
+runtime:
+  freecad_cmd: "./free-cad/FreeCAD/build/debug/bin/FreeCADCmd"
+  freecad_python_path: "."          # passed to FreeCADCmd -P so the worker can import tcad
+  worker_pool_size: 2               # concurrent workers; >1 is only useful for fork_join
+  worker_request_timeout_s: 60.0
+  worker_restart_on_crash: true
+  worker_startup_timeout_s: 120.0   # FreeCADCmd boots slowly, but not unboundedly
+
+storage:
+  data_dir: "./data"
+  sqlite_path: "./data/tcad.sqlite3"
+  sqlite_journal_mode: "WAL"        # single writer + WAL, see design §4.4
+  artifact_exports: ["step", "stl"] # exported automatically after every commit
+  keep_ir_versions: 200             # events are never pruned
+
+llm:
+  base_url: "${TCAD_LLM_BASE_URL:-http://127.0.0.1:8000/v1}"  # point at vLLM/Ollama for offline use
+  model: "${TCAD_LLM_MODEL:-qwen2.5-72b-instruct}"
+  api_key_env: "TCAD_LLM_API_KEY"
+  temperature: 0.2                  # CAD wants determinism, not creativity
+  max_tokens_per_step: 4096
+  request_timeout_s: 120.0
+  max_retries: 2
+
+loop:
+  max_steps_per_turn: 24
+  max_tokens_per_turn: 180000
+  step_timeout_s: 120.0
+  turn_wall_clock_s: 600.0
+  max_compile_retries: 3
+  default_strategy: "loop_until_done"
+  strategies:
+    loop_until_done: {}
+    fork_join:
+      candidates: 3
+      score_by: ["blocking_failures", "advisory_findings"]
+    adversarial:
+      after_gate: true
+
+context:
+  window_tokens: 128000             # UNVERIFIED ESTIMATE — recalibrate (design §12-6)
+  budget:
+    system_prefix: 6000
+    digest: 2000
+    gate_report: 2000
+    images: 2400
+  degrade_thresholds:
+    summarized: 0.70
+    minimal: 0.85
+  summarize_keep_last_turns: 6
+  visual_checkpoints: ["first_compile", "major_change", "final"]
+  views: ["iso", "front", "top"]
+  render:
+    width: 768
+    height: 576
+    supersample: 2
+    style: "flat_edges"
+
+tools:
+  read:
+    - ir_get
+    - ir_digest
+    - ir_list_features
+    - geo_view
+    - geo_measure
+    - asset_export
+    - asset_import
+  write:
+    - ir_patch
+    - ir_commit
+  privileged: []                    # empty = raw_python et al. are not even registered
+
+policy:
+  allow_privileged: false           # one of the three privileged-gate conditions
+  approval_ttl_s: 900
+  hooks:
+    - name: path_guard
+      kind: policy
+      events: ["pre_tool_use"]
+      module: "tcad.hooks.policy:build_path_guard"
+      priority: 10
+    - name: privileged_triple_gate
+      kind: policy
+      events: ["pre_tool_use"]
+      module: "tcad.hooks.policy:build_privileged_gate"
+      priority: 5                  # lower runs first
+  deny_globs:
+    - "/etc/**"
+    - "~/.ssh/**"
+    - "**/.git/**"
+  sandbox_probe: null               # null => sandbox condition never satisfied => fail-closed
+
+verify:
+  gate_requires_all_blocking: true
+  require_requirement_confirmation: true
+  checks:
+    - { id: solid_validity,           enabled: true, severity: blocking }
+    - { id: solid_count,              enabled: true, severity: blocking, expect: 1 }
+    - { id: bbox_spec,                enabled: true, severity: blocking, tol_mm: 0.05 }
+    - { id: mass_spec,                enabled: true, severity: blocking, tol_ratio: 0.01 }
+    - { id: sketch_fully_constrained, enabled: true, severity: blocking }
+    - { id: round_trip,               enabled: true, severity: blocking, tol_ratio: 0.000001 }
+    - { id: exportability,            enabled: true, severity: blocking }
+    - { id: wall_thickness,           enabled: true, severity: advisory, min_mm: 1.0 }
+
+sandbox:
+  enabled: true
+  backend: "sandbox-exec"           # macOS; use "bwrap" on Linux
+  no_network: true
+  read_only_roots: ["/usr", "/System", "./free-cad"]
+  writable_root: "./data/sandbox"
+  wall_clock_s: 20.0

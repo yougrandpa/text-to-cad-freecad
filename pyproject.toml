@@ -1,0 +1,30 @@
+[project]
+name = "tcad"
+version = "0.1.0"
+description = "Chat-driven parametric CAD generation agent harness on top of FreeCAD"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+    "numpy>=1.26",
+    "pillow>=10.0",
+    "openai>=1.40",
+]
+
+[project.optional-dependencies]
+server = ["fastapi>=0.110", "uvicorn>=0.29"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "httpx>=0.27"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# The execution sandbox denies writes to the OS temp dir, which is where pytest
+# puts tmp_path by default. Pinning basetemp inside the repo keeps `tmp_path`
+# usable (many tests here rely on real files: STEP round-trips, SQLite, PNGs).
+addopts = "--basetemp=.pytest_tmp"
+markers = [
+    "contract: needs a real FreeCADCmd process (slow)",
+]
+
+[tool.setuptools.packages.find]
+include = ["tcad*"]

@@ -8,3 +8,23 @@ free-cad/
 .idea/
 .vscode/
 *.swp
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 测试与构建产物
+.pytest_tmp/
+.pytest_cache/
+build/
+dist/
+
+# 运行期数据（IR 快照、事件流、SQLite、导出的 STEP/STL）
+data/
+
+# 冒烟/探测脚本的临时输出（脚本本身在 tools/probes/ 下，需要提交）
+tools/probes/*.step
+tools/probes/*.stl
+tools/probes/*.FCStd
