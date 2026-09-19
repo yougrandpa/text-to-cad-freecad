@@ -110,13 +110,59 @@ function setStatus(kind, text) {
   $("statusText").textContent = text;
 }
 
+// Declared before `append` so that helper can keep the live row pinned to the
+// bottom. It describes what is happening *now*, so it must never be pushed up
+// the screen by the content it is describing.
+let liveRow = null;
+let liveTimer = null;
+let liveStartedAt = 0;
+
 const stream = () => $("stream");
 function append(node) {
   const welcome = $("welcome");
   if (welcome) welcome.remove();
   stream().append(node);
+  // Re-appending an existing node moves it, which is how the live row stays last.
+  if (liveRow && node !== liveRow) stream().append(liveRow);
   stream().scrollTop = stream().scrollHeight;
   return node;
+}
+
+// ── the live row ─────────────────────────────────────────────────────────
+// A turn can run for a minute or more (a reasoning model, several compiles).
+// Without a moving indicator the page looks frozen, and the user cannot tell
+// "still working" from "died" — which is exactly how a run finishes without
+// anyone noticing. The elapsed counter exists so the difference is visible
+// even when the model is silent between tool calls.
+
+function setLive(text) {
+  if (!liveRow) {
+    liveRow = el("div", { class: "live" }, [
+      el("span", { class: "spinner" }),
+      el("span", { class: "live-text", text }),
+      el("span", { class: "live-time", text: "0s" }),
+    ]);
+    append(liveRow);
+    liveStartedAt = Date.now();
+    liveTimer = setInterval(() => {
+      const clock = liveRow && liveRow.querySelector(".live-time");
+      if (clock) clock.textContent = `${Math.round((Date.now() - liveStartedAt) / 1000)}s`;
+    }, 1000);
+  } else {
+    const label = liveRow.querySelector(".live-text");
+    if (label) label.textContent = text;
+  }
+}
+
+function clearLive() {
+  if (liveTimer) {
+    clearInterval(liveTimer);
+    liveTimer = null;
+  }
+  if (liveRow) {
+    liveRow.remove();
+    liveRow = null;
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -236,6 +282,20 @@ function pushToolCard(data) {
   append(card);
 }
 
+/** Show an image the turn already produced, without re-rendering.
+ *
+ * The engine hands us the URL of every view a tool generated, so the viewport
+ * can follow along live. Re-rendering through `/render` would also work, but it
+ * would recompute what the worker has already computed.
+ */
+function applyToolImages(data) {
+  const images = (data.images || []).filter((i) => i && i.url);
+  if (!images.length) return null;
+  const latest = images[images.length - 1];
+  displayImage(latest.url, latest.view);
+  return latest;
+}
+
 function pushHookLine(ev) {
   append(el("div", { class: "hookline" }, [
     el("span", { text: ev.event }),
@@ -247,6 +307,19 @@ function pushHookLine(ev) {
 
 function pushNotice(kind, text) {
   append(el("div", { class: `notice ${kind}`, text }));
+}
+
+/** The turn's outcome, stated plainly.
+ *
+ * A turn ending is the single most important event in the conversation, and it
+ * used to be reported with the same weight as a hint about history. This is
+ * deliberately louder than `pushNotice`.
+ */
+function pushVerdict(kind, title, detail) {
+  append(el("div", { class: `verdict ${kind}` }, [
+    el("div", { class: "verdict-title", text: title }),
+    detail ? el("div", { class: "verdict-detail", text: detail }) : null,
+  ]));
 }
 
 function checkRow(row) {
@@ -290,31 +363,62 @@ function pushGateCard(report, turnState) {
   append(card);
 }
 
-function handleResult(result) {
+async function handleResult(result) {
   state.threadId = result.thread_id;
   state.lastGate = result.gate_report || null;
   $("threadLabel").textContent = result.thread_id;
 
   if (result.gate_report) pushGateCard(result.gate_report, result.state);
 
-  // The engine's verdict, rendered as-is. EXHAUSTED is a distinct outcome from
-  // SUCCEEDED and the UI must not blur them.
-  const notes = {
-    SUCCEEDED: ["info", "回合成功 —— Gate 全绿。这就是「完成」的唯一含义。"],
-    EXHAUSTED: ["warn", "预算耗尽，回合结束。注意：这**不是**成功，模型可能自称完成了。"],
-    FAILED: ["bad", `回合失败：${result.error || "未知原因"}`],
-    ABORTED: ["warn", "回合被中止。"],
-    AWAITING_APPROVAL: ["warn", "回合在等待审批 —— 请在「待批」中处理。"],
-    CONFIRMED: ["info", "回合已被确认。"],
+  // Keyed by TurnState's *serialised value*, not its enum name.
+  //
+  // This table was originally keyed SUCCEEDED / EXHAUSTED / …, which never
+  // matched anything: the SSE frame carries what pydantic emits for a
+  // `(str, Enum)`, i.e. the lowercase value. Every turn therefore ended with no
+  // conclusion on screen at all — which is precisely "it finished and I could
+  // not tell". The test now checks these keys against `TurnState` itself.
+  const verdicts = {
+    succeeded: [
+      "ok",
+      "✓ 完成 —— Gate 全绿",
+      "这是「完成」的唯一含义。产物已导出，可在下方下载。",
+    ],
+    exhausted: [
+      "warn",
+      "⚠ 预算耗尽，回合结束",
+      "这不是成功。模型可能自称完成了 —— 以 Gate 报告为准。",
+    ],
+    failed: ["bad", "✗ 回合失败", result.error || "原因未知"],
+    aborted: ["warn", "回合被中止", ""],
+    awaiting_approval: [
+      "warn",
+      "⏸ 等待审批",
+      "有工具调用需要人工批准，请在右侧「待批」中处理。",
+    ],
+    confirmed: ["ok", "回合已确认", ""],
   };
-  const note = notes[result.state];
-  if (note) pushNotice(note[0], note[1]);
+  const verdict = verdicts[result.state] || [
+    "warn",
+    `回合结束（${result.state}）`,
+    result.error || "",
+  ];
+  pushVerdict(verdict[0], verdict[1], verdict[2]);
+
   if (result.error && result.state !== "FAILED") pushNotice("bad", result.error);
 
-  const usage = `步数 ${result.steps} · 输入 ${result.tokens_in} / 输出 ${result.tokens_out} tokens`;
-  append(el("div", { class: "muted small", style: "margin-bottom:16px", text: usage }));
+  append(el("div", {
+    class: "muted small",
+    style: "margin-bottom:16px",
+    text: `步数 ${result.steps} · 输入 ${result.tokens_in} / 输出 ${result.tokens_out} tokens`,
+  }));
 
-  refreshInspector();
+  const ok = result.state === "succeeded";
+  setStatus(ok ? "ok" : "bad", ok ? "完成" : "未完成");
+
+  // Await the inspector so `state.version` is current before the artefacts and
+  // the viewport are read — otherwise the UI can describe a version it has not
+  // caught up with yet.
+  await refreshInspector();
   loadArtifacts();
   loadView(false);
 }
@@ -342,6 +446,7 @@ async function send(text) {
   assistantBody = null;
   $("sendBtn").disabled = true;
   setStatus("busy", "生成中…");
+  setLive("正在请求模型…");
   pushUser(trimmed);
 
   try {
@@ -349,26 +454,52 @@ async function send(text) {
     await streamChat(
       { model_id: state.modelId, text: trimmed, thread_id: state.threadId },
       {
-        start: (d) => { state.threadId = d.thread_id; $("threadLabel").textContent = d.thread_id; },
-        agent: (d) => {
-          if (d.kind === "model") {
-            if (d.text && d.text.trim()) pushAssistantText(d.text.trim());
-          } else if (d.kind === "tool") {
-            pushToolCard(d);
-          }
+        start: (d) => {
+          state.threadId = d.thread_id;
+          $("threadLabel").textContent = d.thread_id;
         },
+        agent: handleAgentEvent,
         progress: pushHookLine,
         error: (d) => pushNotice("bad", `${d.type}: ${d.message}`),
         result: handleResult,
       },
     );
-    setStatus("ok", "就绪");
+    // The terminal status is set by handleResult, from the engine's verdict —
+    // not here, where we would only know that the stream ended.
   } catch (err) {
     pushNotice("bad", `请求失败：${err.message}`);
     setStatus("bad", "出错");
   } finally {
     state.busy = false;
+    clearLive();
     $("sendBtn").disabled = false;
+  }
+}
+
+/** What a progress frame means for the UI, in one place.
+ *
+ * The viewport follows the turn: a tool that produced images shows them
+ * immediately, and a commit the Gate accepted refreshes the view even if the
+ * model never asked to see it. Previously the viewport only updated after the
+ * turn ended, so a long run looked like nothing was happening.
+ */
+function handleAgentEvent(d) {
+  if (d.kind === "model") {
+    if (d.text && d.text.trim()) pushAssistantText(d.text.trim());
+    if (d.tool_calls && d.tool_calls.length) {
+      setLive(`第 ${d.step} 步 · ${d.tool_calls.map((c) => c.name).join(" → ")}`);
+    }
+    return;
+  }
+  if (d.kind !== "tool") return;
+
+  pushToolCard(d);
+  setLive(`第 ${d.step} 步 · ${d.name} ${d.ok ? "完成" : "失败"}`);
+
+  if (applyToolImages(d)) return;
+
+  if (d.name === "ir_commit" && d.ok && d.gate && d.gate.passed) {
+    loadView(false);
   }
 }
 
@@ -376,18 +507,30 @@ async function send(text) {
 // viewport / files / inspector
 // ══════════════════════════════════════════════════════════════════════════
 
+/** Put an image in the viewport, optionally switching the active tab. */
+function displayImage(url, view) {
+  const img = $("viewImage");
+  const placeholder = $("viewPlaceholder");
+  if (view) {
+    state.view = view;
+    for (const tab of document.querySelectorAll(".tab")) {
+      tab.classList.toggle("active", tab.dataset.view === view);
+    }
+  }
+  img.src = url;
+  img.hidden = false;
+  placeholder.hidden = true;
+}
+
 async function loadView(force) {
   const img = $("viewImage");
   const placeholder = $("viewPlaceholder");
 
-  if (!state.version && state.version !== 0) {
-    placeholder.textContent = "还没有几何 —— 先在左边描述一个零件";
-    placeholder.hidden = false;
-    img.hidden = true;
-    return;
-  }
-
-  placeholder.textContent = "渲染中…";
+  // Deliberately does NOT consult `state.version`. At boot the model may not
+  // exist yet, so the cached version is null — and the old early-return on that
+  // meant a freshly built part never got rendered until a page reload. The
+  // server resolves "current version" itself; the HTTP status is the truth.
+  placeholder.textContent = state.busy ? "生成中…" : "渲染中…";
   placeholder.hidden = false;
   img.hidden = true;
 
@@ -395,6 +538,10 @@ async function loadView(force) {
     `?view=${state.view}&force=${force ? "true" : "false"}&t=${Date.now()}`;
   try {
     const res = await fetch(url);
+    if (res.status === 404) {
+      placeholder.textContent = "还没有模型 —— 发送第一条消息后会自动创建";
+      return;
+    }
     if (!res.ok) {
       let detail = res.statusText;
       try { detail = (await res.json()).detail || detail; } catch { /* ignore */ }
@@ -402,9 +549,7 @@ async function loadView(force) {
       return;
     }
     const blob = await res.blob();
-    img.src = URL.createObjectURL(blob);
-    img.hidden = false;
-    placeholder.hidden = true;
+    displayImage(URL.createObjectURL(blob));
   } catch (err) {
     placeholder.textContent = `无法渲染：${err.message}`;
   }
@@ -516,7 +661,15 @@ async function refreshInspector() {
       ]));
     }
   } catch (err) {
-    box.append(el("div", { class: "muted small", text: `IR 读取失败：${err.message}` }));
+    // "Model does not exist yet" is the normal state before the first message,
+    // not a failure — reporting it as one trains people to ignore errors.
+    const missing = String(err.message).startsWith("404");
+    box.append(el("div", {
+      class: "muted small",
+      text: missing
+        ? "模型尚未创建 —— 发送第一条消息时会自动创建。"
+        : `IR 读取失败：${err.message}`,
+    }));
   }
 
   // ── pending approvals ───────────────────────────────────────────────────

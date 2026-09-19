@@ -158,6 +158,33 @@ def _resolve_artifact(root: Path, file_path: str) -> Path:
     return target
 
 
+def artifact_url_for(path: str | None) -> str | None:
+    """Map an on-disk artefact path to the URL that serves it.
+
+    The engine and the worker report absolute filesystem paths — that is what
+    they have. A browser cannot use those, so anything headed for the client
+    needs the mechanical translation: ``<...>/artifacts/<model>/v<n>/<file>``
+    becomes ``/models/<model>/artifacts/<file>?version=<n>``.
+
+    Returns ``None`` rather than guessing when the path does not have that
+    shape; a wrong link is worse than no link.
+    """
+    if not path:
+        return None
+    marker = "/artifacts/"
+    index = path.find(marker)
+    if index < 0:
+        return None
+    parts = path[index + len(marker):].split("/")
+    if len(parts) < 3:
+        return None
+    model_id, version_dir, *rest = parts
+    filename = "/".join(rest)
+    version = version_dir[1:] if version_dir.startswith("v") else ""
+    query = f"?version={version}" if version.isdigit() else ""
+    return f"/models/{model_id}/artifacts/{filename}{query}"
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # the hook tap
 # ══════════════════════════════════════════════════════════════════════════
@@ -329,7 +356,13 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
     @app.get("/models/{model_id}/artifacts")
     def list_artifacts(model_id: str, version: int | None = None) -> dict:
         s = svc()
-        v = version if version is not None else s.store.current_version(model_id)
+        try:
+            # One `load()` for both the existence check and the version — see the
+            # note on `StoreAdapter.current_version`.
+            ir = s.store.load(model_id, version)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, f"no such model: {model_id}") from exc
+        v = int(ir.version)
         d = s.store.artifact_dir(model_id, v)
         files = (
             sorted(str(p.relative_to(d)) for p in d.rglob("*") if p.is_file())
@@ -349,8 +382,12 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
         to sit inside the artefact directory before anything is opened.
         """
         s = svc()
-        v = version if version is not None else s.store.current_version(model_id)
-        return FileResponse(_resolve_artifact(s.store.artifact_dir(model_id, v), file_path))
+        try:
+            ir = s.store.load(model_id, version)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, f"no such model: {model_id}") from exc
+        root = s.store.artifact_dir(model_id, int(ir.version))
+        return FileResponse(_resolve_artifact(root, file_path))
 
     @app.get("/models/{model_id}/render")
     def render_view(
@@ -378,7 +415,17 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
             )
         s = svc()
         c = s.config
-        v = version if version is not None else s.store.current_version(model_id)
+        try:
+            # Load once and take the version from the document. Asking
+            # `current_version()` first is a trap: it returns 0 both for "no such
+            # model" and for "a model that happens to be at v0", which is exactly
+            # what a freshly created one is.
+            ir = s.store.load(model_id, version)   # version=None => latest
+            v = int(ir.version)
+        except FileNotFoundError as exc:
+            # A model that does not exist yet is a 404, not a 500 — the UI keys
+            # its "no model yet" message off this status.
+            raise HTTPException(404, f"no such model: {model_id}") from exc
         style = style or c.context.render.style
         w = int(width or c.context.render.width)
         h = int(height or c.context.render.height)
@@ -391,7 +438,6 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
         if cached.is_file() and not force:
             return FileResponse(cached, media_type="image/png")
 
-        ir = s.store.load(model_id, v)
         res = s.worker.request(
             M_TESSELLATE,
             {"ir": ir.model_dump(), "out_dir": str(d)},
@@ -452,6 +498,12 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
                 raises.
                 """
                 try:
+                    if kind == "tool":
+                        # Images arrive as absolute paths. Attach the URL the
+                        # browser can actually fetch, so the viewport can update
+                        # *while* the turn is running instead of only at the end.
+                        for image in data.get("images") or []:
+                            image["url"] = artifact_url_for(image.get("path"))
                     agent_events.append({"kind": kind, **data})
                     if kind == "model" and (data.get("text") or "").strip():
                         db().add_message(thread_id, "assistant", data["text"])

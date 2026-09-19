@@ -291,6 +291,42 @@ button:disabled, input:disabled, textarea:disabled, select:disabled {
 .notice.warn { background: rgba(255,180,84,.08); border-color: #6b5330; color: #f3d5a8; }
 .notice.bad  { background: rgba(255,107,107,.08); border-color: #6b2a2a; color: #f7c0c0; }
 
+/* ── the live row ─────────────────────────────────────────────────────────
+   Shown while a turn is running, with an elapsed counter. A long turn with a
+   static screen is indistinguishable from a hung one, and "it finished and I
+   didn't notice" is the same bug seen from the other end. */
+
+.live {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 12px;
+  margin: 6px 0 14px;
+  border: 1px dashed var(--line);
+  border-radius: 9px;
+  background: rgba(77, 163, 255, .05);
+  color: var(--fg-dim);
+}
+.live .spinner { width: 13px; height: 13px; border-width: 2px; flex: 0 0 auto; }
+.live-text { flex: 1; font-family: var(--mono); font-size: 12px; }
+.live-time { color: var(--fg-faint); font-family: var(--mono); font-size: 11.5px; }
+
+/* ── the turn verdict ─────────────────────────────────────────────────────
+   The most important event in the conversation, so it is deliberately the
+   loudest thing in the stream. */
+
+.verdict {
+  margin: 12px 0 10px;
+  padding: 11px 14px;
+  border: 1px solid;
+  border-radius: 10px;
+}
+.verdict-title { font-weight: 650; font-size: 13.5px; }
+.verdict-detail { margin-top: 4px; font-size: 12.5px; opacity: .88; }
+.verdict.ok   { background: rgba(61, 220, 151, .10); border-color: #1d5a41; color: #a9ebcd; }
+.verdict.bad  { background: rgba(255, 107, 107, .10); border-color: #6b2a2a; color: #f7c0c0; }
+.verdict.warn { background: rgba(255, 180, 84, .10); border-color: #6b5330; color: #f3d5a8; }
+
 /* ── composer ─────────────────────────────────────────────────────────── */
 
 .composer {

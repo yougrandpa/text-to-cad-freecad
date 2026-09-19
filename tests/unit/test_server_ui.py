@@ -203,13 +203,19 @@ def test_stylesheet_defines_the_classes_the_ui_actually_uses():
 # ══════════════════════════════════════════════════════════════════════════
 
 
-def test_the_ui_knows_that_exhausted_is_not_success():
-    """The harness's central invariant. If the UI blurred these two the product
-    would be lying about its own results, so the distinction is pinned here."""
+def test_the_verdict_table_does_not_use_enum_names():
+    """The original defect, stated directly: the keys were `SUCCEEDED:` etc.
+
+    It was invisible because the earlier version of this test only asserted the
+    *strings* "SUCCEEDED" and "EXHAUSTED" appeared somewhere in the file — which
+    they did, as the keys that could never match.
+    """
     js = (UI_DIR / "app.js").read_text(encoding="utf-8")
-    assert "SUCCEEDED" in js and "EXHAUSTED" in js
-    exhausted = js.split("EXHAUSTED:", 1)[1].split("],", 1)[0]
-    assert "不是" in exhausted, "EXHAUSTED 的提示必须明确说明它不是成功"
+    body = js.split("const verdicts = {", 1)[1].split("\n  };", 1)[0]
+    for name in ("SUCCEEDED:", "EXHAUSTED:", "FAILED:", "ABORTED:", "CONFIRMED:"):
+        assert name not in body, (
+            f"verdicts 使用了枚举名 {name} —— 线上传的是小写值，永远不会命中"
+        )
 
 
 def test_the_ui_renders_the_engines_verdict_rather_than_deciding():
@@ -228,3 +234,136 @@ def test_settings_ui_never_pretends_to_have_the_key():
     # the masked hint is shown; the plaintext is never assigned into the input
     assert "api_key_masked" in js
     assert 'apiKeyInput").value = ""' in js or "apiKeyInput').value = ''" in js
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# the viewport must follow the turn, not wait for it to end
+#
+# Reported symptom: "the model is working on the left, but the middle never
+# renders, and I can't tell when it has finished." Three separate causes, each
+# pinned below.
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def _function_body(js: str, signature: str, next_signature: str) -> str:
+    return js.split(signature, 1)[1].split(next_signature, 1)[0]
+
+
+def test_tool_produced_images_are_applied_to_the_viewport():
+    """The engine already ships the URL of every rendered view. Ignoring it is
+    what made the middle pane sit still for the whole turn."""
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    handler = js.split("function handleAgentEvent", 1)[1].split("async function", 1)[0]
+    assert "applyToolImages" in handler, "工具产出的图没有进入视图区"
+
+    apply_body = js.split("function applyToolImages", 1)[1].split("\n}", 1)[0]
+    assert "displayImage" in apply_body, "有了图却没有把它显示出来"
+
+
+def test_a_green_commit_refreshes_the_view_even_without_a_geo_view():
+    """A model that never calls geo_view would otherwise leave a stale picture
+    next to a Gate that says the part is correct."""
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    handler = js.split("function handleAgentEvent", 1)[1].split("async function", 1)[0]
+    assert "ir_commit" in handler
+    assert "loadView" in handler
+
+
+def test_a_running_turn_shows_what_it_is_doing_and_for_how_long():
+    """A static screen during a minute-long turn is indistinguishable from a
+    hung one — which is how a run finishes without anyone noticing."""
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    assert "setLive" in js and "clearLive" in js
+    assert "live-time" in js, "没有已用时显示"
+
+    # it must be cleared on every exit path, or it lingers after the turn
+    send_body = js.split("async function send", 1)[1].split("function handleAgentEvent", 1)[0]
+    assert "clearLive()" in send_body.split("finally", 1)[1]
+
+
+def test_the_outcome_is_stated_louder_than_a_hint():
+    """Ending a turn is the most important event in the conversation; it used to
+    be reported with the same weight as a note about conversation history."""
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    assert "pushVerdict" in js
+    css = (UI_DIR / "styles.css").read_text(encoding="utf-8")
+    assert ".verdict" in css
+    for state in ("SUCCEEDED", "EXHAUSTED", "FAILED"):
+        assert state in js, state
+
+
+def test_the_terminal_status_comes_from_the_engine_not_the_stream_ending():
+    """`setStatus('ok', …)` at the end of send() would fire even for a failed
+    turn — the status must be driven by result.state."""
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    send_body = js.split("async function send", 1)[1].split("function handleAgentEvent", 1)[0]
+    assert 'setStatus("ok"' not in send_body, "回合结束时不应无条件把状态置为成功"
+
+    result_body = js.split("async function handleResult", 1)[1].split("function ", 1)[0]
+    assert "setStatus(" in result_body
+    assert "succeeded" in result_body
+
+
+def test_the_verdict_table_is_keyed_by_serialised_state_values():
+    """This is the bug behind "it finished and I could not tell".
+
+    The table was keyed by ENUM NAME (`SUCCEEDED`) while the SSE frame carries
+    the serialised VALUE (`"succeeded"`). Nothing ever matched, so a finished
+    turn produced no conclusion on screen at all — and the only signal was the
+    text quietly stopping. The assertion is against `TurnState` itself so the
+    two sides cannot drift apart again.
+    """
+    from tcad.core.types import TurnState
+
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    body = js.split("const verdicts = {", 1)[1].split("\n  };", 1)[0]
+    keys = set(re.findall(r"^\s{4}(\w+):\s*\[", body, re.MULTILINE))
+    assert keys, "没有从 app.js 里解析出任何 verdict 键 —— 这个测试可能已经失效"
+
+    values = {s.value for s in TurnState}
+    unknown = sorted(keys - values)
+    assert not unknown, (
+        f"这些键不是 TurnState 的序列化值：{unknown}。"
+        "SSE 里传的是小写值，用枚举名永远匹配不到。"
+    )
+
+    for state in (
+        TurnState.SUCCEEDED,
+        TurnState.EXHAUSTED,
+        TurnState.FAILED,
+        TurnState.ABORTED,
+        TurnState.AWAITING_APPROVAL,
+        TurnState.CONFIRMED,
+    ):
+        assert state.value in keys, f"缺少 {state.value} 的结论文案"
+
+
+def test_the_verdict_labelling_is_honest_about_exhausted():
+    """EXHAUSTED must never read as success."""
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    body = js.split("const verdicts = {", 1)[1].split("\n  };", 1)[0]
+    exhausted = body.split("exhausted:", 1)[1].split("],", 1)[0]
+    assert "不是成功" in exhausted, "EXHAUSTED 的文案必须明说它不是成功"
+    succeeded = body.split("succeeded:", 1)[1].split("],", 1)[0]
+    assert "不是成功" not in succeeded
+
+
+def test_the_viewport_renders_even_before_the_version_is_known():
+    """At boot the model may not exist yet, so `state.version` is null. The old
+    loadView early-returned on that and therefore never rendered a part built in
+    the same session — it only appeared after a page reload."""
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    body = js.split("async function loadView", 1)[1].split("async function", 1)[0]
+    assert "!state.version" not in body, (
+        "loadView 不应依据 boot 时必然为空的 state.version 提前返回 —— "
+        "让服务端解析当前版本，用 HTTP 状态判断"
+    )
+    assert "res.status === 404" in body, "应把「模型尚不存在」与「渲染失败」区分开"
+
+
+def test_the_live_row_is_kept_at_the_bottom():
+    """It says what is happening *now*, so it must not be pushed up the screen
+    by the very content it describes."""
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    body = js.split("function append(node)", 1)[1].split("\n}", 1)[0]
+    assert "liveRow" in body, "live 行会被后续内容顶到上面，失去「当前状态」的含义"

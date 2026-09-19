@@ -144,6 +144,16 @@ class StoreAdapter:
         return self.ir_store.load(model_id, version)
 
     def current_version(self, model_id: str) -> int:
+        """The latest version number, or ``0``.
+
+        **``0`` is ambiguous by construction**: it means "no such model" *and*
+        "a model at version 0" — and a freshly created model *is* at version 0.
+
+        Acceptable for "what number shall the next snapshot get?". Wrong for
+        "does this model exist?", where the answer decides between a 404 and a
+        500. Use :meth:`load` when the distinction matters; the server's render
+        endpoint learned this the hard way.
+        """
         try:
             return int(self.ir_store.load(model_id).version)
         except FileNotFoundError:

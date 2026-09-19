@@ -213,6 +213,27 @@ def test_hook_frames_come_from_the_dispatcher(session):
     assert all({"event", "decision", "hook"} <= set(h) for h in hooks)
 
 
+def test_tool_frames_carry_fetchable_image_urls(session):
+    """The viewport updates live from these.
+
+    The engine reports the *disk path* of every rendered view. Without the
+    translation to a URL the browser cannot fetch it, and the middle pane can
+    only refresh after the turn ends — the reported "no live rendering".
+    """
+    rendered = [t for t in session.tools if t["name"] == "geo_view" and t["ok"]]
+    assert rendered, "脚本里没有成功的 geo_view"
+
+    urls = [img.get("url") for t in rendered for img in (t.get("images") or [])]
+    assert urls, "geo_view 产出了图，但帧里没有可访问的 url"
+    assert all(u and u.startswith("/models/") for u in urls), urls
+
+    # and they must actually resolve to a real PNG
+    for url in urls[:2]:
+        r = session.client.get(url)
+        assert r.status_code == 200, (url, r.status_code)
+        assert r.content.startswith(b"\x89PNG"), url
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # failures must be legible
 # ══════════════════════════════════════════════════════════════════════════

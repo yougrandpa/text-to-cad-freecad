@@ -32,3 +32,4 @@ tools/probes/*.FCStd
 # 本地运行期工作区：data/ 是默认数据目录，.tcad_* 是临时/演示用的
 .tcad_hand/
 .tcad_demo/
+.tcad_live*/

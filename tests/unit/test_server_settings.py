@@ -360,6 +360,84 @@ def test_artifact_endpoint_404s_a_missing_file(client):
     assert client.get("/models/m1/artifacts/nope.png").status_code == 404
 
 
+@pytest.mark.parametrize(
+    "path",
+    ["/models/ghost/ir", "/models/ghost/artifacts", "/models/ghost/artifacts/x.png"],
+)
+def test_an_unknown_model_is_a_404_everywhere(client, path):
+    """Not a 500.
+
+    The underlying `current_version()` answers 0 for "no such model", and 0 is
+    also a legitimate version (a freshly created model is at v0) — so any
+    endpoint that trusted it was one missing file away from a server error. The
+    UI keys its "no model yet" message off this status.
+    """
+    assert client.get(path).status_code == 404
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# disk path -> servable URL
+#
+# The engine reports absolute paths (that is what the worker wrote). The browser
+# cannot use those, and without the translation the viewport has no way to show
+# a view the model just rendered.
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def test_artifact_url_maps_a_disk_path_to_a_servable_url():
+    from tcad.server.app import artifact_url_for
+
+    assert artifact_url_for("/var/data/artifacts/plate/v4/iso.png") == (
+        "/models/plate/artifacts/iso.png?version=4"
+    )
+    # a relative data dir must work the same way
+    assert artifact_url_for("./data/artifacts/plate/v12/top.png") == (
+        "/models/plate/artifacts/top.png?version=12"
+    )
+
+
+def test_artifact_url_handles_a_nested_filename():
+    from tcad.server.app import artifact_url_for
+
+    assert artifact_url_for("/x/artifacts/m/v2/views/iso.png") == (
+        "/models/m/artifacts/views/iso.png?version=2"
+    )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        None,
+        "",
+        "/tmp/whatever.png",                    # not an artefact at all
+        "/x/artifacts/plate/iso.png",           # no version directory
+        "/x/artifacts/plate/",                  # nothing after the version dir
+    ],
+)
+def test_artifact_url_refuses_to_guess(path):
+    """A wrong link is worse than no link: the UI would show a broken image and
+    look like the render failed."""
+    from tcad.server.app import artifact_url_for
+
+    assert artifact_url_for(path) is None
+
+
+def test_the_url_it_produces_is_actually_servable(client):
+    """The two halves must agree — this is the join that silently breaks if
+    either side changes its path layout."""
+    from tcad.server.app import artifact_url_for
+
+    _seed_model(client)
+    d = client.services.store.artifact_dir("m1", 0)
+    d.mkdir(parents=True, exist_ok=True)
+    target = d / "iso.png"
+    target.write_bytes(b"\x89PNG\r\n\x1a\n-fake")
+
+    url = artifact_url_for(str(target))
+    assert url is not None
+    assert client.get(url).status_code == 200
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # on-demand rendering
 # ══════════════════════════════════════════════════════════════════════════
@@ -409,6 +487,13 @@ def test_render_reports_a_worker_failure_as_a_client_error(client):
     r = client.get("/models/m1/render?view=iso")
     assert r.status_code == 422
     assert "无法网格化" in r.json()["detail"]
+
+
+def test_render_404s_for_a_model_that_does_not_exist(client):
+    """A missing model is a 404, not a 500 — the UI keys its "no model yet"
+    message off the status, and at boot the model legitimately does not exist."""
+    r = client.get("/models/ghost/render?view=iso")
+    assert r.status_code == 404
 
 
 def test_render_passes_the_configured_style_and_size(client):

@@ -152,6 +152,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         model = request.get("model") or self.server.model_name  # type: ignore[attr-defined]
+        delay = getattr(self.server, "delay_s", 0.0)  # type: ignore[attr-defined]
+        if delay:
+            time.sleep(delay)   # simulate a slow / reasoning model
         reply = self.server.script.next(model)  # type: ignore[attr-defined]
         self.server.script.served.append(  # type: ignore[attr-defined]
             ",".join(tc["function"]["name"] for tc in reply["choices"][0]["message"].get("tool_calls", []))
@@ -170,6 +173,13 @@ def main() -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--model-name", default="stub-scripted")
     parser.add_argument("--loop", action="store_true", help="restart the script when exhausted")
+    parser.add_argument(
+        "--delay",
+        type=float,
+        default=0.0,
+        help="seconds to wait before each reply — makes a slow model reproducible, "
+             "which is what you need to exercise the UI's in-progress states",
+    )
     args = parser.parse_args()
 
     replies = load_script([Path(p) for p in args.script])
@@ -179,11 +189,14 @@ def main() -> int:
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     server.script = Scripted(replies, loop=args.loop)   # type: ignore[attr-defined]
     server.model_name = args.model_name                 # type: ignore[attr-defined]
+    server.delay_s = max(0.0, float(args.delay))        # type: ignore[attr-defined]
 
     print(f"stub model  ->  http://{args.host}:{args.port}/v1")
     print(f"model name  ->  {args.model_name}")
     print(f"scripted    ->  {len(replies)} replies "
           f"({sum(len(r.get('calls') or []) for r in replies)} tool calls)")
+    if server.delay_s:  # type: ignore[attr-defined]
+        print(f"delay       ->  {server.delay_s}s per reply")  # type: ignore[attr-defined]
     try:
         server.serve_forever()
     except KeyboardInterrupt:
