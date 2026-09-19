@@ -105,6 +105,18 @@ class LoopConfig(BaseModel):
     data_dir: str = "data"
 
 
+#: How many *consecutive* steps may return no tool call before the turn is
+#: declared stuck.
+#:
+#: This is a stall detector, not a work limit, and the distinction is the whole
+#: point: it bounds no total quantity of steps, tokens or time. Any tool call
+#: resets it, so a turn that is getting anywhere — however slowly — is never cut
+#: off by it. It exists only because a step that calls no tool cannot change the
+#: world, so repeating it is pure waste; without it, and with the shipped
+#: no-ceiling budget, an endlessly narrating model would loop forever.
+MAX_IDLE_STEPS = 3
+
+
 class LoopEngine:
     """Runs one Turn at a time.
 
@@ -139,6 +151,7 @@ class LoopEngine:
         self._candidate_reports: list[GateReport] = []
         self._last_commit_passed = False
         self._compile_failures = 0
+        self._idle_steps = 0
         self._observer = observer
 
     # ─── observation ──────────────────────────────────────────────────────
@@ -158,6 +171,12 @@ class LoopEngine:
         messages = self._init_messages(user_msg, turn)
         privileged = bool(user_msg.privileged_requested) and self.config.allow_privileged
         allowed = self._allowed_tiers(turn.kind, privileged)
+
+        # Per-turn loop state. The engine may be reused across turns (the CLI
+        # REPL does), and a stall counter carried over would fail the next turn
+        # for no reason.
+        self._idle_steps = 0
+        self._compile_failures = 0
 
         # pre_turn hook (quota / content-safety pre-check).
         self.services.hooks.dispatch(
@@ -288,8 +307,31 @@ class LoopEngine:
         )
 
         # A model that returns text but no tool call is NOT a termination.
+        #
+        # But it also cannot make progress on its own: the only way forward is
+        # another request, and the tool set will not have changed. This used to
+        # be harmless because `max_steps_per_turn` eventually cut the turn off —
+        # with no work ceiling (the shipped default) an endlessly narrating model
+        # would loop forever, spending tokens and never ending.
+        #
+        # So the loop needs its own stall detector. This is deliberately NOT a
+        # budget: it does not bound how much work a turn may do, it bounds how
+        # many *consecutive no-ops* are treated as "still thinking". A model that
+        # is doing anything at all resets it. A few steps are tolerated because
+        # each reply is appended to the conversation, so the model does get to
+        # react to its own narration before we call it stuck.
         if not reply.tool_calls:
+            self._idle_steps += 1
+            if self._idle_steps > MAX_IDLE_STEPS:
+                turn.state = TurnState.FAILED
+                turn.error = (
+                    f"no progress: {self._idle_steps} consecutive steps without a tool call. "
+                    "The model stopped acting before the Gate passed, so nothing was verified "
+                    "and nothing changed."
+                )
+                return StepYield()
             return StepYield()
+        self._idle_steps = 0
 
         ctx = self._make_tool_context(turn)
         for tc in reply.tool_calls:

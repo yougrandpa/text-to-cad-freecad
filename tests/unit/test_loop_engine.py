@@ -195,6 +195,13 @@ def make_engine(services, *, max_steps=24, enable_privileged=False, strategy="lo
     return LoopEngine(services, reg, BudgetLimits(max_steps_per_turn=max_steps), cfg)
 
 
+def make_uncapped_engine(services, *, strategy="loop_until_done"):
+    """An engine with the shipped configuration: no ceilings at all."""
+    reg = build_default_registry(services)
+    cfg = LoopConfig(data_dir=tempfile.mkdtemp(), default_strategy=strategy)
+    return LoopEngine(services, reg, BudgetLimits(), cfg)
+
+
 # ─── headline: green gate required; "I'm done" is NOT a termination ────────
 
 
@@ -413,3 +420,93 @@ async def test_models_without_reasoning_gain_no_stray_field():
     replayed = [m for m in llm.last_messages if m.get("role") == "assistant"]
     assert replayed
     assert "reasoning_content" not in replayed[0]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# termination with no work ceiling
+#
+# The shipped budget has no limits, so nothing bounds a turn except reaching a
+# terminal state. A model that answers with text and no tool call cannot change
+# anything, and repeating the request would repeat the answer — that used to be
+# caught by `max_steps_per_turn`, and without it the loop would spin forever,
+# spending tokens and never ending.
+# ══════════════════════════════════════════════════════════════════════════
+
+
+class NarrationOnlyLlm:
+    """Always answers with prose and never calls a tool."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def chat(self, *, messages, tools=None, tool_choice=None, temperature=None):
+        self.calls += 1
+        return LlmReply(text=f"thinking about it… ({self.calls})")
+
+
+async def test_a_narrating_model_cannot_spin_forever_with_no_ceiling():
+    """Bounded, and NOT reported as success — nothing was verified."""
+    import asyncio
+
+    from tcad.loop.engine import MAX_IDLE_STEPS
+
+    ir = make_ir()
+    llm = NarrationOnlyLlm()
+    services = make_services(ir, llm, gate_passed=True)
+    engine = make_uncapped_engine(services)     # exactly the shipped configuration
+
+    # Wrapped in a timeout as a *best-effort* safety net, not a guarantee.
+    #
+    # It only helps if the loop actually yields: an `async def` that never awaits
+    # runs to completion without ever giving the event loop control, and then no
+    # external timer can fire — not this one, and not a `turn_wall_clock_s`
+    # either. (Measured: with the guard removed and a resolve-immediately fake
+    # LLM, the loop becomes one long synchronous run that starves the loop and is
+    # killed before any timeout gets a chance.) Which is the point: the stall
+    # detector has to live *inside* the loop, because from outside there is
+    # nothing to interrupt.
+    result = await asyncio.wait_for(
+        engine.run_turn(
+            Thread(thread_id="t1", model_id="m1"),
+            UserMessage(kind=TurnKind.CREATE, text="x"),
+        ),
+        timeout=5.0,
+    )
+
+    assert result.state is TurnState.FAILED
+    assert result.state is not TurnState.SUCCEEDED
+    assert "no progress" in (result.error or "")
+    # Two assertions, and both are needed.
+    #
+    # The equality pins the *mechanism*: it stops exactly when the counter says,
+    # not later. On its own it is self-referential — it compares against the very
+    # constant under test, so it would pass for any value, including one so large
+    # the guard never fires in practice.
+    assert llm.calls == MAX_IDLE_STEPS + 1, llm.calls
+    # ...so the magnitude is pinned separately, against a literal.
+    assert llm.calls <= 5, f"停滞检测太宽松了：{llm.calls} 次空转才停"
+
+
+async def test_any_tool_call_resets_the_stall_counter():
+    """A slow turn must never be cut off by the stall detector — only a turn
+    that has stopped doing anything."""
+    ir = make_ir()
+    llm = ScriptedLlm([
+        LlmReply(text="hmm"),
+        LlmReply(text="let me look", tool_calls=[ToolCall(id="c1", name="ir_get", args={})]),
+        LlmReply(text="still looking"),
+        LlmReply(text="and again", tool_calls=[ToolCall(id="c2", name="ir_get", args={})]),
+        LlmReply(text="done"),
+        LlmReply(text="really done"),
+    ])
+    services = make_services(ir, llm, gate_passed=True)
+    engine = make_uncapped_engine(services)
+
+    result = await engine.run_turn(
+        Thread(thread_id="t1", model_id="m1"),
+        UserMessage(kind=TurnKind.CREATE, text="x"),
+    )
+    # It ran past MAX_IDLE_STEPS total no-op steps, which is only possible if the
+    # tool calls in between reset the counter.
+    assert llm.calls > 4, llm.calls
+    assert "no progress" in (result.error or ""), result.error
