@@ -72,6 +72,11 @@
 - 供应商预设只给**候选**模型名；真实列表由 `GET /settings/models` 代调 provider 的 `GET /models`。DeepSeek 官方中英文档仍并存两代模型名（`deepseek-v4-*` 与 `deepseek-chat`/`deepseek-reasoner`），**不要硬编码**。
 - provider 预设 `use_env_proxy` 默认全 False：本机 `HTTPS_PROXY` 曾把直连失败伪装成"厂商挂了"。
 
+## 前后端契约（改界面之前先读，这三条都踩过）
+- **SSE 帧里的枚举是「序列化值」不是「枚举名」**：pydantic 对 `(str, Enum)` 发出的是小写值 —— `"succeeded"` / `"exhausted"` / `"pass"` / `"blocking"`。前端任何以状态为键的表都必须用小写值，用 `SUCCEEDED` 这类枚举名**永远匹配不到**（曾导致 turn 结束屏幕上没有任何结论）。
+- **engine 的 observer 帧里 `images[].path` 是磁盘绝对路径**，浏览器用不了；server 侧必须经 `artifact_url_for()` 转成 `/models/{id}/artifacts/{file}?version={n}` 再发。
+- **不要用 `StoreAdapter.current_version()` 判断模型是否存在**：它对"模型不存在"和"模型处于 v0"**都返回 0**（而新建的模型就是 v0）。需要区分时用 `load()`；端点对未知模型必须 404 而不是 500。
+
 ## 建模时最容易踩的两条（已写进 ir_patch 工具描述）
 1. **Pocket 方向**：草图在 XY（法向 +Z）时 `PartDesign::Pocket` **默认朝 -Z 切**，而底板在 +Z 侧 → 切进空气，特征什么都不做**却报告成功**（`ok=true`、`errors=[]`、体积不变）。要用 `"reversed": true`。
 2. **草图定位**：把一条线的**起点与终点**都用绝对坐标标注 + H/V 约束 = 求解器冲突。正确做法：轮廓建在**草图自己的原点**上（绑一条线到草图原点 + 标注对侧端点），再用 sketch 的 `offset` 整体定位。
