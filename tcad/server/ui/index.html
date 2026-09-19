@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>tcad · 对话式 CAD</title>
+<link rel="icon" type="image/svg+xml" href="./favicon.svg">
+<link rel="icon" type="image/png" sizes="64x64" href="./favicon.png">
 <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
@@ -24,6 +26,8 @@
   </div>
   <button class="icon" id="settingsBtn" title="模型设置">⚙</button>
 </header>
+
+<div class="apibanner" id="apiBanner" hidden></div>
 
 <main class="layout">
 
@@ -95,6 +99,8 @@
     </div>
 
     <div class="modal-body">
+      <div class="probe-result bad" id="settingsError" hidden></div>
+
       <label class="field">
         <span>供应商</span>
         <select id="providerSelect"></select>

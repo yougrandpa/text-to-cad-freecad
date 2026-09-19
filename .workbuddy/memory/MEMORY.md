@@ -12,6 +12,9 @@
   git -c http.proxy=http://127.0.0.1:7890 -c http.version=HTTP/2 push origin main
   ```
 - git 凭据使用 `osxkeychain`。
+- **`api.deepseek.com` 在本机直连可用**（实测 0.2s 返回 401，即端点通、只差 key），走代理也通 → 配 DeepSeek 时 `use_env_proxy` 勾不勾都行。
+- **npm 走代理会 ECONNRESET**（TLS 握手被掐断，与 git push 同源）→ 用 `--registry=https://registry.npmmirror.com` 直连。
+- **curl 访问 localhost 会被环境代理劫持**（`upstream connect failed`）→ 加 `--noproxy '*'`。
 
 ## 项目定位
 - 目标：**聊天式生成 CAD 模型**的 Agent Harness（包名 `tcad`）。FreeCAD 全量源码（26.3.0dev）作几何内核与 Python API 引擎，**不改内核**。

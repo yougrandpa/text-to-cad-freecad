@@ -35,6 +35,11 @@ html, body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* A column layout rather than a fixed calc(100% - 52px): the API banner is
+   inserted between the topbar and the panes, and a hard-coded height would
+   silently push the composer off-screen when it appears. */
+body { display: flex; flex-direction: column; }
+
 button, input, select, textarea { font: inherit; color: inherit; }
 .muted { color: var(--fg-dim); }
 .small { font-size: 12px; }
@@ -90,7 +95,20 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .icon { width: 32px; height: 32px; font-size: 15px; }
 .mini { padding: 4px 10px; font-size: 12px; }
 .icon:hover, .mini:hover { color: var(--fg); border-color: var(--accent-dim); }
-button:disabled { opacity: .45; cursor: not-allowed; }
+
+/* Disabled has to *look* disabled. A dimmed-but-still-saturated primary button
+   reads as clickable, and a click that does nothing is indistinguishable from
+   a broken app. */
+button:disabled, input:disabled, textarea:disabled, select:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+  filter: saturate(.25);
+}
+.primary:disabled {
+  background: var(--line);
+  color: var(--fg-faint);
+  filter: none;
+}
 
 /* ── layout ───────────────────────────────────────────────────────────── */
 
@@ -99,8 +117,47 @@ button:disabled { opacity: .45; cursor: not-allowed; }
   grid-template-columns: minmax(300px, 26fr) minmax(320px, 40fr) minmax(260px, 26fr);
   gap: 1px;
   background: var(--line-soft);
-  height: calc(100% - 52px);
+  flex: 1 1 auto;
+  min-height: 0;
 }
+
+/* ── API unavailable banner ───────────────────────────────────────────────
+   Shown when the page is not being served by the tcad app itself (opened from
+   a static preview or file://, or the server is down). Without it the only
+   symptom is a stream of 404s in the browser console, which says nothing about
+   what to do — the exact dead end this is meant to remove. */
+
+.apibanner {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 13px 18px;
+  font-size: 13px;
+  background: rgba(255, 107, 107, .10);
+  border-bottom: 1px solid #6b2a2a;
+  color: #f7c0c0;
+}
+.apibanner[hidden] { display: none; }
+.apibanner strong { color: #ffb3b3; font-size: 13.5px; }
+.apibanner code {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: #0b0e13;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 3px 9px;
+  color: var(--fg);
+}
+.apibanner-fix {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  align-items: center;
+  margin-top: 3px;
+}
+.apibanner-fix .mini { border-color: #6b2a2a; color: #f7c0c0; }
+.apibanner-fix .mini:hover { border-color: var(--bad); color: #fff; }
 
 .col {
   display: flex;

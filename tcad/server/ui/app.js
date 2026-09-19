@@ -21,6 +21,7 @@ const state = {
   version: null,
   view: "iso",
   busy: false,
+  apiOk: null,
   lastGate: null,
   settings: null,
   providers: [],
@@ -44,6 +45,64 @@ function el(tag, props = {}, children = []) {
     if (child != null) node.append(child);
   }
   return node;
+}
+
+/** Is this page being served by the tcad app, or just handed over as a file?
+ *
+ * The distinction matters because the HTML is a plain file that any static
+ * server (or `file://`) can deliver — in which case the page *looks* fine and
+ * every API call 404s. The browser console then shows a wall of 404s that say
+ * nothing about the cause, which is a genuinely bad place to leave someone.
+ *
+ * A real tcad URL is `/ui/`; a preview URL is `/static-html/<hash>/index.html`.
+ */
+function openedAsStaticFile() {
+  return (
+    location.protocol === "file:" ||
+    location.pathname.includes("/static-html/") ||
+    location.pathname.endsWith(".html")
+  );
+}
+
+function showApiUnavailable(detail) {
+  state.apiOk = false;
+  const banner = $("apiBanner");
+  const asFile = openedAsStaticFile();
+
+  banner.replaceChildren(
+    el("strong", {
+      text: asFile
+        ? "这个页面不是由 tcad 服务打开的"
+        : "无法连接 tcad 服务",
+    }),
+    el("div", {
+      text: asFile
+        ? "界面本身只是静态文件 —— 它显示的每一个数字都来自后端 API，而这里没有后端在应答。" +
+          "控制台里的那些 404 就是这么来的。"
+        : `服务没有响应：${detail}`,
+    }),
+    el("div", { class: "apibanner-fix" }, [
+      el("span", { text: "启动服务：" }),
+      el("code", { text: "cd 项目根目录 && .venv/bin/python tools/serve.py --data-dir data --port 8765" }),
+      el("span", { text: "然后访问" }),
+      el("code", { text: "http://127.0.0.1:8765/ui/" }),
+      el("button", {
+        class: "mini",
+        text: "我已启动，重试",
+        onclick: () => location.reload(),
+      }),
+    ]),
+  );
+  banner.hidden = false;
+
+  // Stop offering actions that cannot work. A button that produces another 404
+  // is worse than a disabled one.
+  $("sendBtn").disabled = true;
+  $("settingsBtn").disabled = true;
+  $("modelChip").disabled = true;
+  $("input").disabled = true;
+  $("refreshInspect").disabled = true;
+  $("refreshView").disabled = true;
 }
 
 function setStatus(kind, text) {
@@ -542,6 +601,8 @@ function showProbe(result) {
 
 async function openSettings() {
   const modal = $("settingsModal");
+  const errorBox = $("settingsError");
+  errorBox.hidden = true;
   modal.hidden = false;
   try {
     const [{ providers }, current] = await Promise.all([
@@ -568,8 +629,16 @@ async function openSettings() {
       "模型名会随代际变化，点「列模型」获取实时列表。"
     );
   } catch (err) {
-    pushNotice("bad", `设置读取失败：${err.message}`);
-    modal.hidden = true;
+    // Deliberately do NOT close the dialog. Closing on failure leaves an
+    // unchanged page and a console message, which reads as "clicking settings
+    // does nothing" — the user has no way to tell a missing endpoint from a
+    // dead server from a typo.
+    errorBox.hidden = false;
+    errorBox.textContent =
+      `无法读取设置：${err.message}\n` +
+      (openedAsStaticFile()
+        ? "这个页面是从静态文件打开的，不是由 tcad 服务托管 —— 请改用 http://127.0.0.1:<端口>/ui/ 访问。"
+        : "服务可能已停止，或这个接口不存在（旧进程？）。");
   }
 }
 
@@ -742,6 +811,7 @@ async function boot() {
   setStatus("", "连接中…");
   try {
     const health = await api("/health");
+    state.apiOk = true;
     const alive = health.worker_alive;
     if (alive === null || alive === undefined) {
       // The service stack is built lazily on the first real request, so "not
@@ -754,8 +824,11 @@ async function boot() {
       setStatus("bad", "FreeCAD worker 未启动");
     }
   } catch (err) {
+    // Nothing below this point can work, and every additional request would
+    // just add another 404 to the console. Say what is wrong and stop.
     setStatus("bad", "服务不可达");
-    pushNotice("bad", `无法连接服务：${err.message}`);
+    showApiUnavailable(err.message);
+    return;
   }
 
   try {

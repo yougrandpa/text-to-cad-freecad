@@ -59,6 +59,46 @@ def test_css_and_js_are_served(client):
     assert "javascript" in js.headers["content-type"]
 
 
+def test_favicon_is_served(client):
+    """Browsers request /favicon.ico unprompted. Without a declared icon the
+    console collects a 404 on every page load, which trains people to ignore
+    the console — and then a real 404 looks like background noise."""
+    for name in ("favicon.svg", "favicon.png"):
+        r = client.get(f"/ui/{name}")
+        assert r.status_code == 200, name
+        assert r.content, name
+
+    html = (UI_DIR / "index.html").read_text(encoding="utf-8")
+    assert 'rel="icon"' in html, "index.html 没有声明图标"
+
+
+def test_the_api_banner_exists_and_starts_hidden(client):
+    """The page must be able to explain 'this is not served by tcad' — the
+    symptom is otherwise a wall of 404s that says nothing about the cause."""
+    html = (UI_DIR / "index.html").read_text(encoding="utf-8")
+    assert 'id="apiBanner"' in html
+    assert re.search(r'id="apiBanner"[^>]*hidden', html), "横幅默认应是隐藏的"
+
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    assert "openedAsStaticFile" in js
+    # and it must actually distinguish the static-preview URL shape
+    assert "/static-html/" in js
+    assert "file:" in js
+
+
+def test_settings_failure_is_shown_inside_the_dialog():
+    """Closing the dialog on failure reads as 'clicking settings does nothing'."""
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    assert 'id="settingsError"' in (UI_DIR / "index.html").read_text(encoding="utf-8")
+
+    # bounded by the next top-level function so the assertion is about
+    # openSettings itself and not the rest of the file
+    body = js.split("async function openSettings", 1)[1].split("function settingsPatch", 1)[0]
+    assert "settingsError" in body, "设置面板内没有错误显示区"
+    assert "errorBox.hidden = false" in body
+    assert "modal.hidden = true" not in body, "失败时不应关闭对话框"
+
+
 def test_ui_does_not_shadow_the_api(client):
     """The mount is on /ui, so the API must be untouched."""
     assert client.get("/health").status_code == 200
