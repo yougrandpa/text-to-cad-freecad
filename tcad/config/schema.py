@@ -7,6 +7,7 @@ escape hatch is the privileged tool tier, which ships disabled.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -26,10 +27,22 @@ class RuntimeConfig(BaseModel):
 
 class StorageConfig(BaseModel):
     data_dir: str = "./data"
-    sqlite_path: str = "./data/tcad.sqlite3"
+    sqlite_path: str = ""
+    """Session database location. **Empty means ``<data_dir>/tcad.sqlite3``.**
+
+    Deliberately empty rather than a hard-coded ``./data/tcad.sqlite3``: with a
+    path literal here, overriding ``data_dir`` (which the CLI's ``--data-dir``
+    and every test do) would leave the database pointing at the *old* directory,
+    silently sharing one database between two configurations.
+    """
     sqlite_journal_mode: Literal["WAL", "DELETE", "TRUNCATE"] = "WAL"
     artifact_exports: list[str] = Field(default_factory=lambda: ["step", "stl"])
     keep_ir_versions: int = 200
+
+    def sqlite_file(self) -> str:
+        if self.sqlite_path:
+            return self.sqlite_path
+        return str(Path(self.data_dir) / "tcad.sqlite3")
 
 
 class LlmConfig(BaseModel):

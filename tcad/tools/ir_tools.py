@@ -72,6 +72,26 @@ async def ir_patch_handler(services: "Any", args: dict, ctx: ToolContext) -> Too
     On rejection the error carries ``feature_id`` where attributable so the model
     knows what to change.
     """
+    # ``base_version: "current"`` resolves to the latest version at the moment
+    # the patch is applied.
+    #
+    # This is in the tool contract, not a test convenience, because it is the
+    # natural thing to write — and rejecting it produces a pydantic message that
+    # says nothing useful ("1 validation error for IrPatch / base_version"),
+    # which is exactly the kind of dead end the model cannot recover from.
+    # An explicit integer still works and remains the right choice for
+    # multi-turn editing: it is the only form that can notice "the model moved
+    # under me" and refuse instead of silently overwriting.
+    if args.get("base_version") == "current":
+        try:
+            args = {**args, "base_version": services.store.current_version(ctx.model_id)}
+        except Exception as e:  # noqa: BLE001 — e.g. the model does not exist yet
+            return _err(
+                ToolErrorKind.SEMANTIC,
+                f"cannot resolve base_version='current': {e}",
+                hint="该模型尚未创建，或 ir_get 之前先调用 POST /models。",
+            )
+
     try:
         patch = IrPatch.model_validate(args)
     except Exception as e:  # malformed tool args
@@ -199,8 +219,12 @@ op names and their payload shapes:
   rename             target_id = entity id; payload = {"name": "<new stable name>"}
                      Names must be unique — an ambiguous name cannot be referenced later.
 
-base_version must equal the current IR version (optimistic concurrency); a stale
-value is rejected rather than silently rebased."""
+base_version: pass the integer IR version you last read, or the string "current" to
+mean "whatever is latest when this patch is applied".
+  - "current" is the convenient default and saves an ir_get round trip.
+  - an explicit integer is the safe form for multi-turn editing: it is the only
+    one that can detect that the model moved under you, and it is refused rather
+    than silently rebased. A stale integer is rejected, never rebased."""
 
 
 def _ir_patch_schema() -> dict:

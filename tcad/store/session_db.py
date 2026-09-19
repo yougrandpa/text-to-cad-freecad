@@ -14,6 +14,7 @@ writer.
 from __future__ import annotations
 
 import sqlite3
+import threading
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -93,10 +94,22 @@ def _uid(prefix: str) -> str:
 
 
 class SessionDB:
-    def __init__(self, sqlite_path: str | os.PathLike[str] = _DEFAULT_SQLITE) -> None:
+    def __init__(
+        self,
+        sqlite_path: str | os.PathLike[str] = _DEFAULT_SQLITE,
+        *,
+        check_same_thread: bool = True,
+    ) -> None:
         self.path = Path(sqlite_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self.path), check_same_thread=True)
+        # A sqlite3 connection is thread-bound by default. The harness core is
+        # single-threaded, so the default keeps that guarantee. The HTTP front
+        # end is not: uvicorn runs sync endpoints on a worker thread pool, so it
+        # opens the connection with ``check_same_thread=False`` and relies on
+        # ``_lock`` below to serialise access. WAL means a reader never blocks
+        # the writer, but the *connection object* still needs one-at-a-time use.
+        self._lock = threading.RLock()
+        self._conn = sqlite3.connect(str(self.path), check_same_thread=check_same_thread)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.row_factory = sqlite3.Row
@@ -107,16 +120,26 @@ class SessionDB:
 
     @contextmanager
     def _tx(self):
-        cur = self._conn.cursor()
-        try:
-            yield cur
-            self._conn.commit()
-        except Exception:
-            self._conn.rollback()
-            raise
+        with self._lock:
+            cur = self._conn.cursor()
+            try:
+                yield cur
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
+    def _fetchall(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._conn.execute(sql, params).fetchall()
+
+    def _fetchone(self, sql: str, params: tuple = ()) -> sqlite3.Row | None:
+        with self._lock:
+            return self._conn.execute(sql, params).fetchone()
 
     def close(self) -> None:
-        self._conn.close()
+        with self._lock:
+            self._conn.close()
 
     # ── threads ─────────────────────────────────────────────────────────────────
 
@@ -132,8 +155,8 @@ class SessionDB:
         return Thread(thread_id=tid, model_id=model_id, context_state=context_state)  # type: ignore[arg-type]
 
     def get_thread(self, thread_id: str) -> Thread | None:
-        row = self._conn.execute(
-            "SELECT * FROM threads WHERE thread_id=?", (thread_id,)).fetchone()
+        row = self._fetchone(
+            "SELECT * FROM threads WHERE thread_id=?", (thread_id,))
         if row is None:
             return None
         return Thread(
@@ -188,10 +211,12 @@ class SessionDB:
     def record_step(self, turn_id: str, tool_name: str | None = None,
                     step_id: str | None = None, status: str = "ok") -> str:
         sid = step_id or _uid("stp")
-        idx = self._conn.execute(
-            "SELECT COALESCE(MAX(idx),-1)+1 AS n FROM steps WHERE turn_id=?",
-            (turn_id,)).fetchone()["n"]
+        # Read and write inside one lock: computing idx outside it would let two
+        # concurrent steps claim the same index.
         with self._tx() as cur:
+            idx = cur.execute(
+                "SELECT COALESCE(MAX(idx),-1)+1 AS n FROM steps WHERE turn_id=?",
+                (turn_id,)).fetchone()["n"]
             cur.execute(
                 "INSERT INTO steps(step_id, turn_id, idx, started_at, status, tool_name) "
                 "VALUES(?,?,?,?,?,?)",
@@ -222,9 +247,9 @@ class SessionDB:
 
     def sum_token_usage(self, turn_id: str) -> dict[str, int]:
         """Return ``{"in": int, "out": int, "total": int}`` for the turn."""
-        rows = self._conn.execute(
+        rows = self._fetchall(
             "SELECT kind, SUM(tokens) AS t FROM token_usage WHERE turn_id=? "
-            "GROUP BY kind", (turn_id,)).fetchall()
+            "GROUP BY kind", (turn_id,))
         out: dict[str, int] = {"in": 0, "out": 0, "total": 0}
         for r in rows:
             k = r["kind"]
@@ -255,10 +280,46 @@ class SessionDB:
 
     def get_pending_approvals(self, thread_id: str | None = None) -> list[dict]:
         if thread_id is None:
-            rows = self._conn.execute(
-                "SELECT * FROM approvals WHERE status='pending' ORDER BY created_at").fetchall()
+            rows = self._fetchall(
+                "SELECT * FROM approvals WHERE status='pending' ORDER BY created_at")
         else:
-            rows = self._conn.execute(
+            rows = self._fetchall(
                 "SELECT * FROM approvals WHERE status='pending' AND thread_id=? "
-                "ORDER BY created_at", (thread_id,)).fetchall()
+                "ORDER BY created_at", (thread_id,))
+        return [dict(r) for r in rows]
+
+    # ── conversation history ────────────────────────────────────────────────────
+
+    def list_threads(self, model_id: str | None = None, limit: int = 100) -> list[dict]:
+        """Threads, newest first — what a UI needs to offer "resume"."""
+        if model_id:
+            rows = self._fetchall(
+                "SELECT t.thread_id, t.model_id, t.created_at, t.context_state, "
+                "  (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.thread_id) AS messages, "
+                "  (SELECT content FROM messages m WHERE m.thread_id=t.thread_id "
+                "     ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1) AS last_message "
+                "FROM threads t WHERE t.model_id=? "
+                "ORDER BY t.created_at DESC LIMIT ?",
+                (model_id, int(limit)))
+        else:
+            rows = self._fetchall(
+                "SELECT t.thread_id, t.model_id, t.created_at, t.context_state, "
+                "  (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.thread_id) AS messages, "
+                "  (SELECT content FROM messages m WHERE m.thread_id=t.thread_id "
+                "     ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1) AS last_message "
+                "FROM threads t ORDER BY t.created_at DESC LIMIT ?",
+                (int(limit),))
+        return [dict(r) for r in rows]
+
+    def list_messages(self, thread_id: str, limit: int = 500) -> list[dict]:
+        """Messages in arrival order.
+
+        Ordered by ``rowid`` rather than ``created_at``: the timestamp has
+        one-second resolution, so a user message and the assistant's reply to it
+        routinely share a value and would come back in arbitrary order.
+        """
+        rows = self._fetchall(
+            "SELECT message_id, thread_id, turn_id, role, content, created_at "
+            "FROM messages WHERE thread_id=? ORDER BY rowid ASC LIMIT ?",
+            (thread_id, int(limit)))
         return [dict(r) for r in rows]

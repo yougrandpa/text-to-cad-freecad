@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tcad · 对话式 CAD</title>
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="mark">tcad</span>
+    <span class="tag">对话式参数化 CAD</span>
+  </div>
+  <button class="chip" id="modelChip" title="点击配置模型">
+    <span class="chip-label">模型</span>
+    <span id="modelChipText">读取中…</span>
+  </button>
+  <div class="grow"></div>
+  <div class="status" id="status">
+    <span class="dot" id="statusDot"></span>
+    <span id="statusText">未连接</span>
+  </div>
+  <button class="icon" id="settingsBtn" title="模型设置">⚙</button>
+</header>
+
+<main class="layout">
+
+  <!-- ── 会话 ───────────────────────────────────────────────── -->
+  <section class="col court-chat">
+    <div class="col-head">
+      <span>会话</span>
+      <span class="hint" id="threadLabel"></span>
+      <div class="grow"></div>
+      <button class="mini" id="clearBtn" title="清空显示（不影响已保存的会话）">清空视图</button>
+    </div>
+    <div class="stream" id="stream">
+      <div class="welcome" id="welcome">
+        <h2>说一句话，生成一个零件</h2>
+        <p>模型通过修改 IR 来设计，FreeCAD 只负责编译几何。是否完成由 Gate 判定 —— 模型自称完成不算数。</p>
+        <div class="samples">
+          <button class="sample" data-text="一个 80x50 的安装底板，厚度 8mm，中间开一个 40x20 的通槽">80×50 底板 + 40×20 通槽</button>
+          <button class="sample" data-text="一个 60x60 的方形法兰，厚度 12mm，中心一个直径 20mm 的通孔">60×60 法兰 + Ø20 通孔</button>
+          <button class="sample" data-text="一个 L 形支架：底板 70x40 厚 6mm，竖板高 50mm 厚 6mm">L 形支架</button>
+        </div>
+      </div>
+    </div>
+    <form class="composer" id="composer">
+      <textarea id="input" rows="2" placeholder="描述你要的零件…  Enter 发送，Shift+Enter 换行"></textarea>
+      <button type="submit" id="sendBtn" class="primary">发送</button>
+    </form>
+  </section>
+
+  <!-- ── 视图 ───────────────────────────────────────────────── -->
+  <section class="col col-view">
+    <div class="col-head">
+      <span>视图</span>
+      <div class="tabs" id="viewTabs">
+        <button class="tab active" data-view="iso">等轴测</button>
+        <button class="tab" data-view="front">正视</button>
+        <button class="tab" data-view="top">俯视</button>
+        <button class="tab" data-view="right">右视</button>
+      </div>
+      <div class="grow"></div>
+      <button class="mini" id="refreshView" title="重新渲染（忽略缓存）">重渲染</button>
+    </div>
+    <div class="viewport" id="viewport">
+      <div class="placeholder" id="viewPlaceholder">还没有几何 —— 先在左边描述一个零件</div>
+      <img id="viewImage" alt="模型视图" hidden>
+    </div>
+    <div class="filebar" id="fileBar"></div>
+  </section>
+
+  <!-- ── 检查器 ─────────────────────────────────────────────── -->
+  <section class="col col-inspect">
+    <div class="col-head">
+      <span>检查器</span>
+      <div class="grow"></div>
+      <button class="mini" id="refreshInspect" title="刷新">刷新</button>
+    </div>
+    <div class="inspect" id="inspector">
+      <div class="muted small">提交一次后会显示几何摘要与 Gate 报告。</div>
+    </div>
+  </section>
+
+</main>
+
+<!-- ── 设置对话框 ──────────────────────────────────────────── -->
+<div class="modal" id="settingsModal" hidden>
+  <div class="modal-panel">
+    <div class="modal-head">
+      <h3>模型设置</h3>
+      <button class="icon" id="closeSettings">✕</button>
+    </div>
+
+    <div class="modal-body">
+      <label class="field">
+        <span>供应商</span>
+        <select id="providerSelect"></select>
+      </label>
+
+      <label class="field">
+        <span>模型</span>
+        <div class="row">
+          <input id="modelInput" list="modelOptions" placeholder="模型名">
+          <datalist id="modelOptions"></datalist>
+          <button class="mini" id="fetchModels" title="向供应商索要模型列表">列模型</button>
+        </div>
+        <small class="muted" id="modelsHint">模型名会随代际变化，可点「列模型」实时获取。</small>
+      </label>
+
+      <label class="field">
+        <span>端点 (base_url)</span>
+        <input id="baseUrlInput" placeholder="https://api.deepseek.com/v1">
+      </label>
+
+      <label class="field">
+        <span>API Key</span>
+        <input id="apiKeyInput" type="password" placeholder="留空则沿用已保存 / 环境变量">
+        <small class="muted" id="keyHint"></small>
+        <button type="button" class="mini" id="clearKey" style="margin-top:7px">清除已保存的密钥</button>
+      </label>
+
+      <label class="field">
+        <span>温度 <output id="tempOut">0.20</output></span>
+        <input id="tempInput" type="range" min="0" max="1" step="0.05" value="0.2">
+      </label>
+
+      <label class="field checkbox">
+        <input id="proxyInput" type="checkbox">
+        <span>使用环境代理（HTTP(S)_PROXY）</span>
+      </label>
+
+      <div class="probe-result" id="probeResult" hidden></div>
+    </div>
+
+    <div class="modal-foot">
+      <button class="mini" id="probeBtn">测试连通性</button>
+      <div class="grow"></div>
+      <button class="mini" id="cancelSettings">取消</button>
+      <button class="primary" id="saveSettings">保存并应用</button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>

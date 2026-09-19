@@ -440,13 +440,17 @@ def build_services(cfg: Config, *, start_worker: bool = True):
     start until the first request.
     """
     from tcad.config.loader import REPO_ROOT, resolve_paths
-    from tcad.llm.client import OpenAIClient
+    from tcad.config.settings import effective as effective_settings
+    from tcad.llm.hotswap import HotSwapLlm
     from tcad.loop.engine import LoopConfig
     from tcad.verify.checks_solid import VerifyConfig
     from tcad.verify.gate import Gate
 
     cfg = resolve_paths(cfg, root=REPO_ROOT)
     data_dir = cfg.storage.data_dir
+
+    # settings.json (written by the UI) wins over the YAML when it exists.
+    runtime_settings = effective_settings(cfg, data_dir)
 
     handle = WorkerHandle(
         cfg.runtime.freecad_cmd,
@@ -478,24 +482,21 @@ def build_services(cfg: Config, *, start_worker: bool = True):
             wall_thickness_min_mm=_threshold("wall_thickness", "min_mm", 1.0),
         ),
     )
-    llm = OpenAIClient(
-        base_url=cfg.llm.base_url,
-        api_key=cfg.llm.api_key or os.environ.get(cfg.llm.api_key_env, "EMPTY"),
-        model=cfg.llm.model,
-        request_timeout_s=float(cfg.llm.request_timeout_s),
-        max_retries=int(cfg.llm.max_retries),
-        temperature=float(cfg.llm.temperature),
-        max_tokens=int(cfg.llm.max_tokens_per_step),
-    )
+    # Hot-swappable: the engine holds this object forever and reads `.chat` at
+    # call time, so reconfiguring the model never requires rebuilding this
+    # stack (and therefore never restarts the FreeCAD worker).
+    llm = HotSwapLlm(runtime_settings.llm)
 
+    rs = runtime_settings.llm
     loop_config = LoopConfig(
         default_strategy=cfg.loop.default_strategy,
-        llm_base_url=cfg.llm.base_url,
-        llm_model=cfg.llm.model,
-        llm_temperature=float(cfg.llm.temperature),
-        llm_max_tokens=int(cfg.llm.max_tokens_per_step),
-        llm_request_timeout_s=float(cfg.llm.request_timeout_s),
-        llm_max_retries=int(cfg.llm.max_retries),
+        llm_base_url=rs.resolved_base_url(),
+        llm_model=rs.resolved_model(),
+        llm_api_key=rs.resolved_api_key() or "EMPTY",
+        llm_temperature=float(rs.temperature),
+        llm_max_tokens=int(rs.max_tokens_per_step),
+        llm_request_timeout_s=float(rs.request_timeout_s),
+        llm_max_retries=int(rs.max_retries),
         allow_privileged=bool(cfg.policy.allow_privileged),
         visual_checkpoints=tuple(cfg.context.visual_checkpoints),
         artifact_exports=tuple(cfg.storage.artifact_exports),
@@ -514,5 +515,55 @@ def build_services(cfg: Config, *, start_worker: bool = True):
         approvals=approvals,
         config=cfg,
         loop_config=loop_config,
+        settings=runtime_settings,
         _worker_handle=handle,
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# runtime reconfiguration
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def apply_llm_settings(
+    services: Any, settings: RuntimeSettings, *, persist: bool = True
+) -> dict:
+    """Point a **live** service stack at new LLM settings.
+
+    Deliberately does not rebuild the stack: the FreeCAD worker process keeps
+    running, the store keeps its handles, the Gate keeps its configuration.
+    Only three things change:
+
+    * the swappable client (``services.llm``),
+    * the engine's ``LoopConfig`` — which is where ``llm_temperature`` is read
+      from on *every* call (``engine.py:189``), so leaving it stale would make
+      the UI show one temperature and the model receive another,
+    * the effective ``Config``, as a **copy**, so anything already holding the
+      old one does not observe a mid-turn change.
+
+    Atomic by construction: ``HotSwapLlm.configure`` builds the replacement
+    first, so a bad configuration raises here and leaves the working model in
+    place. Returns the new descriptor.
+    """
+    from tcad.config.settings import apply_to_config, save_runtime_settings
+
+    services.llm.configure(settings.llm)
+
+    rs = settings.llm
+    lc = services.loop_config
+    lc.llm_base_url = rs.resolved_base_url()
+    lc.llm_model = rs.resolved_model()
+    lc.llm_api_key = rs.resolved_api_key() or "EMPTY"
+    lc.llm_temperature = float(rs.temperature)
+    lc.llm_max_tokens = int(rs.max_tokens_per_step)
+    lc.llm_request_timeout_s = float(rs.request_timeout_s)
+    lc.llm_max_retries = int(rs.max_retries)
+
+    services.config = apply_to_config(services.config, settings)
+    services.settings = settings
+
+    if persist:
+        data_dir = services.config.storage.data_dir
+        save_runtime_settings(data_dir, settings)
+
+    return services.llm.descriptor

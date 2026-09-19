@@ -44,16 +44,30 @@
 - **唯一生产装配入口**：`tcad.core.wiring.build_services(config)`。它把各子系统「库形状」适配成 `tcad/tools/base.py` 里的窄 Protocol。
   不要在其他地方重新接线；`LoopEngine.build_default_services(cfg)` 只是转发（传 LoopConfig 会报错）。
 - 装一个完整栈不启 worker（测试用）：`build_services(cfg, start_worker=False)`
-- 跑全部测试：`.venv/bin/python -m pytest tests/ -q`（当前 **240 例全绿**）
+- 跑全部测试：`.venv/bin/python -m pytest tests/ -q`（当前 **362 例全绿**）
 - 真端到端（打真 FreeCADCmd）：`pytest tests/contract/ -q`
 - CLI：`.venv/bin/python -m tcad.server.cli --data-dir <dir> new|chat|repl|approvals|approve ...`
-- HTTP：`uvicorn tcad.server.app:create_app --factory`（或注入 services）
+- **Web 界面**：`.venv/bin/python tools/serve.py --data-dir <dir> --port 8765` → http://127.0.0.1:8765/ui/
+  - 命令行 override（`--provider/--model/--base-url`）只作用于内存（`persist=False`），不会覆盖 UI 里保存的设置。
+- **离线模型替身**（无 Key 也能跑通整条 /chat 路径）：
+  `.venv/bin/python tools/stub_llm.py --script tools/sessions/demo_bracket.json --port 8123`
+  然后 `tools/serve.py --base-url http://127.0.0.1:8123/v1 --model stub-scripted`
 - **「操作者即 LLM」驱动器**（不接模型供应商，自己当模型走真实工具面）：
   `python -m tools.agent_driver --list-tools --full --only ir_patch`（看模型可见的工具面/schema）
   `python -m tools.agent_driver --model-id X --calls tools/sessions/stepN.json`（执行一串工具调用）
   `python -m tools.agent_driver --model-id X --worker-probe`（直接问 worker 要原始结果，排查静默失败用这个）
 - 重新生成渲染样图：`.venv/bin/python tools/render_sample.py` → `docs/renders/`
 - FreeCAD API 探测：`FreeCADCmd tools/probes/smoke_freecad.py` / `probe2.py`
+
+## 模型配置（M1/M2 新增，改之前先读）
+- **`HotSwapLlm`**：`services.llm` 永远返回同一个对象（engine 在 `engine.py` 的 `_step` 里读它），换模型只替换内部 `_client`，**不重建 services、不重启 FreeCAD**。`configure()` 先建新 client 再原子替换，建失败则保留旧的。
+- **设置优先级**：`settings.json`（UI 写的完整快照）> YAML/环境变量。删掉该文件即回到 YAML。落盘 0600，**回传一律掩码**（`api_key_masked`），前端永远拿不到明文。
+- **`api_key` 的三角语义**（patch 里）：字段缺失=保留；`null`=清除；字符串=设置。靠 `model_fields_set` 区分。
+- **切换 provider 会重置继承字段**（`model`/`base_url`/`api_key_env`/`context_window`），否则 deepseek→ollama 会继续用 DeepSeek 的端点。
+- **`base_url` 为空必须拒绝**：OpenAI SDK 会静默回退到 `api.openai.com`，等于把提示词和 Key 发给了用户没选的厂商。
+- **`base_version: "current"`** 是 `ir_patch` 契约的一部分（服务端解析为当前版本）；显式整数仍是多轮编辑的安全形式。
+- 供应商预设只给**候选**模型名；真实列表由 `GET /settings/models` 代调 provider 的 `GET /models`。DeepSeek 官方中英文档仍并存两代模型名（`deepseek-v4-*` 与 `deepseek-chat`/`deepseek-reasoner`），**不要硬编码**。
+- provider 预设 `use_env_proxy` 默认全 False：本机 `HTTPS_PROXY` 曾把直连失败伪装成"厂商挂了"。
 
 ## 建模时最容易踩的两条（已写进 ir_patch 工具描述）
 1. **Pocket 方向**：草图在 XY（法向 +Z）时 `PartDesign::Pocket` **默认朝 -Z 切**，而底板在 +Z 侧 → 切进空气，特征什么都不做**却报告成功**（`ok=true`、`errors=[]`、体积不变）。要用 `"reversed": true`。

@@ -126,7 +126,12 @@ def resolve_paths(cfg: Config, *, root: Path | None = None) -> Config:
         (base / cfg.runtime.freecad_python_path).resolve()
     )
     cfg.storage.data_dir = str((base / cfg.storage.data_dir).resolve())
-    cfg.storage.sqlite_path = str((base / cfg.storage.sqlite_path).resolve())
+    # An empty sqlite_path means "inside data_dir"; resolve it there rather than
+    # against the root, so that overriding data_dir actually moves the database.
+    sqlite = cfg.storage.sqlite_path or str(
+        Path(cfg.storage.data_dir) / "tcad.sqlite3"
+    )
+    cfg.storage.sqlite_path = str((base / sqlite).resolve()) if not os.path.isabs(sqlite) else sqlite
     cfg.sandbox.writable_root = str((base / cfg.sandbox.writable_root).resolve())
     cfg.sandbox.read_only_roots = [
         str((base / r).resolve()) for r in cfg.sandbox.read_only_roots

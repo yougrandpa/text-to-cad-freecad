@@ -79,12 +79,23 @@ class OpenAIClient:
         max_retries: int = 2,
         temperature: float = 0.2,
         max_tokens: int = 4096,
+        http_client: Any = None,
     ):
         from openai import AsyncOpenAI
 
         # We do our own retry loop, so disable the SDK's built-in one.
+        #
+        # ``http_client`` exists so a caller can hand us a transport that
+        # ignores HTTP(S)_PROXY. That matters more than it sounds: an ambient
+        # proxy that cannot reach the endpoint turns a direct-connect failure
+        # into an error message naming the wrong culprit, which is the most
+        # expensive kind of bug to chase.
         self._client = AsyncOpenAI(
-            base_url=base_url, api_key=api_key, timeout=request_timeout_s, max_retries=0
+            base_url=base_url,
+            api_key=api_key,
+            timeout=request_timeout_s,
+            max_retries=0,
+            **({"http_client": http_client} if http_client is not None else {}),
         )
         self.model = model
         self.temperature = temperature

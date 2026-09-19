@@ -12,7 +12,7 @@ import traceback
 
 from tcad.worker.protocol import (
     K_ERROR, K_FEATURE_ID, K_ID, K_KIND, K_MESSAGE, K_METHOD, K_OK, K_PARAMS,
-    K_RESULT, K_TRACEBACK, E_RUNTIME, WORKER_METHODS, clamp_traceback,
+    K_RESULT, K_TRACEBACK, E_COMPILE, E_RUNTIME, WORKER_METHODS, clamp_traceback,
 )
 
 from tcad.worker.compiler import compile_ir

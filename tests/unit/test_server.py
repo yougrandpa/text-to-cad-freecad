@@ -121,6 +121,17 @@ def make_services(tmp_path: Path, *, gate_passed: bool = True, max_steps: int = 
     cfg.storage.data_dir = str(data_dir)
     cfg.loop.max_steps_per_turn = max_steps
 
+    # The stack's LLM is a swappable holder in production, so the fake must be
+    # one too — otherwise the settings endpoints would be untestable here and
+    # their absence from the contract would go unnoticed.
+    from tcad.config.settings import LlmSettings
+    from tcad.llm.hotswap import HotSwapLlm
+
+    llm = HotSwapLlm(
+        LlmSettings(provider="custom", base_url="http://fake.invalid/v1", model="fake"),
+        client=ScriptedLlm(),
+    )
+
     return SimpleNamespace(
         store=FakeStore(data_dir),
         worker=FakeWorker(),
@@ -128,7 +139,7 @@ def make_services(tmp_path: Path, *, gate_passed: bool = True, max_steps: int = 
         renderer=None,
         hooks=HookDispatcher([], {}),
         context=None,
-        llm=ScriptedLlm(),
+        llm=llm,
         approvals=JsonFileApprovalStore(str(data_dir / "approvals.json"), ttl_s=60),
         config=cfg,
         loop_config=LoopConfig(data_dir=str(data_dir), workdir=str(REPO_ROOT)),

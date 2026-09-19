@@ -14,7 +14,8 @@ runtime:
 
 storage:
   data_dir: "./data"
-  sqlite_path: "./data/tcad.sqlite3"
+  sqlite_path: ""                   # empty => <data_dir>/tcad.sqlite3 (do not hard-code
+                                    # the data dir here or --data-dir stops moving the DB)
   sqlite_journal_mode: "WAL"        # single writer + WAL, see design §4.4
   artifact_exports: ["step", "stl"] # exported automatically after every commit
   keep_ir_versions: 200             # events are never pruned

@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from pydantic import BaseModel, Field
 
@@ -106,12 +106,29 @@ class LoopConfig(BaseModel):
 
 
 class LoopEngine:
+    """Runs one Turn at a time.
+
+    ``observer`` is an optional ``(kind, data) -> None`` sink. It exists so a
+    front end can show *what the model actually did* — its text, which tool it
+    called, what came back. That information is not recoverable from the hook
+    stream (hooks are a safety boundary and carry only what a policy needs) nor
+    from the final ``TurnResult`` (which is a summary).
+
+    Two rules keep it harmless:
+
+    * it is **the observer's problem, never the turn's** — any exception it
+      raises is swallowed;
+    * it is **read-only by construction** — it receives a fresh dict that the
+      engine has already finished using, so it cannot mutate the conversation.
+    """
+
     def __init__(
         self,
         services: Services,
         registry: Any,  # ToolRegistry
         budget_limits: BudgetLimits,
         config: LoopConfig | None = None,
+        observer: Callable[[str, dict], None] | None = None,
     ):
         self.services = services
         self.registry = registry
@@ -122,6 +139,17 @@ class LoopEngine:
         self._candidate_reports: list[GateReport] = []
         self._last_commit_passed = False
         self._compile_failures = 0
+        self._observer = observer
+
+    # ─── observation ──────────────────────────────────────────────────────
+
+    def _observe(self, kind: str, data: dict) -> None:
+        if self._observer is None:
+            return
+        try:
+            self._observer(kind, data)
+        except Exception:  # noqa: BLE001 — a broken viewer must not break a turn
+            pass
 
     # ─── public entry point ───────────────────────────────────────────────
 
@@ -167,6 +195,29 @@ class LoopEngine:
                     "steps": self.budget.steps,
                 },
             )
+
+        self._observe(
+            "turn_end",
+            {
+                "turn_id": turn.turn_id,
+                "state": result.state.value,
+                "steps": self.budget.steps,
+                "tokens_in": self.budget.tokens_in,
+                "tokens_out": self.budget.tokens_out,
+                "error": result.error,
+                "gate": (
+                    {
+                        "passed": result.gate_report.passed,
+                        "ir_version": result.gate_report.ir_version,
+                        "blocking_failures": list(result.gate_report.blocking_failures),
+                        "advisory_findings": list(result.gate_report.advisory_findings),
+                        "skipped_checks": list(result.gate_report.skipped_checks),
+                    }
+                    if result.gate_report is not None
+                    else None
+                ),
+            },
+        )
         return result
 
     # ─── one step: pre_step -> LLM -> tools ───────────────────────────────
@@ -203,6 +254,23 @@ class LoopEngine:
                 for tc in reply.tool_calls
             ]
         messages.append(assistant)
+
+        self._observe(
+            "model",
+            {
+                "step": self.budget.steps,
+                "text": reply.text or "",
+                "tool_calls": [
+                    {"id": tc.id, "name": tc.name, "args": tc.args}
+                    for tc in reply.tool_calls
+                ],
+                "usage": {
+                    "prompt_tokens": reply.usage.prompt_tokens,
+                    "completion_tokens": reply.usage.completion_tokens,
+                },
+                "finish_reason": reply.finish_reason,
+            },
+        )
 
         # A model that returns text but no tool call is NOT a termination.
         if not reply.tool_calls:
@@ -298,6 +366,37 @@ class LoopEngine:
                     "name": tc.name,
                     "content": _result_text(outcome.result),
                 }
+            )
+
+            self._observe(
+                "tool",
+                {
+                    "step": self.budget.steps,
+                    "name": tc.name,
+                    "ok": outcome.result.ok,
+                    "content": (outcome.result.content or "")[:6000],
+                    "error": (
+                        {
+                            "kind": getattr(outcome.result.error.kind, "value", str(outcome.result.error.kind)),
+                            "message": outcome.result.error.message,
+                            "feature_id": outcome.result.error.feature_id,
+                        }
+                        if outcome.result.error is not None
+                        else None
+                    ),
+                    "images": [i.model_dump(mode="json") for i in (outcome.result.images or [])],
+                    "gate": (
+                        {
+                            "passed": outcome.gate_report.passed,
+                            "ir_version": outcome.gate_report.ir_version,
+                            "blocking_failures": list(outcome.gate_report.blocking_failures),
+                            "advisory_findings": list(outcome.gate_report.advisory_findings),
+                            "skipped_checks": list(outcome.gate_report.skipped_checks),
+                        }
+                        if outcome.gate_report is not None
+                        else None
+                    ),
+                },
             )
 
             # ir_commit: the engine — not the tool — decides success.

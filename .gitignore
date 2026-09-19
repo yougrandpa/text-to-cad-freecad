@@ -29,5 +29,6 @@ tools/probes/*.step
 tools/probes/*.stl
 tools/probes/*.FCStd
 
-# 「操作者即 LLM」的建模工作区（会话记录在 tools/sessions/ 下，需要提交）
+# 本地运行期工作区：data/ 是默认数据目录，.tcad_* 是临时/演示用的
 .tcad_hand/
+.tcad_demo/
