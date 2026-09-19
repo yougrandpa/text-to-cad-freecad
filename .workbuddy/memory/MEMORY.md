@@ -50,7 +50,7 @@
 - **唯一生产装配入口**：`tcad.core.wiring.build_services(config)`。它把各子系统「库形状」适配成 `tcad/tools/base.py` 里的窄 Protocol。
   不要在其他地方重新接线；`LoopEngine.build_default_services(cfg)` 只是转发（传 LoopConfig 会报错）。
 - 装一个完整栈不启 worker（测试用）：`build_services(cfg, start_worker=False)`
-- 跑全部测试：`.venv/bin/python -m pytest tests/ -q`（当前 **476 例全绿**，约 12 秒）
+- 跑全部测试：`.venv/bin/python -m pytest tests/ -q`（当前 **491 例全绿**，约 12 秒：451 单测 + 40 契约）
 - 真端到端（打真 FreeCADCmd）：`pytest tests/contract/ -q`
 - CLI：`.venv/bin/python -m tcad.server.cli --data-dir <dir> new|chat|repl|approvals|approve ...`
 - **Web 界面**：`.venv/bin/python tools/serve.py --data-dir <dir> --port 8765` → http://127.0.0.1:8765/ui/
@@ -123,6 +123,22 @@
 - 视图切换用**缓存优先**（`loadView(false)`）：`/render` 的缓存键是 `(version, view, style, size)`，版本取自该模型自己的 IR，跨会话不可能串图。
 - **限制（未做）**：跨回合只延续 IR 几何，**不延续对话历史**（`_init_messages` 恒为 `[system, user]`）。
   `session_db` 只存文本、不存工具调用与结果，直接回灌会让模型只看到自己的旁白。正解 = `tcad/context/assembler.py`（已存在、未接线）+ 持久化工具轨迹。
+
+## 打断一个回合（`/chat/interrupt`，改 `/chat`、engine 或前端前先读）
+- **`ABORTED` 是第五种终态，来自人**：不是成功，也不是失败。文案必须说清「是谁停的 + 此后没有任何东西经过 Gate 验证」（`STOPPED_BY_USER`）。
+- **谓词说「为什么停」，取消说「怎么停」，两者都在 engine 里**：
+  - `LoopEngine(stop_requested=…)` 是**唯一**判定依据，`_step` 开头检查（停在两步之间、甚至第一步之前都不会漏）；
+  - `task.cancel()` 才是真的打断在飞的 LLM 请求（一轮的墙钟时间几乎全在那一次 HTTP 上；不取消 = 「打断」退化成「等这一步做完」）；
+  - **只有谓词为真时 `CancelledError` 才被解释成 ABORTED**；服务端关闭 / 客户端断开必须保持 asyncio 原本语义（有测试 `test_a_cancellation_nobody_asked_for_is_not_reinterpreted` 守着）。
+- **`request_id` 由客户端在发请求之前铸造**（`crypto.randomUUID`），随 `/chat` 一起送、`start` 帧原样回。
+  服务端铸 id 会留下「客户端知道有回合在跑、服务端还不知道它叫什么」的窗口 —— 那正是停止按钮点了没用、模型继续烧 token 的窗口。
+- **不认识的 id ≠ 报错**：记为「待停止」（有界 64、**30s 过期**、无论如何都被消费），回合注册时第一步之前执行；没有在跑的回合时返回 200 + `stage: pending`，因为「没有这个回合」是答案不是故障。
+  **过期不是保险**：真机验证时探针复用 id，上一轮打空的停止标记把**下一轮**在第一步之前停掉了，屏幕上没有任何解释 —— 瞄准某个回合的停止请求，如果那个回合从未出现，就绝不能去停后来那个碰巧复用 id 的回合。
+- **同一个 `request_id` 起第二个回合 → 409**：覆盖注册表 = 让前一个回合永远停不下来。
+- 前端：运行时出现「停止」（`Esc` 同效），`stopTurn()` **先 POST 接口、失败才退回关闭 SSE**；
+  两条路都必须说「已打断本次回合」，**不能**说「已离开该会话」（那是描述用户没做过的事）；按钮在开始 / `finally` / 切走三处收起。
+- **未做**：打断停不了 worker 里已经发出去的活（worker 协议无中途取消）；打断不写进会话记录（与工具调用、Gate 报告同一现状）；真机点按未实测。
+- 复跑脚本：`tools/probes/interrupt_live.py`（需要 `stub_llm.py --delay 1.5` 这样的慢模型，否则没有「回合中间」可打断）。
 
 ## 建模时最容易踩的两条（已写进 ir_patch 工具描述）
 1. **Pocket 方向**：草图在 XY（法向 +Z）时 `PartDesign::Pocket` **默认朝 -Z 切**，而底板在 +Z 侧 → 切进空气，特征什么都不做**却报告成功**（`ok=true`、`errors=[]`、体积不变）。要用 `"reversed": true`。

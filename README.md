@@ -10,7 +10,7 @@ deterministic Gate decides whether it is actually done. FreeCAD is used as a
 
 ```
 Python 3.11+ · pydantic v2 · FastAPI + SSE · SQLite(WAL) · 前端零依赖零构建（原生 ES module）
-477 测试全绿（437 单测 + 40 契约测试，整包约 12 秒）
+491 测试全绿（451 单测 + 40 契约测试，整包约 12 秒）
 ```
 
 ---
@@ -155,7 +155,9 @@ python -m venv .venv
 │  v3           │  工具调用卡片   │      渲染图              │  Gate 报告      │
 │  法兰 · 无几何│  Gate 报告卡片  │                         │  需求(已确认)   │
 │  ▸ 进行中     │  hook 事件流    │  下载 STEP / STL         │  待批审批       │
-└──────────────┴────────────────┴─────────────────────────┴─────────────────┘
+│              ├─────────────────┴─────────────────────────┴─────────────────┤
+│              │ 输入框                                    [停止] [发送]      │
+└──────────────┴───────────────────────────────────────────────────────────┘
 ```
 
 - **新建会话**：点「＋ 新建」或 `⌘/Ctrl + K`。一个会话 = 一次对话 **+ 它唯一在造的零件**，
@@ -164,6 +166,10 @@ python -m venv .venv
 - **切换会话**：对话流、视图、产物、检查器**四件一起换**；URL 带 `?thread=<id>`，刷新或分享链接回到同一会话。
 - **运行中**：侧栏标出正在执行的会话，对话流底部有当前步骤 + 已用时的 live 行；
   此时切走会中止该回合（并通知服务端 cancel，不留后台烧 token）。
+- **打断回合**：回合运行时输入框右侧出现「停止」（或按 `Esc`）。它点名停掉**这一个**回合：
+  服务端取消在飞的模型调用，回合以 `aborted` 结束 —— 界面上是一个明确的结论
+  「⏹ 回合已被打断 …… 此后没有任何东西经过 Gate 验证」，不是文字突然安静下来。
+  打断前已写进 IR 的改动保留，会话可以立刻继续。**打断 ≠ 完成**，也 ≠ 失败。
 - 「清空视图」只清显示，不影响磁盘上的会话；切走再切回即重新回放。
 
 ### CLI
@@ -245,11 +251,20 @@ subtractive_box · subtractive_cylinder · subtractive_sphere
    ▼
 TurnResult{state, steps, tokens_in/out, gate_report}
     终态只有四种：SUCCEEDED（Gate 全绿）/ FAILED / AWAITING_APPROVAL / EXHAUSTED
+    外加一种来自人的终态：ABORTED —— 被「停止」打断。它不是成功，也不是失败：
+    它是「你叫停了它，此后没有任何东西经过 Gate 验证」。
 ```
 
 **默认不设工作量上限**（`max_steps_per_turn` 等五项在 `configs/default.yaml` 里全是 `null`）：
 一个 Turn 只会因 Gate 全绿、FAILED、AWAITING_APPROVAL 结束。
 需要上界时用有界档（见[配置](#配置)）。
+
+> **打断是这四种终态之外的那一种，它必须同时做到两件事。** 步骤边界上的
+> `stop_requested` 谓词是「为什么停」（停在两步之间、甚至第一步之前也不会漏），
+> `task.cancel()` 是「怎么停」（一轮的绝大部分墙钟时间是一个 LLM 请求，不取消它
+> 就只能在下一个步骤边界生效，最坏要等一整个模型超时）。两者都在引擎里，
+> 且**只有谓词说「是有人要求的」时，`CancelledError` 才会被解释成 ABORTED**——
+> 别的取消（服务端关闭、客户端断开）保持 asyncio 原本的语义。
 
 > 单次请求的**活性**与工作量上限是两件事，别一起删：挂死的 LLM 仍撞 `llm.request_timeout_s`、
 > 挂死的工具仍撞 `ToolSpec.timeout_s`、死 worker 仍撞传输超时。
@@ -352,6 +367,7 @@ cfg = load_config("configs/default.yaml", overlays=["configs/policies/strict.yam
 |---|---|---|
 | `GET` | `/health` | 活性 + `data_dir`（分辨实例）+ `budget`（哪些上限没设） |
 | `POST` | `/chat` | 跑一个 Turn，**SSE 流**：`start` / `progress` / `agent` / `error` / `result` |
+| `POST` | `/chat/interrupt` | 打断 `{request_id}` 指名的那个回合；返回 `stage: running\|pending` |
 | `GET` | `/sessions` | 会话列表：标题、`model_id`、`ir_version`、最近活动时间 |
 | `POST` | `/sessions` | 新建会话：同时建它的模型（`model_id` 已存在 → 409） |
 | `GET` | `/threads/{id}/messages` | 会话历史（刷新不丢） |
@@ -365,20 +381,36 @@ cfg = load_config("configs/default.yaml", overlays=["configs/policies/strict.yam
 | `POST` | `/settings/llm/probe` | 连通性探测（可先测后存） |
 | `GET` | `/ui/` | 前端 |
 
-两个值得记住的设计点：
+三个值得记住的设计点：
 
 - **`/render` 不是模型的眼睛。** 模型的视觉能力是 `geo_view` 工具，受视觉检查点约束（每张图都占 context）。
   人看自己的零件是另一回事，所以走另一条路：无 hook、无预算、磁盘缓存。
 - **`/settings/*` 不依赖 worker。** FreeCADCmd 起不来时，"连不上模型供应商**又**改不了供应商"是个死局。
+- **打断按回合点名，不按会话。** `request_id` 由**客户端**在发请求之前铸造并随 `/chat` 送出，
+  所以停止按钮在任何帧回来之前就能说出「停哪一个」；服务端不认识这个 id 时会把它记下来
+  （有界、30s 过期），等这个回合注册时立刻执行——一个真的发起过 `/chat` 的客户端不会输掉这场比赛。
+  没有在跑的回合时返回 200 + `stage`，因为「没有这个回合」是答案，不是服务端故障。
 
 ---
 
 ## 测试
 
 ```bash
-.venv/bin/python -m pytest tests -q              # 477 全绿（整包约 12 秒）
-.venv/bin/python -m pytest tests/unit -q         # 437，不需要 FreeCAD
+.venv/bin/python -m pytest tests -q              # 491 全绿（整包约 12 秒）
+.venv/bin/python -m pytest tests/unit -q         # 451，不需要 FreeCAD
 .venv/bin/python -m pytest tests/contract -q     # 40，真跑 FreeCADCmd
+```
+
+打断的**运行时**行为另有一条真实路径可复跑（需要一个慢模型，否则没有「回合中间」可打断）：
+
+```bash
+# 终端 A：慢速替身（每次回复停 1.5s）
+.venv/bin/python tools/stub_llm.py --script tools/sessions/demo_bracket.json --port 8766 --delay 1.5
+# 终端 B：服务指向它（换端口，别占用你正在用的那个）
+.venv/bin/python tools/serve.py --data-dir .tcad_interrupt --port 8767 \
+    --base-url http://127.0.0.1:8766/v1 --model stub-scripted
+# 终端 C：在模型调用飞的途中打断，检查结论、耗时与会话可继续性
+.venv/bin/python tools/probes/interrupt_live.py --port 8767
 ```
 
 写法上的两条纪律：
@@ -404,9 +436,10 @@ cfg = load_config("configs/default.yaml", overlays=["configs/policies/strict.yam
 | 3 | **`context.window_tokens` 是估值** | 128000 未按真实 token 标定，三档降级（0.70 / 0.85）的阈值因此不准。 |
 | 4 | **界面无认证** | 默认只绑 `127.0.0.1`；绑非回环地址时启动会打印警告。不要暴露到公网。 |
 | 5 | **无会话重命名 / 删除 / 搜索**，不做会话内换模型 | 会话↔模型绑定单向是有意的。 |
-| 6 | **多标签页未协调** | 服务端没有 per-thread 回合锁，`/chat` 按请求替换 `services.hooks`；并发两个 `/chat` 不是受支持的用法。 |
-| 7 | **不做的范围** | GUI 交互建模 / 自由曲面造型 / 装配约束求解 / 2D 工程图 / 仿真 / CAM / 多用户协作。 |
-| 8 | **本机无法 `push` 到 GitHub** | 代理不转发 `receive-pack` 的响应流（`ls-remote` 正常）。需要换代理或加 SSH key。 |
+| 6 | **多标签页未协调** | 服务端没有 per-thread 回合锁，`/chat` 按请求替换 `services.hooks`；并发两个 `/chat` 不是受支持的用法。同一个 `request_id` 起第二个回合会被 409 拒绝（否则被覆盖的那个回合就再也停不下来了）。 |
+| 7 | **打断停的是 supervisor，不是 worker 里的活** | 在飞的 LLM 请求会被真的取消；但已经发给 FreeCAD worker 的一次调用（编译 / 网格化）会在 worker 进程里跑完，结果被丢弃——worker 协议没有中途取消。 |
+| 8 | **不做的范围** | GUI 交互建模 / 自由曲面造型 / 装配约束求解 / 2D 工程图 / 仿真 / CAM / 多用户协作。 |
+| 9 | **本机无法 `push` 到 GitHub** | 代理不转发 `receive-pack` 的响应流（`ls-remote` 正常）。需要换代理或加 SSH key。 |
 
 ---
 
