@@ -427,7 +427,7 @@ class LoopEngine:
                     err = outcome.result.error
                     if err and err.kind in (ToolErrorKind.COMPILE, ToolErrorKind.SOLVER):
                         self._compile_failures += 1
-                        if self._compile_failures > self.budget_limits.max_compile_retries:
+                        if not self.budget.allow_more_compile_retries(self._compile_failures):
                             turn.state = TurnState.FAILED
                             turn.error = "too many consecutive compile failures"
                             return StepYield()

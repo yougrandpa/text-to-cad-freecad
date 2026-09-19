@@ -30,12 +30,15 @@
 6. **无头优先**：一切能力必须在 `FreeCADCmd` 下可用；依赖 GUI 的能力（真视口渲染）只能是可选增强。
 
 ## FreeCAD API 陷阱（写 worker 代码前必看）
-- `TopoShape` **无 `BoundBox` 属性** → 用 `optimalBoundingBox()`。
-- `shape.check()` 实现是成功返回 `None`/失败抛 `ValueError`（与 `.pyi` 的 `-> bool` 不符）→ 必须 try/except。
+- `shape.BoundBox` **存在**（`XMin/XMax/.../XLength/YLength/ZLength`）→ 轴对齐校验用它。`optimalBoundingBox()` 是**可旋转 OBB**，拿它比轴对齐规格会偏小。
+  （早期文档曾断言「无 BoundBox 属性」，是**读源码得出的错误结论**，已被运行时实测推翻。以本节为准。）
+- `shape.check()` 实现是成功返回 `None`/失败抛 `ValueError`（与 `.pyi` 的 `-> bool` 不符）→ 必须 try/except，**不能写 `if shape.check():`**。
+- `TopoShape.tessellate(tolerance)` **必须传参**；无参调 TypeError（`.pyi` 的零参签名是错的）。
 - `SketchObject.solve()` 返回 `SolveStatus` 整数，**不是 DOF** → DOF 读 `sketch.DoF`。
 - **无头出不了 PNG**（渲染全在 `src/Gui`）→ worker 回传网格，supervisor 软件光栅化。
-- 不存在：`Part.checkGeometry`、`Part.checkSolid`、`shape.isSolid`、`shape.Vertices`（是 `Vertexes`）、`BoundBox`。
-- 详细清单与源码行号见 `docs/02-架构设计.md` 附录 A；`docs/` 里的未核实项不得照抄。
+- 不存在：`Part.checkGeometry`、`Part.checkSolid`、`shape.isSolid`、`shape.Vertices`（是 `Vertexes`）。
+- `setDatum()` 在**约束冲突**时抛的是 `ValueError: Invalid constraint index: N` —— 错误信息与真实原因无关。
+- 详细清单与源码行号见 `docs/02-架构设计.md` 附录 A/B；附录 B（运行时实测）**效力高于附录 A（源树阅读）**。
 
 ## 构建 / 运行约定
 - FreeCAD 构建：`cd free-cad/FreeCAD && pixi run configure && pixi run build` → `build/debug/bin/FreeCADCmd`。**已构建可用。**
@@ -47,7 +50,7 @@
 - **唯一生产装配入口**：`tcad.core.wiring.build_services(config)`。它把各子系统「库形状」适配成 `tcad/tools/base.py` 里的窄 Protocol。
   不要在其他地方重新接线；`LoopEngine.build_default_services(cfg)` 只是转发（传 LoopConfig 会报错）。
 - 装一个完整栈不启 worker（测试用）：`build_services(cfg, start_worker=False)`
-- 跑全部测试：`.venv/bin/python -m pytest tests/ -q`（当前 **362 例全绿**）
+- 跑全部测试：`.venv/bin/python -m pytest tests/ -q`（当前 **438 例全绿**）
 - 真端到端（打真 FreeCADCmd）：`pytest tests/contract/ -q`
 - CLI：`.venv/bin/python -m tcad.server.cli --data-dir <dir> new|chat|repl|approvals|approve ...`
 - **Web 界面**：`.venv/bin/python tools/serve.py --data-dir <dir> --port 8765` → http://127.0.0.1:8765/ui/
@@ -89,6 +92,17 @@
 - **op 必须逐个列全，不能用 `additive_*` 通配** —— 通配等于没告诉模型有这些能力（曾导致模型用 pad 建出三个不接触的实体）。
 - 必须写明：**同一 body 内特征只在几何相交时合并**；`refs` 只声明构建顺序、**不产生几何关系**；贴到已有形体要用 `plane: {kind:"face", feature_id, sub:"FaceN"}`。
 - `tests/unit/test_ir_tools_description.py` 会拿描述与 `FeatureOp` 对账，别再让描述落后于 schema。
+
+## 熔断上限：可选，且默认不设（用户指令，别再改回硬上限）
+- **`None` = 该维度不设上限**，五项（`max_steps_per_turn` / `max_tokens_per_turn` / `step_timeout_s` / `turn_wall_clock_s` / `max_compile_retries`）在 `configs/default.yaml` 里**全部为 `null`**。
+  用 `None` 而非 `0`/大数：`0` 与 `999999` 的语义都会在不同方向上静默出错，`None` 不会（`0` 在 `is_unlimited` 里是**真上限**，有测试守着）。
+- 无上限时一个 Turn 只会因三件事结束：**Gate 全绿 / `FAILED` / `AWAITING_APPROVAL`**。
+- **有界档 = `configs/policies/strict.yaml`**，它必须把五项**全部**限住（漏一项就留一处无上限）。反证实测：同一 27 步脚本，默认档 26 步 `succeeded`，strict 档第 12 步 `exhausted`。
+- **别把「工作量上限」和「单次请求活性」混为一谈**：取消前者**不影响**后者。挂死的 LLM 调用仍撞 `llm.request_timeout_s`、挂死的工具仍撞 `ToolSpec.timeout_s`、死 worker 仍撞 worker 传输超时。改预算时**不要顺手把这些也去掉**。
+- 无上限状态必须**可见**：`GET /health` 的 `budget.{limits,unbounded,unbounded_all}` + 界面顶栏「无预算上限」徽标。
+- **客户端断开必须终止 Turn**：`/chat` 的 SSE 生成器在 `finally` 里 `task.cancel()`。无上限之前靠 `max_steps_per_turn` 兜底，之后不会自己停。
+  ⚠️ **`yield start` 必须在 `try` 之内**：生成器在进入 `try` 之前被关闭时 `finally` **不执行**，任务就泄漏（这是实测踩到的）。
+- 同时顺手修了：每次 `/chat` 都把 `services.hooks` 包一层 `HookEventTap` 且不还原 → 逐请求累积。现在 `finally` 里还原。
 
 ## 前后端契约（改界面之前先读，这三条都踩过）
 - **SSE 帧里的枚举是「序列化值」不是「枚举名」**：pydantic 对 `(str, Enum)` 发出的是小写值 —— `"succeeded"` / `"exhausted"` / `"pass"` / `"blocking"`。前端任何以状态为键的表都必须用小写值，用 `SUCCEEDED` 这类枚举名**永远匹配不到**（曾导致 turn 结束屏幕上没有任何结论）。

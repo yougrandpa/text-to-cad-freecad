@@ -91,7 +91,14 @@ def test_default_yaml_loads_and_matches_schema():
     cfg = load_default_config()
     assert cfg.version == 1
     assert cfg.runtime.freecad_cmd.endswith("FreeCADCmd")
-    assert cfg.loop.max_steps_per_turn == 24
+    # The shipped configuration puts no work ceiling on a turn (`null`), so a
+    # turn is bounded by liveness, not by a quota. A number here would be a
+    # silent policy change — the UI badge reads the same values.
+    assert cfg.loop.max_steps_per_turn is None
+    assert cfg.loop.max_tokens_per_turn is None
+    assert cfg.loop.step_timeout_s is None
+    assert cfg.loop.turn_wall_clock_s is None
+    assert cfg.loop.max_compile_retries is None
     # every check the design doc promises is present
     ids = {c.id for c in cfg.verify.checks}
     assert ids == {
@@ -110,10 +117,17 @@ def test_strict_overlay_only_tightens():
         f"{REPO_ROOT}/configs/default.yaml",
         overlays=[f"{REPO_ROOT}/configs/policies/strict.yaml"],
     )
-    # strictly smaller budgets
-    assert strict.loop.max_steps_per_turn < base.loop.max_steps_per_turn
-    assert strict.loop.max_tokens_per_turn < base.loop.max_tokens_per_turn
-    assert strict.loop.turn_wall_clock_s < base.loop.turn_wall_clock_s
+    # The overlay is where ceilings are put back: the base is unbounded, so
+    # "strict < base" would compare against None. Assert what actually matters —
+    # every dimension ends up bounded, and bounded *tightly*.
+    for name in ("max_steps_per_turn", "max_tokens_per_turn",
+                 "step_timeout_s", "turn_wall_clock_s", "max_compile_retries"):
+        base_value = getattr(base.loop, name)
+        strict_value = getattr(strict.loop, name)
+        assert base_value is None, f"{name}: base should impose no ceiling"
+        assert strict_value is not None, f"{name}: strict must bound every dimension"
+    assert strict.loop.max_steps_per_turn <= 12
+    assert strict.loop.turn_wall_clock_s <= 240.0
     assert strict.llm.temperature <= base.llm.temperature
     # and never loosens anything security-relevant
     assert strict.policy.allow_privileged is False

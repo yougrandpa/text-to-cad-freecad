@@ -993,6 +993,33 @@ function wire() {
   });
 }
 
+// A turn with no work ceiling can legitimately run for a long time, and nothing
+// else on screen would explain why. Show it, and say what still protects the
+// loop against a wedged call — "unbounded" here means "no work quota", not
+// "no timeouts at all", and conflating the two would be its own confusion.
+function renderBudgetBadge(budget) {
+  const el = $("budgetBadge");
+  if (!el) return;
+  if (!budget || !budget.unbounded || !budget.unbounded.length) {
+    el.hidden = true;
+    return;
+  }
+  el.hidden = false;
+  el.textContent = budget.unbounded_all ? "无预算上限" : `${budget.unbounded.length} 项无上限`;
+  const bounded = Object.entries(budget.limits || {})
+    .filter(([, v]) => v !== null && v !== undefined)
+    .map(([k, v]) => `  ${k} = ${v}`);
+  el.title = [
+    budget.unbounded_all
+      ? "本次运行不限制步数、token、时长与编译重试。"
+      : "以下维度未设上限：" + budget.unbounded.join(", "),
+    "",
+    "回合只会在三种情况下结束：Gate 全绿、FAILED、或等待审批。",
+    "单次请求的活性仍受保护：LLM 请求超时、工具自身超时、worker 传输超时。",
+    ...(bounded.length ? ["", "在效的上限：", ...bounded] : []),
+  ].join("\n");
+}
+
 async function boot() {
   wire();
   setStatus("", "连接中…");
@@ -1000,6 +1027,7 @@ async function boot() {
     const health = await api("/health");
     state.apiOk = true;
     state.dataDir = health.data_dir || null;
+    renderBudgetBadge(health.budget);
     const alive = health.worker_alive;
     if (alive === null || alive === undefined) {
       // The service stack is built lazily on the first real request, so "not

@@ -20,6 +20,10 @@
     <span id="modelChipText">读取中…</span>
   </button>
   <div class="grow"></div>
+  <!-- Shown only when the turn has no work ceiling. An unbounded turn is a
+       deliberate setting, not a secret: it changes how long you should expect
+       to wait, and nothing else on screen would tell you. -->
+  <span class="badge-unbounded" id="budgetBadge" hidden></span>
   <div class="status" id="status">
     <span class="dot" id="statusDot"></span>
     <span id="statusText">未连接</span>

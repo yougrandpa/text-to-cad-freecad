@@ -30,11 +30,21 @@ llm:
   max_retries: 2
 
 loop:
-  max_steps_per_turn: 24
-  max_tokens_per_turn: 180000
-  step_timeout_s: 120.0
-  turn_wall_clock_s: 600.0
-  max_compile_retries: 3
+  # No work ceiling: `null` means "do not cap this dimension".
+  #
+  # A turn therefore ends only on a green Gate, FAILED, or AWAITING_APPROVAL.
+  # Liveness is still enforced — and independently of these — by the per-request
+  # timeouts: `llm.request_timeout_s` above, each tool's own `timeout_s`, and
+  # the worker transport timeout. Those stop a *wedged* call; these stop *work*,
+  # which is a policy choice and is left open deliberately.
+  #
+  # To put ceilings back, either set a number here or load the bounded profile:
+  #   load_config(configs/default.yaml, overlays=[configs/policies/strict.yaml])
+  max_steps_per_turn: null
+  max_tokens_per_turn: null
+  step_timeout_s: null
+  turn_wall_clock_s: null
+  max_compile_retries: null
   default_strategy: "loop_until_done"
   strategies:
     loop_until_done: {}

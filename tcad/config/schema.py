@@ -74,13 +74,20 @@ class StrategiesConfig(BaseModel):
 
 
 class LoopConfig(BaseModel):
-    """The three safeties live here (design §4.1 item 3)."""
+    """The safeties live here (design §4.1 item 3).
 
-    max_steps_per_turn: int = 24
-    max_tokens_per_turn: int = 180_000
-    step_timeout_s: float = 120.0
-    turn_wall_clock_s: float = 600.0
-    max_compile_retries: int = 3
+    Each ceiling is optional and defaults to ``None`` = *no ceiling*, so a turn
+    is bounded by liveness (per-request transport timeouts) rather than by a
+    work quota. Set any of them to re-impose a cap; ``configs/policies/strict.yaml``
+    is a ready-made bounded profile. See :mod:`tcad.loop.budget` for why ``None``
+    rather than a magic large number.
+    """
+
+    max_steps_per_turn: int | None = None
+    max_tokens_per_turn: int | None = None
+    step_timeout_s: float | None = None
+    turn_wall_clock_s: float | None = None
+    max_compile_retries: int | None = None
     default_strategy: Literal[
         "loop_until_done", "fork_join", "adversarial"
     ] = "loop_until_done"

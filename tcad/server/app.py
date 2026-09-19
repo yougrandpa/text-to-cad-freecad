@@ -320,10 +320,23 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
         looks like "my configuration was lost" when it is really "this is a
         different server". Reporting the directory makes the instance
         identifiable at a glance.
+
+        ``budget`` reports which work ceilings are in force. A turn with none set
+        can run for a long time; that is a deliberate choice, but it should be
+        visible rather than something you infer from a turn that never ends.
         """
-        out: dict = {"status": "ok", "worker_alive": None, "data_dir": None}
+        out: dict = {"status": "ok", "worker_alive": None, "data_dir": None, "budget": None}
         try:
-            out["data_dir"] = str(cfg().storage.data_dir)
+            c = cfg()
+            out["data_dir"] = str(c.storage.data_dir)
+            from tcad.loop.budget import LIMIT_NAMES
+
+            limits = {n: getattr(c.loop, n) for n in LIMIT_NAMES}
+            out["budget"] = {
+                "limits": limits,
+                "unbounded": [n for n, v in limits.items() if v is None],
+                "unbounded_all": all(v is None for v in limits.values()),
+            }
         except Exception:  # noqa: BLE001 — liveness must not depend on this
             pass
         if app.state.services is not None:
@@ -498,7 +511,8 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
                 pass
 
         async def gen() -> AsyncIterator[str]:
-            tap = HookEventTap(s.hooks)
+            original_hooks = s.hooks
+            tap = HookEventTap(original_hooks)
             s.hooks = tap  # the engine reads services.hooks at call time
 
             agent_events: deque[dict] = deque()
@@ -523,13 +537,18 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
                 except Exception:  # noqa: BLE001
                     pass
 
-            remember_user()
-
-            yield _sse(
-                "start",
-                {"model_id": req.model_id, "kind": req.kind.value, "thread_id": thread_id},
-            )
+            task: asyncio.Task | None = None
             try:
+                remember_user()
+                # Inside the try on purpose. A client that disconnects between
+                # the `start` frame and the first progress frame raises
+                # GeneratorExit right here, and a generator closed before its
+                # `try` is entered never runs its `finally` — which is how the
+                # turn task below would leak.
+                yield _sse(
+                    "start",
+                    {"model_id": req.model_id, "kind": req.kind.value, "thread_id": thread_id},
+                )
                 task = asyncio.create_task(run_turn_request(s, req, observer=observe))
                 while not task.done():
                     for ev in tap.drain():
@@ -547,6 +566,19 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
                 raise
             except Exception as exc:  # noqa: BLE001
                 yield _sse("error", {"type": type(exc).__name__, "message": str(exc)})
+            finally:
+                # A turn must not outlive the client that asked for it.
+                #
+                # This mattered less when the loop had a step ceiling: a turn
+                # orphaned by a closed tab would hit `max_steps_per_turn` and
+                # die on its own. With no work ceiling it simply keeps running —
+                # spending tokens and holding the worker — for as long as nobody
+                # stops it, and nothing else here would.
+                if task is not None and not task.done():
+                    task.cancel()
+                # Unwrap the tap. Assigning it permanently would nest one tap per
+                # request, so a long-lived server would accumulate them.
+                s.hooks = original_hooks
 
         return StreamingResponse(
             gen(),
@@ -718,7 +750,6 @@ async def run_turn_request(services: Any, req: ChatRequest, observer: Any = None
     text and tool calls as they happen (``(kind, data) -> None``).
     """
     from tcad.core.types import Thread
-    from tcad.loop.budget import BudgetLimits
     from tcad.loop.engine import LoopEngine, UserMessage
     from tcad.tools.base import build_default_registry
 
@@ -730,16 +761,29 @@ async def run_turn_request(services: Any, req: ChatRequest, observer: Any = None
     registry = build_default_registry(
         services, enable_privileged=bool(cfg.policy.allow_privileged)
     )
-    limits = BudgetLimits(
-        max_steps_per_turn=int(cfg.loop.max_steps_per_turn),
-        max_tokens_per_turn=int(cfg.loop.max_tokens_per_turn),
-        step_timeout_s=float(cfg.loop.step_timeout_s),
-        turn_wall_clock_s=float(cfg.loop.turn_wall_clock_s),
-        max_compile_retries=int(cfg.loop.max_compile_retries),
-    )
+    limits = budget_limits_from_config(cfg)
     engine = LoopEngine(services, registry, limits, loop_cfg, observer=observer)
     return await engine.run_turn(
         thread, UserMessage(kind=req.kind, text=req.text, privileged_requested=req.privileged_requested)
+    )
+
+
+def budget_limits_from_config(cfg: Config):
+    """Map the configured loop ceilings onto ``BudgetLimits``.
+
+    Extracted so the ``None`` handling is directly testable. Every ceiling is
+    optional and ``None`` means "no cap", so the values must be passed through
+    verbatim — the previous ``int(...)``/``float(...)`` coercion raised
+    ``TypeError`` on ``None``, which is the shipped default.
+    """
+    from tcad.loop.budget import BudgetLimits
+
+    return BudgetLimits(
+        max_steps_per_turn=cfg.loop.max_steps_per_turn,
+        max_tokens_per_turn=cfg.loop.max_tokens_per_turn,
+        step_timeout_s=cfg.loop.step_timeout_s,
+        turn_wall_clock_s=cfg.loop.turn_wall_clock_s,
+        max_compile_retries=cfg.loop.max_compile_retries,
     )
 
 

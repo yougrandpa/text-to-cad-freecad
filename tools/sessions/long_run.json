@@ -1,0 +1,948 @@
+{
+ "_comment": "A deliberately long session: 22 read-only calibration steps followed by the normal 4-step bracket build. 27 steps in total, which the previous default `max_steps_per_turn: 24` would have cut short with EXHAUSTED. Used to prove on the real path that the shipped configuration no longer caps a turn. Generated, not hand-written.",
+ "replies": [
+  {
+   "text": "（校准 1/22）确认当前几何与记录一致。",
+   "calls": [
+    {
+     "name": "ir_digest",
+     "args": {
+      "model_id": "longcap"
+     }
+    }
+   ]
+  },
+  {
+   "text": "（校准 2/22）确认当前几何与记录一致。",
+   "calls": [
+    {
+     "name": "ir_digest",
+     "args": {
+      "model_id": "longcap"
+     }
+    }
+   ]
+  },
+  {
+   "text": "（校准 3/22）确认当前几何与记录一致。",
+   "calls": [
+    {
+     "name": "ir_digest",
+     "args": {
+      "model_id": "longcap"
+     }
+    }
+   ]
+  },
+  {
+   "text": "（校准 4/22）确认当前几何与记录一致。",
+   "calls": [
+    {
+     "name": "ir_digest",
+     "args": {
+      "model_id": "longcap"
+     }
+    }
+   ]
+  },
+  {
+   "text": "（校准 5/22）确认当前几何与记录一致。",
+   "calls": [
+    {
+     "name": "ir_digest",
+     "args": {
+      "model_id": "longcap"
+     }
+    }
+   ]
+  },
+  {
+   "text": "（校准 6/22）确认当前几何与记录一致。",
+   "calls": [
+    {
+     "name": "ir_digest",
+     "args": {
+      "model_id": "longcap"
+     }
+    }
+   ]
+  },
+  {
+   "text": "（校准 7/22）确认当前几何与记录一致。",
+   "calls": [
+    {
+     "name": "ir_digest",
+     "args": {
+      "model_id": "longcap"
+     }
+    }
+   ]
+  },
+  {
+   "text": "（校准 8/22）确认当前几何与记录一致。",
+   "calls": [
+    {
+     "name": "ir_digest",
+     "args": {
+      "model_id": "longcap"
+     }
+    }
+   ]
+  },
+  {
+   "text": "（校准 9/22）确认当前几何与记录一致。",
+   "calls": [
+    {
+     "name": "ir_digest",
+     "args": {
+      "model_id": "longcap"
+     }
+    }
+   ]
+  },
+  {
+   "text": "（校准 10/22）确认当前几何与记录一致。",
+   "calls": [
+    {
+     "name": "ir_digest",
+     "args": {
+      "model_id": "longcap"
+     }
+    }
+   ]
+  },
+  {
+   "text": "（校准 11/22）确认当前几何与记录一致。",
+   "calls": [
+    {
+     "name": "ir_digest",
+     "args": {
+      "model_id": "longcap"
+     }
+    }
+   ]
+  },
+  {
+   "text": "（校准 12/22）确认当前几何与记录一致。",
+   "calls": [
+    {
+     "name": "ir_digest",
+     "args": {
+      "model_id": "longcap"
+     }
+    }
+   ]
+  },
+  {
+   "text": "（校准 13/22）确认当前几何与记录一致。",
+   "calls": [
+    {
+     "name": "ir_digest",
+     "args": {
+      "model_id": "longcap"
+     }
+    }
+   ]
+  },
+  {
+   "text": "（校准 14/22）确认当前几何与记录一致。",
+   "calls": [
+    {
+     "name": "ir_digest",
+     "args": {
+      "model_id": "longcap"
+     }
+    }
+   ]
+  },
+  {
+   "text": "（校准 15/22）确认当前几何与记录一致。",
+   "calls": [
+    {
+     "name": "ir_digest",
+     "args": {
+      "model_id": "longcap"
+     }
+    }
+   ]
+  },
+  {
+   "text": "（校准 16/22）确认当前几何与记录一致。",
+   "calls": [
+    {
+     "name": "ir_digest",
+     "args": {
+      "model_id": "longcap"
+     }
+    }
+   ]
+  },
+  {
+   "text": "（校准 17/22）确认当前几何与记录一致。",
+   "calls": [
+    {
+     "name": "ir_digest",
+     "args": {
+      "model_id": "longcap"
+     }
+    }
+   ]
+  },
+  {
+   "text": "（校准 18/22）确认当前几何与记录一致。",
+   "calls": [
+    {
+     "name": "ir_digest",
+     "args": {
+      "model_id": "longcap"
+     }
+    }
+   ]
+  },
+  {
+   "text": "（校准 19/22）确认当前几何与记录一致。",
+   "calls": [
+    {
+     "name": "ir_digest",
+     "args": {
+      "model_id": "longcap"
+     }
+    }
+   ]
+  },
+  {
+   "text": "（校准 20/22）确认当前几何与记录一致。",
+   "calls": [
+    {
+     "name": "ir_digest",
+     "args": {
+      "model_id": "longcap"
+     }
+    }
+   ]
+  },
+  {
+   "text": "（校准 21/22）确认当前几何与记录一致。",
+   "calls": [
+    {
+     "name": "ir_digest",
+     "args": {
+      "model_id": "longcap"
+     }
+    }
+   ]
+  },
+  {
+   "text": "（校准 22/22）确认当前几何与记录一致。",
+   "calls": [
+    {
+     "name": "ir_digest",
+     "args": {
+      "model_id": "longcap"
+     }
+    }
+   ]
+  },
+  {
+   "text": "先建底板轮廓（80×50）并拉伸 8mm，同时把你的要求记为可校验的约束 —— Gate 需要判据才判得了卷。",
+   "calls": [
+    {
+     "name": "ir_list_features",
+     "args": {}
+    },
+    {
+     "name": "ir_patch",
+     "args": {
+      "base_version": "current",
+      "summary": "add the 80x50 base plate outline, pad it 8mm, and record the stated requirements",
+      "ops": [
+       {
+        "op": "add_sketch",
+        "reason": "the base plate outline: 80 wide, 50 deep, on the XY plane",
+        "payload": {
+         "id": "sk_base",
+         "name": "base_outline",
+         "plane": {
+          "kind": "origin_plane",
+          "plane": "XY"
+         },
+         "geometry": [
+          {
+           "id": "g0",
+           "kind": "line",
+           "points": [
+            {
+             "x": 0,
+             "y": 0,
+             "z": 0
+            },
+            {
+             "x": 80,
+             "y": 0,
+             "z": 0
+            }
+           ]
+          },
+          {
+           "id": "g1",
+           "kind": "line",
+           "points": [
+            {
+             "x": 80,
+             "y": 0,
+             "z": 0
+            },
+            {
+             "x": 80,
+             "y": 50,
+             "z": 0
+            }
+           ]
+          },
+          {
+           "id": "g2",
+           "kind": "line",
+           "points": [
+            {
+             "x": 80,
+             "y": 50,
+             "z": 0
+            },
+            {
+             "x": 0,
+             "y": 50,
+             "z": 0
+            }
+           ]
+          },
+          {
+           "id": "g3",
+           "kind": "line",
+           "points": [
+            {
+             "x": 0,
+             "y": 50,
+             "z": 0
+            },
+            {
+             "x": 0,
+             "y": 0,
+             "z": 0
+            }
+           ]
+          }
+         ],
+         "constraints": [
+          {
+           "type": "Coincident",
+           "refs": [
+            0,
+            1,
+            -1,
+            1
+           ]
+          },
+          {
+           "type": "Coincident",
+           "refs": [
+            0,
+            2,
+            1,
+            1
+           ]
+          },
+          {
+           "type": "Coincident",
+           "refs": [
+            1,
+            2,
+            2,
+            1
+           ]
+          },
+          {
+           "type": "Coincident",
+           "refs": [
+            2,
+            2,
+            3,
+            1
+           ]
+          },
+          {
+           "type": "Coincident",
+           "refs": [
+            3,
+            2,
+            0,
+            1
+           ]
+          },
+          {
+           "type": "Horizontal",
+           "refs": [
+            0
+           ]
+          },
+          {
+           "type": "Horizontal",
+           "refs": [
+            2
+           ]
+          },
+          {
+           "type": "Vertical",
+           "refs": [
+            1
+           ]
+          },
+          {
+           "type": "Vertical",
+           "refs": [
+            3
+           ]
+          },
+          {
+           "type": "DistanceX",
+           "refs": [
+            0,
+            2
+           ],
+           "value": 80.0
+          },
+          {
+           "type": "DistanceY",
+           "refs": [
+            1,
+            2
+           ],
+           "value": 50.0
+          }
+         ]
+        }
+       },
+       {
+        "op": "add_feature",
+        "reason": "extrude the outline 8mm into a plate",
+        "payload": {
+         "id": "ft_pad",
+         "name": "base_pad",
+         "op": "pad",
+         "profile_sketch": "sk_base",
+         "params": {
+          "length": 8.0,
+          "type": "Length"
+         }
+        }
+       },
+       {
+        "op": "update_requirement",
+        "reason": "record the stated size and volume so the Gate can check them independently",
+        "payload": {
+         "raw_text": "安装底板 80x50x8，中间 40x20 通槽",
+         "constraints": [
+          {
+           "kind": "bbox",
+           "value": {
+            "x": 80.0,
+            "y": 50.0,
+            "z": 8.0
+           },
+           "tol": 0.05,
+           "source_text": "底板 80x50x8",
+           "confirmed": true
+          },
+          {
+           "kind": "volume",
+           "value": 25600.0,
+           "tol": 0.01,
+           "source_text": "80x50x8 减去 40x20 通槽",
+           "confirmed": true
+          }
+         ]
+        }
+       }
+      ]
+     }
+    },
+    {
+     "name": "ir_commit",
+     "args": {
+      "message": "base plate, no slot yet"
+     }
+    }
+   ]
+  },
+  {
+   "text": "底板已通过 Gate。现在在中间开一个 40×20 的通槽。",
+   "calls": [
+    {
+     "name": "ir_digest",
+     "args": {}
+    },
+    {
+     "name": "ir_patch",
+     "args": {
+      "base_version": "current",
+      "summary": "cut the 40x20 through slot, centred in the plate",
+      "ops": [
+       {
+        "op": "add_sketch",
+        "reason": "slot outline: 40 x 20 rectangle centred in the 80 x 50 plate, so it spans x 20..60 and y 15..35; positioned with absolute coordinates rather than bound to the origin",
+        "payload": {
+         "id": "sk_slot",
+         "name": "slot_outline",
+         "plane": {
+          "kind": "origin_plane",
+          "plane": "XY"
+         },
+         "geometry": [
+          {
+           "id": "g0",
+           "kind": "line",
+           "points": [
+            {
+             "x": 20,
+             "y": 15,
+             "z": 0
+            },
+            {
+             "x": 60,
+             "y": 15,
+             "z": 0
+            }
+           ]
+          },
+          {
+           "id": "g1",
+           "kind": "line",
+           "points": [
+            {
+             "x": 60,
+             "y": 15,
+             "z": 0
+            },
+            {
+             "x": 60,
+             "y": 35,
+             "z": 0
+            }
+           ]
+          },
+          {
+           "id": "g2",
+           "kind": "line",
+           "points": [
+            {
+             "x": 60,
+             "y": 35,
+             "z": 0
+            },
+            {
+             "x": 20,
+             "y": 35,
+             "z": 0
+            }
+           ]
+          },
+          {
+           "id": "g3",
+           "kind": "line",
+           "points": [
+            {
+             "x": 20,
+             "y": 35,
+             "z": 0
+            },
+            {
+             "x": 20,
+             "y": 15,
+             "z": 0
+            }
+           ]
+          }
+         ],
+         "constraints": [
+          {
+           "type": "Coincident",
+           "refs": [
+            0,
+            2,
+            1,
+            1
+           ]
+          },
+          {
+           "type": "Coincident",
+           "refs": [
+            1,
+            2,
+            2,
+            1
+           ]
+          },
+          {
+           "type": "Coincident",
+           "refs": [
+            2,
+            2,
+            3,
+            1
+           ]
+          },
+          {
+           "type": "Coincident",
+           "refs": [
+            3,
+            2,
+            0,
+            1
+           ]
+          },
+          {
+           "type": "Horizontal",
+           "refs": [
+            0
+           ]
+          },
+          {
+           "type": "Horizontal",
+           "refs": [
+            2
+           ]
+          },
+          {
+           "type": "Vertical",
+           "refs": [
+            1
+           ]
+          },
+          {
+           "type": "Vertical",
+           "refs": [
+            3
+           ]
+          },
+          {
+           "type": "DistanceX",
+           "refs": [
+            0,
+            1
+           ],
+           "value": 20.0
+          },
+          {
+           "type": "DistanceY",
+           "refs": [
+            0,
+            1
+           ],
+           "value": 15.0
+          },
+          {
+           "type": "DistanceX",
+           "refs": [
+            0,
+            2
+           ],
+           "value": 60.0
+          },
+          {
+           "type": "DistanceY",
+           "refs": [
+            1,
+            2
+           ],
+           "value": 35.0
+          }
+         ]
+        }
+       },
+       {
+        "op": "add_feature",
+        "reason": "cut the slot all the way through the 8mm plate",
+        "payload": {
+         "id": "ft_slot",
+         "name": "centre_slot",
+         "op": "pocket",
+         "profile_sketch": "sk_slot",
+         "params": {
+          "length": 8.0,
+          "type": "ThroughAll"
+         },
+         "refs": [
+          "ft_pad"
+         ]
+        }
+       }
+      ]
+     }
+    },
+    {
+     "name": "ir_commit",
+     "args": {
+      "message": "add the through slot"
+     }
+    },
+    {
+     "name": "geo_view",
+     "args": {
+      "views": [
+       "iso",
+       "top"
+      ],
+      "style": "flat_edges"
+     }
+    }
+   ]
+  },
+  {
+   "text": "槽草图报了约束冲突。根因是我把矩形放在绝对坐标上标注、又叠加了水平/垂直约束，等于过约束。重建为「草图自身原点上的矩形」，再用 offset 整体定位。",
+   "calls": [
+    {
+     "name": "ir_patch",
+     "args": {
+      "base_version": "current",
+      "summary": "rebuild the slot profile around its own origin and position it with the sketch offset",
+      "ops": [
+       {
+        "op": "update_sketch",
+        "target_id": "sk_slot",
+        "reason": "the previous constraint set was over-determined: dimensioning both a line's start point and a line's end point in absolute coordinates conflicted with the rectangle's horizontal/vertical constraints. Rebuilt with the proven recipe — model the 40x20 profile around the sketch's OWN origin (bind one line's start to the sketch origin, then dimension the opposite endpoints), and place it in the plate with the sketch offset instead of absolute dimensions.",
+        "payload": {
+         "geometry": [
+          {
+           "id": "g0",
+           "kind": "line",
+           "points": [
+            {
+             "x": 0,
+             "y": 0,
+             "z": 0
+            },
+            {
+             "x": 40,
+             "y": 0,
+             "z": 0
+            }
+           ]
+          },
+          {
+           "id": "g1",
+           "kind": "line",
+           "points": [
+            {
+             "x": 40,
+             "y": 0,
+             "z": 0
+            },
+            {
+             "x": 40,
+             "y": 20,
+             "z": 0
+            }
+           ]
+          },
+          {
+           "id": "g2",
+           "kind": "line",
+           "points": [
+            {
+             "x": 40,
+             "y": 20,
+             "z": 0
+            },
+            {
+             "x": 0,
+             "y": 20,
+             "z": 0
+            }
+           ]
+          },
+          {
+           "id": "g3",
+           "kind": "line",
+           "points": [
+            {
+             "x": 0,
+             "y": 20,
+             "z": 0
+            },
+            {
+             "x": 0,
+             "y": 0,
+             "z": 0
+            }
+           ]
+          }
+         ],
+         "constraints": [
+          {
+           "type": "Coincident",
+           "refs": [
+            0,
+            1,
+            -1,
+            1
+           ]
+          },
+          {
+           "type": "Coincident",
+           "refs": [
+            0,
+            2,
+            1,
+            1
+           ]
+          },
+          {
+           "type": "Coincident",
+           "refs": [
+            1,
+            2,
+            2,
+            1
+           ]
+          },
+          {
+           "type": "Coincident",
+           "refs": [
+            2,
+            2,
+            3,
+            1
+           ]
+          },
+          {
+           "type": "Coincident",
+           "refs": [
+            3,
+            2,
+            0,
+            1
+           ]
+          },
+          {
+           "type": "Horizontal",
+           "refs": [
+            0
+           ]
+          },
+          {
+           "type": "Horizontal",
+           "refs": [
+            2
+           ]
+          },
+          {
+           "type": "Vertical",
+           "refs": [
+            1
+           ]
+          },
+          {
+           "type": "Vertical",
+           "refs": [
+            3
+           ]
+          },
+          {
+           "type": "DistanceX",
+           "refs": [
+            0,
+            2
+           ],
+           "value": 40.0
+          },
+          {
+           "type": "DistanceY",
+           "refs": [
+            1,
+            2
+           ],
+           "value": 20.0
+          }
+         ],
+         "offset": {
+          "x": 20.0,
+          "y": 15.0,
+          "z": 0.0
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "name": "ir_commit",
+     "args": {
+      "message": "slot profile rebuilt around its own origin"
+     }
+    },
+    {
+     "name": "ir_digest",
+     "args": {}
+    },
+    {
+     "name": "geo_view",
+     "args": {
+      "views": [
+       "iso",
+       "top"
+      ],
+      "style": "flat_edges"
+     }
+    }
+   ]
+  },
+  {
+   "text": "槽没有切出来。根因是 PartDesign::Pocket 默认朝轮廓法向的反方向切，而底板在 +Z 侧，所以切进了空气。翻转方向重切。",
+   "calls": [
+    {
+     "name": "ir_patch",
+     "args": {
+      "base_version": "current",
+      "summary": "reverse the pocket direction so it cuts into the plate",
+      "ops": [
+       {
+        "op": "update_feature",
+        "target_id": "ft_slot",
+        "reason": "the pocket removed nothing. It was built on the XY plane, whose normal is +Z, and PartDesign::Pocket cuts in the direction OPPOSITE the profile normal by default (-Z). The plate sits on the +Z side of that plane, so the cut went into empty space and the feature silently did nothing. Reversing it makes the cut go up through the 8mm plate.",
+        "payload": {
+         "params": {
+          "reversed": true,
+          "type": "ThroughAll"
+         }
+        }
+       }
+      ]
+     }
+    },
+    {
+     "name": "ir_commit",
+     "args": {
+      "message": "slot now cuts through the plate"
+     }
+    },
+    {
+     "name": "ir_digest",
+     "args": {}
+    },
+    {
+     "name": "geo_view",
+     "args": {
+      "views": [
+       "iso",
+       "top"
+      ],
+      "style": "flat_edges"
+     }
+    }
+   ]
+  },
+  {
+   "text": "完成：80×50×8 安装底板，中间 40×20 通槽。体积 25600 mm³，两个草图全约束，STEP 往返一致。",
+   "calls": []
+  }
+ ]
+}

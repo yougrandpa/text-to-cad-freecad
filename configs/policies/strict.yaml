@@ -1,7 +1,12 @@
-# Strict policy overlay. Use it when running against untrusted input, or on a
-# machine where you cannot afford a runaway turn.
+# Strict policy overlay: the bounded profile. Use it against untrusted input, or
+# on a machine where you cannot afford a runaway turn.
 #
 #   load_config(configs/default.yaml, overlays=[configs/policies/strict.yaml])
+#
+# The base config imposes no work ceiling on a turn (see the `loop:` comment in
+# configs/default.yaml); this overlay is where ceilings are put back. It sets
+# every one of them — an overlay that bounded steps but left the wall clock null
+# would look stricter than it is.
 #
 # Nothing here enables anything — overlays can only tighten. That is intentional:
 # a security overlay that loosens would be worse than useless.
@@ -9,6 +14,7 @@
 loop:
   max_steps_per_turn: 12
   max_tokens_per_turn: 60000
+  step_timeout_s: 120.0
   turn_wall_clock_s: 240.0
   max_compile_retries: 1
 

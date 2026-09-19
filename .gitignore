@@ -29,7 +29,7 @@ tools/probes/*.step
 tools/probes/*.stl
 tools/probes/*.FCStd
 
-# 本地运行期工作区：data/ 是默认数据目录，.tcad_* 是临时/演示用的
-.tcad_hand/
-.tcad_demo/
-.tcad_live*/
+# 本地运行期工作区：data/ 是默认数据目录；.tcad_* 是临时/演示/验证用的。
+# 用通配而不是逐条列举 —— 验证时随手起的目录名不会提前知道，漏一个就会把
+# 运行期数据提交进仓库。
+.tcad_*/
