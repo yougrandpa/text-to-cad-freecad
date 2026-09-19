@@ -21,6 +21,8 @@ Endpoints
 ``POST /approvals/{approval_id}``       grant or deny one
 ``GET  /threads``                       conversation list
 ``GET  /threads/{id}/messages``         conversation history
+``GET  /sessions``                      conversations + the part each one built
+``POST /sessions``                      start one: a thread and its model together
 ``GET  /settings/providers``            provider presets (never credentials)
 ``GET  /settings/llm``                  the settings in force (key masked)
 ``PUT  /settings/llm``                  change them; hot-swaps a live stack
@@ -28,7 +30,14 @@ Endpoints
 ``POST /settings/llm/probe``            can this configuration actually talk?
 ``GET  /ui``                            the single-page front end
 
-Two design notes that are easy to get wrong:
+Three design notes that are easy to get wrong:
+
+**A session is a conversation *and* the one part it builds.** They are created
+together and the binding never changes: a conversation's whole history is about
+the part it was building, so repointing it at another part would make its own
+transcript a lie. ``/sessions`` therefore reports the model and its IR version
+alongside the title — a client switching sessions has to switch the viewport,
+artefacts and inspector too, not just the transcript.
 
 **`/render` is not the model's eye.** The harness's own view of geometry is the
 `geo_view` *tool*, which is gated on declared visual checkpoints because every
@@ -46,6 +55,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from collections import deque
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -67,6 +77,18 @@ class CreateModelRequest(BaseModel):
     model_id: str
     raw_requirement: str = ""
     """The user's own words. Kept on the IR so requirement provenance survives."""
+
+
+class CreateSessionRequest(BaseModel):
+    """Start a conversation. Everything is optional.
+
+    ``model_id`` exists for tests and for a caller that wants a predictable
+    handle; the normal case lets the server mint one so two clicks of "new"
+    cannot collide.
+    """
+
+    model_id: str | None = None
+    raw_requirement: str = ""
 
 
 class ChatRequest(BaseModel):
@@ -158,6 +180,31 @@ def _resolve_artifact(root: Path, file_path: str) -> Path:
     return target
 
 
+def _model_exists(store: Any, model_id: str) -> bool:
+    """Whether this model already exists, for whoever is about to create one.
+
+    Extracted because two endpoints need the same answer and must not drift:
+    ``POST /models`` and ``POST /sessions`` both seed a model, and seeding over an
+    existing one **silently resets it to v0** — the part is gone, with no error
+    anywhere. One implementation, one meaning of "exists".
+
+    Prefers ``exists()`` when the store offers it (cheap, no JSON parsing). The
+    ``load()`` fallback keeps a store that only implements the older surface
+    working, and treats *unreadable* as existing: a corrupt model is not a free
+    slot, and reporting it as one would overwrite whatever is salvageable.
+    """
+    probe = getattr(store, "exists", None)
+    if callable(probe):
+        return bool(probe(model_id))
+    try:
+        store.load(model_id)
+        return True
+    except FileNotFoundError:
+        return False
+    except Exception:  # noqa: BLE001 — an unreadable model is not a free slot
+        return True
+
+
 def artifact_url_for(path: str | None) -> str | None:
     """Map an on-disk artefact path to the URL that serves it.
 
@@ -246,6 +293,7 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
     app.state.services = services
     app.state.config = config
     app.state.session_db = None
+    app.state.light_store = None
 
     def svc() -> Any:
         if app.state.services is None:
@@ -285,6 +333,22 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
                 cfg().storage.sqlite_file(), check_same_thread=False
             )
         return app.state.session_db
+
+    def session_store():
+        """The store used for read-only session listing.
+
+        Prefers a live stack when one exists — it is authoritative, and it is
+        what an injected store (tests, embedding) replaces. Only when nothing has
+        been built yet does this fall back to a bare store, so that listing
+        sessions does not start FreeCAD just to read version numbers.
+        """
+        if app.state.services is not None:
+            return app.state.services.store
+        if app.state.light_store is None:
+            from tcad.core.wiring import StoreAdapter
+
+            app.state.light_store = StoreAdapter(cfg().storage.data_dir)
+        return app.state.light_store
 
     def current_llm():
         """The LLM settings actually in force.
@@ -352,14 +416,7 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
         # Probe existence by loading, not by `current_version() > 0`: version 0 is
         # a perfectly valid seeded model and comparing against 0 would let a
         # second create silently overwrite it.
-        try:
-            s.store.load(req.model_id)
-            exists = True
-        except FileNotFoundError:
-            exists = False
-        except Exception:  # noqa: BLE001 — an unreadable model is not a free slot
-            exists = True
-        if exists:
+        if _model_exists(s.store, req.model_id):
             raise HTTPException(409, f"model {req.model_id!r} already exists")
 
         ir = IrDocument(
@@ -500,12 +557,28 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
     async def chat(req: ChatRequest) -> StreamingResponse:
         s = svc()
         thread_id = req.thread_id or f"th-{req.model_id}"
+        # The model is a property of the conversation, not of the request.
+        #
+        # Continuing an existing session must run against the model that session
+        # has been building. If the client disagrees we refuse loudly: silently
+        # honouring either side produces the worst outcome — a turn that edits one
+        # part while the viewport shows another, which reads as corrupted output
+        # rather than as a caller mistake.
+        existing = db().get_thread(thread_id)
+        if existing is not None and existing.model_id != req.model_id:
+            raise HTTPException(
+                409,
+                f"thread {thread_id!r} builds model {existing.model_id!r}, "
+                f"but this request targets {req.model_id!r}. A session cannot be "
+                f"repointed at another model; open or create a session for it instead.",
+            )
+        model_id = existing.model_id if existing is not None else req.model_id
 
         def remember_user() -> None:
             try:
                 d = db()
                 if d.get_thread(thread_id) is None:
-                    d.create_thread(req.model_id, thread_id=thread_id)
+                    d.create_thread(model_id, thread_id=thread_id)
                 d.add_message(thread_id, "user", req.text)
             except Exception:  # noqa: BLE001 — history is a convenience, not a guarantee
                 pass
@@ -547,9 +620,11 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
                 # turn task below would leak.
                 yield _sse(
                     "start",
-                    {"model_id": req.model_id, "kind": req.kind.value, "thread_id": thread_id},
+                    {"model_id": model_id, "kind": req.kind.value, "thread_id": thread_id},
                 )
-                task = asyncio.create_task(run_turn_request(s, req, observer=observe))
+                task = asyncio.create_task(
+                    run_turn_request(s, req, observer=observe, model_id=model_id)
+                )
                 while not task.done():
                     for ev in tap.drain():
                         yield _sse("progress", ev)
@@ -720,6 +795,82 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
     def list_thread_messages(thread_id: str, limit: int = 500) -> dict:
         return {"thread_id": thread_id, "messages": db().list_messages(thread_id, limit)}
 
+    # ── sessions ──────────────────────────────────────────────────────────
+    #
+    # A "session" is one conversation bound to one model. The two are created
+    # together and the binding never changes: a conversation's whole history is
+    # about the part it was building, so repointing it at another part would make
+    # its own transcript a lie. Switching sessions therefore switches both.
+
+    @app.get("/sessions")
+    def list_sessions(limit: int = 100) -> dict:
+        """Conversations, most recently active first.
+
+        Carries enough to render the list *and* to switch to an entry: the UI
+        needs `model_id` to know what to load, and `ir_version` to tell a session
+        that produced geometry from one that never got anywhere.
+        """
+        store = session_store()
+        sessions = []
+        for row in db().list_threads(limit=limit):
+            try:
+                version = store.latest_version(row["model_id"])
+            except Exception:  # noqa: BLE001 — an unreadable model must not hide the list
+                version = None
+            sessions.append({**row, "ir_version": version})
+        return {"sessions": sessions}
+
+    @app.post("/sessions")
+    def create_session(req: CreateSessionRequest) -> dict:
+        """Start a new conversation, creating its model at the same time.
+
+        Both at once because a session without a model is a usable-but-broken
+        state: the user could type into it and every turn would fail on a missing
+        store. The model id is derived from the session id so the pairing is
+        obvious on disk.
+
+        Seeding an empty IR needs no geometry kernel, so this does not build the
+        service stack — FreeCAD starts when the first turn actually needs it.
+
+        The model is created **before** the thread on purpose. Creating the
+        thread first and failing to seed the model would leave a conversation
+        that looks usable and fails on its first turn; this order leaves at worst
+        an orphan model, which is inert and harmless.
+
+        A ``model_id`` that already exists is refused rather than reused. Seeding
+        is not idempotent — it rewrites ``v0.json`` — so accepting one would let a
+        single request wipe a part the user had been building, and the response
+        would still say ``ir_version: 0`` as if that were new. Continuing an
+        existing conversation is a ``POST /chat`` with its ``thread_id``; it does
+        not need a fresh model.
+        """
+        store = session_store()
+        model_id = req.model_id or f"part-{uuid.uuid4().hex[:8]}"
+        if _model_exists(store, model_id):
+            raise HTTPException(
+                409,
+                f"model {model_id!r} already exists; creating a session for it would "
+                f"reset it to v0 and destroy the part. Send to the existing session "
+                f"instead (POST /chat with its thread_id), or omit model_id to let "
+                f"the server mint a new one.",
+            )
+        ir = IrDocument(
+            model_id=model_id,
+            version=0,
+            requirements=RequirementSpec(raw_text=req.raw_requirement),
+        )
+        try:
+            store.create(model_id, ir)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(500, f"could not create model {model_id!r}: {exc}") from exc
+
+        thread = db().create_thread(model_id=model_id, context_state="full")
+        return {
+            "thread_id": thread.thread_id,
+            "model_id": thread.model_id,
+            "ir_version": 0,
+        }
+
     # ── front end ─────────────────────────────────────────────────────────
 
     # Mounted only when the files are present, so the API stays usable (and the
@@ -743,11 +894,18 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
 # ══════════════════════════════════════════════════════════════════════════
 
 
-async def run_turn_request(services: Any, req: ChatRequest, observer: Any = None):
+async def run_turn_request(
+    services: Any, req: ChatRequest, observer: Any = None, model_id: str | None = None
+):
     """Build the engine and run a single turn. Returns a ``TurnResult``.
 
     ``observer`` is forwarded to the engine so a front end can see the model's
     text and tool calls as they happen (``(kind, data) -> None``).
+
+    ``model_id`` overrides ``req.model_id``. The caller resolves it from the
+    session, because a conversation's model is recorded once and must not be
+    re-decided per request — a turn that ran against the wrong model would edit
+    one part while the viewport showed another.
     """
     from tcad.core.types import Thread
     from tcad.loop.engine import LoopEngine, UserMessage
@@ -755,8 +913,9 @@ async def run_turn_request(services: Any, req: ChatRequest, observer: Any = None
 
     cfg = services.config
     loop_cfg = services.loop_config
+    target_model = model_id or req.model_id
     thread = Thread(
-        thread_id=req.thread_id or f"th-{req.model_id}", model_id=req.model_id
+        thread_id=req.thread_id or f"th-{target_model}", model_id=target_model
     )
     registry = build_default_registry(
         services, enable_privileged=bool(cfg.policy.allow_privileged)

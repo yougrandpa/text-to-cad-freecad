@@ -16,8 +16,16 @@
 const $ = (id) => document.getElementById(id);
 
 const state = {
-  modelId: new URLSearchParams(location.search).get("model") || "part",
+  // A session is one conversation bound to one model. `modelId` is derived from
+  // the selected session rather than defaulting to a fixed name, so two sessions
+  // cannot accidentally share a part.
+  modelId: null,
   threadId: null,
+  sessions: [],
+  sessionsLoaded: false,
+  // A failed list read is not the same as an empty list, and the sidebar must
+  // not render one as the other.
+  sessionsError: null,
   version: null,
   view: "iso",
   busy: false,
@@ -26,6 +34,12 @@ const state = {
   lastGate: null,
   settings: null,
   providers: [],
+  sidebarHidden: false,
+  abort: null,
+  // The turn currently allowed to write to the screen. Identity, not a flag: a
+  // switched-away turn is invalidated by replacing this object, which is what
+  // makes its already-scheduled callbacks no-ops.
+  turn: null,
 };
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -120,8 +134,10 @@ let liveStartedAt = 0;
 
 const stream = () => $("stream");
 function append(node) {
+  // Hidden, not removed: switching to an empty session has to be able to bring
+  // the welcome panel back, and a deleted node cannot be restored.
   const welcome = $("welcome");
-  if (welcome) welcome.remove();
+  if (welcome) welcome.hidden = true;
   stream().append(node);
   // Re-appending an existing node moves it, which is how the live row stays last.
   if (liveRow && node !== liveRow) stream().append(liveRow);
@@ -193,11 +209,12 @@ async function api(path, options = {}) {
  * is parsed by hand. Frames are `event: <name>\ndata: <json>` separated by a
  * blank line — the same framing `_sse()` writes on the server.
  */
-async function streamChat(body, handlers) {
+async function streamChat(body, handlers, signal) {
   const res = await fetch("/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
   if (!res.ok || !res.body) {
     throw new Error(`${res.status} ${await res.text()}`);
@@ -422,6 +439,17 @@ async function handleResult(result) {
   await refreshInspector();
   loadArtifacts();
   loadView(false);
+
+  // The turn changed this session's title, age and message count, and possibly
+  // its IR version. Refresh the list so the sidebar describes the state it is
+  // actually in — a stale "新会话" on a session that just built a part is the
+  // kind of small lie that erodes trust in the whole panel.
+  await loadSessions();
+
+  // ...and the header of the conversation you are looking at. The list and the
+  // header read the same field; leaving the header behind means the first turn
+  // of every session is titled "新会话" until you navigate away and back.
+  setSessionHeader(state.sessions.find((s) => s.thread_id === state.threadId) || null);
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -443,11 +471,36 @@ async function send(text) {
   const trimmed = text.trim();
   if (!trimmed || state.busy) return;
 
+  // Nothing selected means nothing to send into. Create the session first, and
+  // before the message is rendered: switching sessions clears the stream, which
+  // would otherwise erase the bubble we had just appended.
+  if (!state.threadId) {
+    try {
+      await newSession({ announce: false });
+    } catch (err) {
+      pushNotice("bad", `无法新建会话：${err.message}`);
+      return;
+    }
+  }
+
+  // This turn's identity, captured before anything can switch sessions.
+  //
+  // Switching nulls `state.turn`, which is what turns every callback below into
+  // a no-op. Without it an abandoned request keeps writing to whatever session
+  // replaced it: its frames render there, its AbortError is reported as "已离开
+  // 该会话" *inside a conversation you never left*, and its `finally` deletes the
+  // live row of the turn that is still running.
+  const turn = { controller: new AbortController() };
+  state.turn = turn;
+  const current = () => state.turn === turn;
+
   state.busy = true;
+  state.abort = turn.controller;
   assistantBody = null;
   $("sendBtn").disabled = true;
   setStatus("busy", "生成中…");
   setLive("正在请求模型…");
+  renderSessions();   // the sidebar marks this session as running
   pushUser(trimmed);
 
   try {
@@ -456,24 +509,42 @@ async function send(text) {
       { model_id: state.modelId, text: trimmed, thread_id: state.threadId },
       {
         start: (d) => {
+          if (!current()) return;
           state.threadId = d.thread_id;
           $("threadLabel").textContent = d.thread_id;
         },
-        agent: handleAgentEvent,
-        progress: pushHookLine,
-        error: (d) => pushNotice("bad", `${d.type}: ${d.message}`),
-        result: handleResult,
+        agent: (d) => { if (current()) handleAgentEvent(d); },
+        progress: (ev) => { if (current()) pushHookLine(ev); },
+        error: (d) => { if (current()) pushNotice("bad", `${d.type}: ${d.message}`); },
+        result: (r) => { if (current()) handleResult(r); },
       },
+      turn.controller.signal,
     );
     // The terminal status is set by handleResult, from the engine's verdict —
     // not here, where we would only know that the stream ended.
   } catch (err) {
-    pushNotice("bad", `请求失败：${err.message}`);
-    setStatus("bad", "出错");
+    // A superseded turn has no screen to write to: `switchSession` already
+    // replaced the transcript and set the status line. This branch is exactly
+    // where a deliberate switch used to be reported as a fault.
+    if (!current()) return;
+    if (err.name === "AbortError") {
+      pushNotice("warn", "已离开该会话，本次回合已中断。");
+    } else {
+      pushNotice("bad", `请求失败：${err.message}`);
+      setStatus("bad", "出错");
+    }
   } finally {
-    state.busy = false;
-    clearLive();
-    $("sendBtn").disabled = false;
+    // Only the turn that still owns the screen may clean up after itself.
+    // Otherwise it disarms the *next* turn's abort controller and re-enables the
+    // send button while that turn is mid-flight.
+    if (current()) {
+      state.turn = null;
+      state.busy = false;
+      state.abort = null;
+      clearLive();
+      $("sendBtn").disabled = false;
+      renderSessions();
+    }
   }
 }
 
@@ -535,6 +606,11 @@ async function loadView(force) {
   placeholder.hidden = false;
   img.hidden = true;
 
+  if (!state.modelId) {
+    placeholder.textContent = "还没有会话 —— 左侧点「＋ 新建」，或直接在下面描述一个零件";
+    return;
+  }
+
   const url = `/models/${encodeURIComponent(state.modelId)}/render` +
     `?view=${state.view}&force=${force ? "true" : "false"}&t=${Date.now()}`;
   try {
@@ -546,7 +622,15 @@ async function loadView(force) {
     if (!res.ok) {
       let detail = res.statusText;
       try { detail = (await res.json()).detail || detail; } catch { /* ignore */ }
-      placeholder.textContent = `无法渲染：${detail}`;
+      // A model that exists but has no solid yet is the *normal* state of a fresh
+      // session — the IR is empty, so there is nothing to tessellate. Reporting
+      // that as "无法渲染" turns the ordinary empty state into an error, which is
+      // exactly what you see right after switching to a session you have not
+      // used yet.
+      const empty = res.status === 422 && /no solid/i.test(detail);
+      placeholder.textContent = empty
+        ? "还没有几何 —— 在左边描述一个零件，Gate 通过后这里会出现渲染图"
+        : `无法渲染：${detail}`;
       return;
     }
     const blob = await res.blob();
@@ -559,6 +643,10 @@ async function loadView(force) {
 async function loadArtifacts() {
   const bar = $("fileBar");
   bar.replaceChildren();
+  if (!state.modelId) {
+    bar.append(el("span", { class: "muted small", text: "未选择会话" }));
+    return;
+  }
   try {
     const body = await api(
       `/models/${encodeURIComponent(state.modelId)}/artifacts` +
@@ -595,7 +683,7 @@ async function refreshInspector() {
 
   const model = el("div", { class: "sec" }, [
     el("h4", { text: "模型" }),
-    kv("model_id", state.modelId),
+    kv("model_id", state.modelId ?? "—"),
     kv("IR 版本", state.version ?? "—"),
     state.threadId ? kv("thread", state.threadId) : null,
   ]);
@@ -624,6 +712,10 @@ async function refreshInspector() {
   }
 
   // ── the IR feature chain ───────────────────────────────────────────────
+  if (!state.modelId) {
+    box.append(el("div", { class: "muted small", text: "未选择会话。" }));
+    return;
+  }
   try {
     const ir = await api(`/models/${encodeURIComponent(state.modelId)}/ir`);
     state.version = ir.version;
@@ -959,8 +1051,27 @@ function wire() {
   $("refreshView").addEventListener("click", () => loadView(true));
   $("refreshInspect").addEventListener("click", refreshInspector);
   $("clearBtn").addEventListener("click", () => {
-    stream().replaceChildren();
-    pushNotice("info", "显示已清空。已保存的会话仍在服务端（GET /threads）。");
+    // Clears the *view*, not the session. The transcript is still on disk and
+    // comes back by switching away and back.
+    resetStream(false);
+    pushNotice("info", "显示已清空（不影响已保存的会话）。切走再切回即可重新回放。");
+  });
+
+  $("newSessionBtn").addEventListener("click", async () => {
+    try {
+      await newSession();
+    } catch (err) {
+      pushNotice("bad", `新建会话失败：${err.message}`);
+    }
+  });
+  $("sidebarToggle").addEventListener("click", () => toggleSidebar());
+
+  // ⌘/Ctrl+K for a new session, the shortcut people already have in their fingers.
+  document.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+      e.preventDefault();
+      $("newSessionBtn").click();
+    }
   });
 
   $("settingsBtn").addEventListener("click", openSettings);
@@ -1020,8 +1131,235 @@ function renderBudgetBadge(budget) {
   ].join("\n");
 }
 
+// ══════════════════════════════════════════════════════════════════════════
+// sessions
+//
+// A session is one conversation bound to one model. Switching therefore has to
+// move *two* things — the transcript and everything derived from the model: the
+// viewport, the artefacts, the feature chain, the IR version. Updating only the
+// transcript would leave the panes describing the part you just navigated away
+// from, which is worse than not switching at all: the numbers on screen would
+// look authoritative and belong to something else.
+// ══════════════════════════════════════════════════════════════════════════
+
+function sessionTitle(s) {
+  const raw = (s.title || "").trim() || (s.last_message || "").trim();
+  if (raw) return raw.length > 60 ? raw.slice(0, 60) + "…" : raw;
+  return s.messages ? `会话 ${s.thread_id.slice(-6)}` : "新会话";
+}
+
+/** Coarse relative time. Exactness is not the point — ordering is, and the
+ *  ordering is already carried by the list itself. */
+function formatWhen(iso) {
+  if (!iso) return "";
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return "";
+  const seconds = Math.max(0, (Date.now() - then) / 1000);
+  if (seconds < 60) return "刚刚";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时前`;
+  if (seconds < 86400 * 30) return `${Math.floor(seconds / 86400)} 天前`;
+  return new Date(then).toLocaleDateString();
+}
+
+function renderSessions() {
+  const box = $("sessionList");
+  box.replaceChildren();
+
+  // A read that failed is not an empty list. Rendering it as "还没有会话" tells
+  // you your conversations are gone when in fact the request never landed —
+  // exactly the kind of failure that looks like a normal state and therefore
+  // gets believed. Say what happened, and offer the retry.
+  if (state.sessionsError) {
+    box.append(el("div", { class: "session-empty" }, [
+      el("div", { class: "s-error", text: `会话列表读取失败：${state.sessionsError}` }),
+      el("div", {
+        class: "s-error-hint",
+        text: "这个服务可能不是 tcad，或进程过旧没有 /sessions 接口。",
+      }),
+      el("button", {
+        class: "mini",
+        type: "button",
+        text: "重试",
+        onclick: () => loadSessions(),
+      }),
+    ]));
+    return;
+  }
+
+  if (!state.sessions.length) {
+    box.append(el("div", {
+      class: "session-empty",
+      text: "还没有会话 —— 点「＋ 新建」开始一个。",
+    }));
+    return;
+  }
+
+  for (const s of state.sessions) {
+    const active = s.thread_id === state.threadId;
+    // A running turn lives in exactly one session, and while the list is what
+    // you are looking at that is where you need to see it.
+    const running = active && state.busy;
+    const meta = el("div", { class: "s-meta" }, [
+      el("span", { text: formatWhen(s.last_at) }),
+      el("span", { text: `${s.messages} 条` }),
+      // The one piece of session metadata that is about the *part* rather than
+      // the conversation: whether this session ever produced geometry.
+      el("span", {
+        class: s.ir_version === null ? "" : "s-geom",
+        text: s.ir_version === null ? "无几何" : `v${s.ir_version}`,
+      }),
+      running ? el("span", { class: "s-running", text: "进行中" }) : null,
+    ]);
+    box.append(el("button", {
+      class: `session-item${active ? " active" : ""}`,
+      type: "button",
+      title: `${s.thread_id}\nmodel ${s.model_id}`,
+      onclick: () => switchSession(s.thread_id),
+    }, [
+      el("div", { class: "s-title", text: sessionTitle(s) }),
+      meta,
+    ]));
+  }
+}
+
+async function loadSessions() {
+  try {
+    const { sessions } = await api("/sessions");
+    state.sessions = sessions || [];
+    state.sessionsLoaded = true;
+    state.sessionsError = null;
+  } catch (err) {
+    state.sessionsLoaded = false;
+    state.sessionsError = err.message;
+  }
+  renderSessions();
+  return state.sessions;
+}
+
+function resetStream(showWelcome) {
+  const box = $("stream");
+  for (const child of [...box.children]) {
+    if (child.id !== "welcome") child.remove();
+  }
+  const welcome = $("welcome");
+  if (welcome) welcome.hidden = !showWelcome;
+  clearLive();
+}
+
+function setSessionHeader(session) {
+  $("threadLabel").textContent = session ? session.thread_id : "";
+  const title = $("sessionTitle");
+  if (title) title.textContent = session ? sessionTitle(session) : "会话";
+}
+
+function syncUrl() {
+  const params = new URLSearchParams();
+  if (state.threadId) params.set("thread", state.threadId);
+  const qs = params.toString();
+  history.replaceState(null, "", qs ? `?${qs}` : location.pathname);
+}
+
+/** Load one session: transcript, then everything derived from its model. */
+async function switchSession(threadId, { force = false } = {}) {
+  if (!threadId) return;
+  if (threadId === state.threadId && !force) return;
+
+  // A turn may be mid-flight. Its frames would otherwise keep arriving and
+  // render into the session we are switching *to*. Aborting the fetch closes
+  // the SSE stream, and the server treats a client that hung up as a reason to
+  // cancel the turn — so this also stops the work rather than orphaning it.
+  //
+  // Nulling `state.turn` is what makes the abandoned request's callbacks stop
+  // mattering; `abort()` alone only stops the *network*, and the generator's
+  // catch/finally still run afterwards.
+  if (state.busy && state.abort) {
+    state.turn = null;
+    state.abort.abort();
+    state.busy = false;
+    state.abort = null;
+    $("sendBtn").disabled = false;
+    setStatus("", "已切换会话");
+  }
+
+  const session = state.sessions.find((s) => s.thread_id === threadId) || null;
+
+  state.threadId = threadId;
+  state.modelId = session ? session.model_id : null;
+  state.version = session && session.ir_version !== null ? session.ir_version : null;
+  // The previous session's verdict belongs to the previous session. Leaving it
+  // on screen next to a different part would be actively misleading.
+  state.lastGate = null;
+
+  setSessionHeader(session);
+  syncUrl();
+  renderSessions();
+
+  resetStream(true);
+  await loadMessages(threadId);
+
+  refreshInspector();
+  loadArtifacts();
+  // Cache-first, NOT forced. `/render` caches on disk keyed by
+  // (version, view, style, size) — and the version comes from this model's own
+  // IR — so a cached image can never belong to another session. Forcing here
+  // would re-tessellate and re-rasterise on every switch for no gain.
+  loadView(false);
+}
+
+/** Replay a session's transcript.
+ *
+ * Tool calls and Gate reports are not persisted, so a resumed session shows the
+ * conversation but not the process that produced it — the panel says so rather
+ * than silently appearing to have lost it.
+ */
+async function loadMessages(threadId) {
+  let messages = [];
+  try {
+    ({ messages } = await api(`/threads/${encodeURIComponent(threadId)}/messages`));
+  } catch (err) {
+    pushNotice("bad", `读取会话记录失败：${err.message}`);
+    return;
+  }
+  if (!messages.length) return;
+
+  const welcome = $("welcome");
+  if (welcome) welcome.hidden = true;
+  for (const message of messages) {
+    if (message.role === "user") {
+      pushUser(message.content);
+    } else if (message.role === "assistant") {
+      assistantBody = null;             // each stored message is its own bubble
+      pushAssistantText(message.content);
+    }
+  }
+  append(el("div", {
+    class: "muted small",
+    text: `已回放 ${messages.length} 条历史消息。工具调用与 Gate 报告的完整过程只在当次流式输出中显示，` +
+          "在此处继续对话即可接着做。",
+  }));
+}
+
+async function newSession({ announce = true } = {}) {
+  const created = await api("/sessions", { method: "POST", body: JSON.stringify({}) });
+  await loadSessions();
+  await switchSession(created.thread_id, { force: true });
+  if (announce) pushNotice("info", "已新建会话。直接描述你要的零件即可。");
+  $("input").focus();
+  return created;
+}
+
+function toggleSidebar(force) {
+  state.sidebarHidden = force === undefined ? !state.sidebarHidden : force;
+  $("layout").classList.toggle("no-sidebar", state.sidebarHidden);
+  try { localStorage.setItem("tcad.sidebarHidden", state.sidebarHidden ? "1" : "0"); } catch { /* private mode */ }
+}
+
 async function boot() {
   wire();
+  // Restore the collapse state before the first paint of the list, so the
+  // sidebar does not flash open for people who keep it closed.
+  try { toggleSidebar(localStorage.getItem("tcad.sidebarHidden") === "1"); } catch { /* private mode */ }
   setStatus("", "连接中…");
   try {
     const health = await api("/health");
@@ -1057,46 +1395,20 @@ async function boot() {
     }
   } catch { /* settings are optional for the shell to render */ }
 
-  try {
-    const ir = await api(`/models/${encodeURIComponent(state.modelId)}/ir`);
-    state.version = ir.version;
-  } catch { state.version = null; }
-
-  await loadHistory();
-  refreshInspector();
-  loadView(false);
-}
-
-/** Replay any stored conversation for this model.
- *
- * Without this, a page reload looks like the work was lost — the messages are
- * on disk the whole time (that is what `/threads` is for), they just were not
- * being read back.
- */
-async function loadHistory() {
-  try {
-    const { threads } = await api(`/threads?model_id=${encodeURIComponent(state.modelId)}`);
-    if (!threads.length) return;
-    state.threadId = threads[0].thread_id;
-    $("threadLabel").textContent = state.threadId;
-    const { messages } = await api(`/threads/${state.threadId}/messages`);
-    if (!messages.length) return;
-    for (const message of messages) {
-      if (message.role === "user") {
-        pushUser(message.content);
-      } else if (message.role === "assistant") {
-        assistantBody = null;             // each stored message is its own bubble
-        pushAssistantText(message.content);
-      }
-    }
-    const welcome = $("welcome");
-    if (welcome) welcome.remove();
-    append(el("div", {
-      class: "muted small",
-      text: `已回放 ${messages.length} 条历史消息（thread ${state.threadId}）` +
-            "。工具调用与 Gate 报告的完整过程只在当次流式输出中显示。",
-    }));
-  } catch { /* no history is a perfectly normal state */ }
+  // Which session to open: the one in the URL (so a reload or a shared link
+  // lands where you left off), else the most recently used one.
+  const wanted = new URLSearchParams(location.search).get("thread");
+  await loadSessions();
+  const target = state.sessions.find((s) => s.thread_id === wanted) || state.sessions[0];
+  if (target) {
+    await switchSession(target.thread_id, { force: true });
+  } else {
+    // No sessions at all. Deliberately not auto-creating one: an empty list is
+    // an accurate description, and the first message creates the session then.
+    setSessionHeader(null);
+    resetStream(true);
+    renderSessions();
+  }
 }
 
 boot();

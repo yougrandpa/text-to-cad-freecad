@@ -127,12 +127,93 @@ button:disabled, input:disabled, textarea:disabled, select:disabled {
 
 .layout {
   display: grid;
-  grid-template-columns: minmax(300px, 26fr) minmax(320px, 40fr) minmax(260px, 26fr);
+  /* Four tracks. The sidebar is narrow and yields first; the viewport keeps the
+     largest share because it is the only pane that is useless when squeezed. */
+  grid-template-columns: minmax(184px, 16fr) minmax(272px, 25fr) minmax(300px, 37fr) minmax(240px, 22fr);
   gap: 1px;
   background: var(--line-soft);
   flex: 1 1 auto;
   min-height: 0;
 }
+
+/* Collapsed: drop the sidebar track entirely rather than leaving an empty one.
+   Three explicit tracks, matching the pre-sidebar layout. */
+.layout.no-sidebar {
+  grid-template-columns: minmax(300px, 26fr) minmax(320px, 40fr) minmax(260px, 26fr);
+}
+.layout.no-sidebar .col-sessions { display: none; }
+
+/* ── session list ───────────────────────────────────────────────────────── */
+
+.session-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.session-empty {
+  padding: 14px 10px;
+  color: var(--fg-faint);
+  font-size: 12px;
+  line-height: 1.7;
+}
+/* A list read that failed. Distinct from the empty state on purpose: "还没有会话"
+   and "读不到会话" mean opposite things about whether your work still exists. */
+.session-empty .s-error {
+  color: var(--bad);
+  word-break: break-word;
+}
+.session-empty .s-error-hint { margin: 4px 0 9px; }
+.session-empty button { margin-top: 2px; }
+
+.session-item {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: var(--fg-dim);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12.5px;
+}
+.session-item:hover { background: var(--panel-2); border-color: var(--line); }
+.session-item.active {
+  background: var(--panel-2);
+  border-color: var(--accent-dim);
+  color: var(--fg);
+}
+.session-item .s-title {
+  color: inherit;
+  line-height: 1.5;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.session-item .s-meta {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--fg-faint);
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+.session-item .s-geom {
+  color: var(--accent);
+}
+/* A running turn outlives a click only until the switch aborts it; say so
+   rather than letting the frames quietly start landing in another session. */
+.session-item .s-running { color: var(--warn); }
+.new-session { white-space: nowrap; }
 
 /* ── API unavailable banner ───────────────────────────────────────────────
    Shown when the page is not being served by the tcad app itself (opened from

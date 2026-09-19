@@ -291,24 +291,38 @@ class SessionDB:
     # ── conversation history ────────────────────────────────────────────────────
 
     def list_threads(self, model_id: str | None = None, limit: int = 100) -> list[dict]:
-        """Threads, newest first — what a UI needs to offer "resume"."""
-        if model_id:
-            rows = self._fetchall(
-                "SELECT t.thread_id, t.model_id, t.created_at, t.context_state, "
-                "  (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.thread_id) AS messages, "
-                "  (SELECT content FROM messages m WHERE m.thread_id=t.thread_id "
-                "     ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1) AS last_message "
-                "FROM threads t WHERE t.model_id=? "
-                "ORDER BY t.created_at DESC LIMIT ?",
-                (model_id, int(limit)))
-        else:
-            rows = self._fetchall(
-                "SELECT t.thread_id, t.model_id, t.created_at, t.context_state, "
-                "  (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.thread_id) AS messages, "
-                "  (SELECT content FROM messages m WHERE m.thread_id=t.thread_id "
-                "     ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1) AS last_message "
-                "FROM threads t ORDER BY t.created_at DESC LIMIT ?",
-                (int(limit),))
+        """Threads, most recently active first — what a UI needs to offer "resume".
+
+        Ordering is by last activity — the newest message, or the thread's own
+        creation time when it has none yet. That second case is what makes "new
+        session" land at the top of the list rather than below every conversation
+        that has ever been used, which is where an empty thread would otherwise
+        sort.
+
+        Sorting on the ISO-8601 text is exact rather than approximate: ``_now()``
+        writes UTC with six-digit microseconds and a fixed ``+00:00`` offset, so
+        every value is the same width and lexicographic order equals time order.
+
+        ``title`` is the first user message: a thread has no name column, and
+        asking someone to name a conversation before it has any content is
+        backwards. ``last_message`` is the preview. Both come back whole;
+        truncation is a display decision.
+        """
+        where = "WHERE t.model_id=?" if model_id else ""
+        params: tuple = (model_id, int(limit)) if model_id else (int(limit),)
+        rows = self._fetchall(
+            "SELECT t.thread_id, t.model_id, t.created_at, t.context_state, "
+            "  (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.thread_id) AS messages, "
+            "  (SELECT m.content FROM messages m WHERE m.thread_id=t.thread_id "
+            "     ORDER BY m.rowid DESC LIMIT 1) AS last_message, "
+            "  (SELECT m.content FROM messages m WHERE m.thread_id=t.thread_id "
+            "     AND m.role='user' ORDER BY m.rowid ASC LIMIT 1) AS title, "
+            "  COALESCE((SELECT MAX(m.created_at) FROM messages m "
+            "              WHERE m.thread_id=t.thread_id), t.created_at) AS last_at "
+            f"FROM threads t {where} "
+            "ORDER BY last_at DESC, t.rowid DESC LIMIT ?",
+            params,
+        )
         return [dict(r) for r in rows]
 
     def list_messages(self, thread_id: str, limit: int = 500) -> list[dict]:

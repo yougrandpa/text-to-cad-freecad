@@ -404,3 +404,209 @@ def test_the_key_box_never_reads_as_empty():
     body = js.split("async function openSettings", 1)[1].split("function settingsPatch", 1)[0]
     assert "apiKeyInput" in body
     assert "placeholder" in body, "空输入框需要 placeholder 说明「已保存，留空不改」"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# the session list
+#
+# The failure mode worth guarding is not "the list is missing" — that is visible
+# immediately. It is switching the *conversation* while leaving the viewport,
+# artefacts and inspector describing the part you navigated away from. Those
+# panes look authoritative either way, so a stale one is worse than an empty one.
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def test_the_session_sidebar_exists_and_can_be_toggled():
+    html = (UI_DIR / "index.html").read_text(encoding="utf-8")
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    css = (UI_DIR / "styles.css").read_text(encoding="utf-8")
+
+    assert 'id="sessionPane"' in html
+    assert 'id="sessionList"' in html
+    assert 'id="newSessionBtn"' in html
+    assert 'id="sidebarToggle"' in html
+    # Collapsing must remove the grid track, not just hide the contents —
+    # otherwise the pane's width stays reserved and nothing is gained.
+    assert ".layout.no-sidebar .col-sessions" in css
+    assert "grid-template-columns" in css
+    assert "no-sidebar" in js
+
+
+def test_switching_a_session_updates_the_model_and_every_derived_pane():
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    body = js.split("async function switchSession", 1)[1].split("async function loadMessages", 1)[0]
+
+    assert "state.modelId" in body, "切换会话没有改变当前模型"
+    for call in ("refreshInspector()", "loadArtifacts()", "loadView("):
+        assert call in body, f"切换会话后没有刷新 {call}"
+
+
+def test_switching_sessions_clears_the_previous_verdict():
+    """The Gate report belongs to the session it was produced for. Carrying it
+    across would put another part's verdict next to this one's geometry."""
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    body = js.split("async function switchSession", 1)[1].split("async function loadMessages", 1)[0]
+    assert "state.lastGate = null" in body
+
+
+def test_switching_aborts_an_in_flight_turn():
+    """Otherwise the old session's frames keep arriving and render into the new
+    one. Aborting also tells the server to cancel the turn, so the work stops
+    rather than being orphaned."""
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    body = js.split("async function switchSession", 1)[1].split("async function loadMessages", 1)[0]
+    assert "state.abort" in body and ".abort()" in body
+    # ...and the resulting AbortError is not reported as a failure.
+    send_body = js.split("async function send", 1)[1].split("function handleAgentEvent", 1)[0]
+    assert "AbortError" in send_body, "切换导致的中断会被当成请求失败报出来"
+
+
+def test_a_first_message_creates_the_session_before_rendering_the_message():
+    """Switching sessions clears the stream, so creating it afterwards would
+    erase the bubble that was just appended."""
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    body = js.split("async function send", 1)[1].split("function handleAgentEvent", 1)[0]
+    assert "newSession" in body, "没有会话时直接发送会写到「没有模型的」虚空里"
+    assert body.index("newSession") < body.index("pushUser"), (
+        "必须先建会话再渲染消息，否则切换会把刚加的消息清掉"
+    )
+
+
+def test_the_session_list_is_rendered_from_data_not_hard_coded():
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    body = js.split("function renderSessions", 1)[1].split("async function loadSessions", 1)[0]
+    assert "state.sessions" in body
+    assert "s.thread_id" in body
+    # A session with no geometry has to be distinguishable from one at v0.
+    assert "ir_version" in body
+    assert "无几何" in body
+
+
+def test_the_url_carries_the_session_so_a_reload_returns_to_it():
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    assert 'params.set("thread"' in js
+    assert 'get("thread")' in js, "boot 没有读回 URL 里的会话"
+
+
+def test_the_turn_ending_refreshes_the_session_list():
+    """A session that just built a part must stop reading "新会话"."""
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    body = js.split("async function handleResult", 1)[1].split("async function ensureModel", 1)[0]
+    assert "loadSessions()" in body
+
+
+def test_clicking_clear_keeps_the_session():
+    """「清空视图」clears the display, not the conversation on disk."""
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    body = js.split('$("clearBtn").addEventListener', 1)[1].split("});", 1)[0]
+    assert "resetStream" in body
+    assert "GET /threads" not in body
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# switching sessions must not let the session you left keep writing
+#
+# `abort()` stops the *network*, not the JavaScript: the abandoned request's
+# frame handlers, its `catch` and its `finally` all still run. Un-guarded, they
+# render the old session's frames into the new one, report "已离开该会话" inside a
+# conversation you never left, delete the live row of the turn that is actually
+# running, and null the abort controller the next turn is holding.
+#
+# These are structural assertions over the source, which is what this suite can
+# do without a browser. The *behaviour* is verified in a real Chromium (see the
+# round's notes); this test pins the mechanism so it cannot be deleted by
+# accident.
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def test_a_switched_away_turn_cannot_write_into_the_new_session():
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    send_body = js.split("async function send", 1)[1].split("function handleAgentEvent", 1)[0]
+    switch_body = js.split("async function switchSession", 1)[1].split("async function loadMessages", 1)[0]
+
+    # The mechanism: the turn has an identity, and switching replaces it.
+    assert "state.turn = turn" in send_body
+    assert "const current = () => state.turn === turn" in send_body
+    assert "state.turn = null" in switch_body, "切走没有让旧回合失效"
+
+    # Every frame handler asks "am I still current?" before touching the screen.
+    handler_block = send_body.split("await streamChat(", 1)[1].split("turn.controller.signal", 1)[0]
+    entries = re.split(r"\n\s+(?=(?:start|agent|progress|error|result):)", handler_block)[1:]
+    assert len(entries) == 5, f"期望 5 个帧处理器，实际 {len(entries)}"
+    for entry in entries:
+        name = entry.strip().split(":", 1)[0]
+        assert "current()" in entry, f"{name} 处理器没有以回合身份为前置条件"
+
+    # The abort path writes text; the cleanup writes global state. Both are the
+    # places the old turn reached into the new session.
+    catch_body = send_body.split("} catch (err) {", 1)[1].split("} finally {", 1)[0]
+    assert "if (!current()) return;" in catch_body, "被切走的回合仍会往新会话写提示"
+    assert "已离开该会话" in catch_body, "提示不该消失，只是不该写进别的会话"
+
+    finally_body = send_body.split("} finally {", 1)[1]
+    assert "if (current())" in finally_body, "被切走的回合仍会清理全局状态"
+    for mutation in ('state.busy = false', 'state.abort = null', 'clearLive()',
+                     '$("sendBtn").disabled = false'):
+        assert mutation in finally_body
+
+
+def test_the_header_title_follows_the_session_after_a_turn():
+    """The sidebar and the header read the same field. Refreshing only the list
+    left the first turn of every session titled 新会话 in the header until you
+    navigated away and back."""
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    body = js.split("async function handleResult", 1)[1].split("async function ensureModel", 1)[0]
+    assert "await loadSessions()" in body
+    assert "setSessionHeader(" in body, "回合结束后标题没有跟着会话走"
+
+
+def test_a_failed_session_list_read_is_reported_not_shown_as_empty():
+    """「读不到会话」and「还没有会话」are opposite claims about whether your work
+    still exists. Rendering the first as the second is a lie you cannot see
+    through — the same class of defect as a barrier that reports PASS without
+    checking anything."""
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    body = js.split("function renderSessions", 1)[1].split("async function loadSessions", 1)[0]
+    assert "state.sessionsError" in body, "列表读取失败被当成空列表"
+    # The empty-state text is only reachable once the error branch has returned.
+    error_branch = body.split("state.sessionsError", 1)[1]
+    assert "return;" in error_branch.split("if (!state.sessions.length)", 1)[0]
+
+    load_body = js.split("async function loadSessions", 1)[1].split("function resetStream", 1)[0]
+    assert "state.sessionsError = null" in load_body, "一次成功后错误状态没有清掉"
+
+
+def test_switching_does_not_force_a_rerender():
+    """`/render` caches on disk keyed by (version, view, style, size), and the
+    version is this model's own IR version — so a cached image can never belong
+    to another session. Forcing on every switch re-tessellated the part for
+    nothing."""
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    body = js.split("async function switchSession", 1)[1].split("async function loadMessages", 1)[0]
+    assert "loadView(false)" in body
+    assert "loadView(true)" not in body, "切换会话仍在强制重渲染"
+
+
+def test_an_empty_session_reads_as_empty_not_as_a_render_failure():
+    """A model exists from the moment its session is created; it has no geometry
+    until the first turn. `/render` answers 422 `no solid to tessellate` for it,
+    and repeating that verbatim made a brand-new session look broken."""
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    body = js.split("async function loadView", 1)[1].split("async function loadArtifacts", 1)[0]
+    assert "no solid" in body
+    assert "还没有几何" in body, "空模型被渲染成一次渲染失败"
+
+
+def test_the_active_session_is_marked_while_a_turn_runs():
+    """`styles.css` had a `.s-running` rule nothing ever applied — a state you
+    cannot see. The sidebar is where you look to find a running turn."""
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    css = (UI_DIR / "styles.css").read_text(encoding="utf-8")
+    body = js.split("function renderSessions", 1)[1].split("async function loadSessions", 1)[0]
+    assert "s-running" in body, "styles.css 里的运行中样式没有任何代码会用"
+    assert "state.busy" in body
+    assert ".s-running" in css
+
+    send_body = js.split("async function send", 1)[1].split("function handleAgentEvent", 1)[0]
+    assert send_body.count("renderSessions()") >= 2, "开始与结束时都要刷新，否则标记不会消失"
+

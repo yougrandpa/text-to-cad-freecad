@@ -159,6 +159,18 @@ class StoreAdapter:
         except FileNotFoundError:
             return 0
 
+    def exists(self, model_id: str) -> bool:
+        """Whether a model with this id has ever been created."""
+        return self.ir_store.exists(model_id)
+
+    def latest_version(self, model_id: str) -> int | None:
+        """Latest version, or ``None`` when there is no such model.
+
+        The unambiguous counterpart to :meth:`current_version`. Prefer it
+        wherever the answer drives a decision rather than a filename.
+        """
+        return self.ir_store.latest_version(model_id)
+
     def apply_patch(self, model_id: str, patch: IrPatch):
         return self.ir_store.apply_patch(model_id, patch)
 

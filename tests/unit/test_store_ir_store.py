@@ -128,3 +128,40 @@ def test_load_missing_raises(tmp_path: Path):
     store = IrStore(tmp_path)
     with pytest.raises(FileNotFoundError):
         store.load("m")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# existence vs version 0
+#
+# The session list asks "does this thread's model exist, and at what version".
+# Answering with 0 conflates the two — and a freshly created model *is* at v0, so
+# the sentinel would be indistinguishable from the fact.
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def test_latest_version_is_none_for_a_model_that_was_never_created(tmp_path: Path):
+    store = IrStore(tmp_path)
+    assert store.exists("nope") is False
+    assert store.latest_version("nope") is None
+    assert store.latest_version("nope") != 0, "0 是合法版本号，不能当「不存在」的哨兵"
+
+
+def test_latest_version_distinguishes_v0_from_missing(tmp_path: Path):
+    store = IrStore(tmp_path)
+    store.create("m1", make_minimal_ir("m1", version=0))
+
+    assert store.exists("m1") is True
+    assert store.latest_version("m1") == 0          # exists, and happens to be v0
+    assert store.latest_version("other") is None    # does not exist
+
+
+def test_latest_version_follows_patches(tmp_path: Path):
+    store = IrStore(tmp_path)
+    store.create("m1", make_minimal_ir("m1", version=0))
+    assert store.latest_version("m1") == 0
+
+    for i in range(3):
+        store.apply_patch("m1", _add_hole_patch(i, f"hole{i}", 3 + i))
+
+    assert store.latest_version("m1") == 3
+    assert store.list_versions("m1") == [0, 1, 2, 3]

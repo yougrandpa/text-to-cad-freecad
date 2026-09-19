@@ -56,6 +56,14 @@ class FakeStore:
             raise FileNotFoundError(model_id)
         return int(self._docs[model_id].version)
 
+    def exists(self, model_id: str) -> bool:
+        return model_id in self._docs
+
+    def latest_version(self, model_id: str) -> int | None:
+        # None, never 0: a model at v0 exists, and the two must not be conflated.
+        doc = self._docs.get(model_id)
+        return int(doc.version) if doc is not None else None
+
     def load(self, model_id: str, version: int | None = None) -> IrDocument:
         if model_id not in self._docs:
             raise FileNotFoundError(model_id)

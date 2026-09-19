@@ -50,7 +50,7 @@
 - **唯一生产装配入口**：`tcad.core.wiring.build_services(config)`。它把各子系统「库形状」适配成 `tcad/tools/base.py` 里的窄 Protocol。
   不要在其他地方重新接线；`LoopEngine.build_default_services(cfg)` 只是转发（传 LoopConfig 会报错）。
 - 装一个完整栈不启 worker（测试用）：`build_services(cfg, start_worker=False)`
-- 跑全部测试：`.venv/bin/python -m pytest tests/ -q`（当前 **438 例全绿**）
+- 跑全部测试：`.venv/bin/python -m pytest tests/ -q`（当前 **476 例全绿**，约 12 秒）
 - 真端到端（打真 FreeCADCmd）：`pytest tests/contract/ -q`
 - CLI：`.venv/bin/python -m tcad.server.cli --data-dir <dir> new|chat|repl|approvals|approve ...`
 - **Web 界面**：`.venv/bin/python tools/serve.py --data-dir <dir> --port 8765` → http://127.0.0.1:8765/ui/
@@ -108,6 +108,21 @@
 - **SSE 帧里的枚举是「序列化值」不是「枚举名」**：pydantic 对 `(str, Enum)` 发出的是小写值 —— `"succeeded"` / `"exhausted"` / `"pass"` / `"blocking"`。前端任何以状态为键的表都必须用小写值，用 `SUCCEEDED` 这类枚举名**永远匹配不到**（曾导致 turn 结束屏幕上没有任何结论）。
 - **engine 的 observer 帧里 `images[].path` 是磁盘绝对路径**，浏览器用不了；server 侧必须经 `artifact_url_for()` 转成 `/models/{id}/artifacts/{file}?version={n}` 再发。
 - **不要用 `StoreAdapter.current_version()` 判断模型是否存在**：它对"模型不存在"和"模型处于 v0"**都返回 0**（而新建的模型就是 v0）。需要区分时用 `load()`；端点对未知模型必须 404 而不是 500。
+
+## 会话（列表 / 切换 / 恢复，改前端前先读）
+- **一个会话 = 一次对话 + 它唯一在造的零件**，创建时绑定、不再变更（`POST /chat` 对不符的 `model_id` 回 409）。
+  `GET /sessions` 因此回 `model_id` 与 `ir_version`：**切换会话必须同时换四件东西**（对话流 / 视图 / 产物 / 检查器 + URL `?thread=`），只换对话会让右边三个面板继续描述你已经离开的零件，而且看起来同样权威。
+- **`abort()` 只停网络，不停 JavaScript。** 被切走的回合，它的 SSE 帧回调、`catch`、`finally` **全都会继续跑**：
+  提示会写进新会话、`clearLive()` 会删掉新回合的 live 行、`state.abort = null` 会解掉新回合的 controller。
+  → `send()` 给回合一个**身份对象** `state.turn`，`switchSession` 置 `null`，所有回调以 `state.turn === turn` 为前置条件。
+  **任何"可作废的异步流程"都要有可比较的身份，不能只靠 abort。**
+- **`POST /sessions` 复用已存在的 `model_id` 必须拒绝（409）**：`IrStore.create()` 不是幂等的，它重写 `v0.json`
+  并照样回 `ir_version: 0`，等于一次点击抹掉用户正在做的零件。两个播种端点共用 `_model_exists()`。
+- **列表读取失败 ≠ 列表为空**：`state.sessionsError` 必须渲染成「读取失败 + 重试」，不能显示「还没有会话」。
+  这与 Gate「空检查不许报 PASS」是同一条纪律：**失败不许长得像正常状态**。
+- 视图切换用**缓存优先**（`loadView(false)`）：`/render` 的缓存键是 `(version, view, style, size)`，版本取自该模型自己的 IR，跨会话不可能串图。
+- **限制（未做）**：跨回合只延续 IR 几何，**不延续对话历史**（`_init_messages` 恒为 `[system, user]`）。
+  `session_db` 只存文本、不存工具调用与结果，直接回灌会让模型只看到自己的旁白。正解 = `tcad/context/assembler.py`（已存在、未接线）+ 持久化工具轨迹。
 
 ## 建模时最容易踩的两条（已写进 ir_patch 工具描述）
 1. **Pocket 方向**：草图在 XY（法向 +Z）时 `PartDesign::Pocket` **默认朝 -Z 切**，而底板在 +Z 侧 → 切进空气，特征什么都不做**却报告成功**（`ok=true`、`errors=[]`、体积不变）。要用 `"reversed": true`。

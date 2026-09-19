@@ -103,6 +103,29 @@ class IrStore:
                 out.append(int(stem))
         return sorted(out)
 
+    def exists(self, model_id: str) -> bool:
+        """True when this model has at least one stored snapshot.
+
+        Cheaper and safer than ``load()`` in a try/except when all you need is
+        presence — no JSON parsing, and no chance of catching a ``FileNotFoundError``
+        raised by something else inside the parse.
+        """
+        return bool(self.list_versions(model_id))
+
+    def latest_version(self, model_id: str) -> int | None:
+        """Highest stored version, or ``None`` when the model does not exist.
+
+        Deliberately returns ``None`` rather than ``0``:
+
+        ``0`` is a **valid version** — a freshly created model *is* at v0 — so a
+        sentinel of ``0`` cannot be told apart from a real one. That ambiguity
+        already cost a 500 in the render endpoint once, where a missing model was
+        read as "a model at v0" and then loaded. Use this when the question is
+        "does it exist and at what version".
+        """
+        versions = self.list_versions(model_id)
+        return max(versions) if versions else None
+
     # ── apply_patch (ordered: event first, then snapshot) ───────────────────────
 
     def apply_patch(self, model_id: str, patch: IrPatch) -> tuple[IrDocument, IrEvent]:
