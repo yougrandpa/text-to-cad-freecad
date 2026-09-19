@@ -72,6 +72,12 @@
 - 供应商预设只给**候选**模型名；真实列表由 `GET /settings/models` 代调 provider 的 `GET /models`。DeepSeek 官方中英文档仍并存两代模型名（`deepseek-v4-*` 与 `deepseek-chat`/`deepseek-reasoner`），**不要硬编码**。
 - provider 预设 `use_env_proxy` 默认全 False：本机 `HTTPS_PROXY` 曾把直连失败伪装成"厂商挂了"。
 
+## 模型协议（真机验证过，别改坏）
+- **DeepSeek 思考模式要求 `reasoning_content` 原样回传**：assistant 消息带 tool_calls 被回放时必须带上它，否则 400（`The reasoning_content in the thinking mode must be passed back to the API`）。链路：`LlmReply.reasoning_content` ← `_parse` 读 `reasoning_content`（回退 `reasoning`）→ engine 构造 assistant 消息时**有则回显、无则不加键**。
+- 一轮 = 多步循环 ⇒ 每步都在回放上一步的 assistant 消息，所以这个缺陷**必然在第 2 步爆**，且**任何思考模型都会**。
+- **这类协议要求只有真机能发现**：`tools/stub_llm.py` 不产生 reasoning。离线全绿 ≠ 真机可用。
+- 真机实测（`deepseek-v4-flash`，2026-09-19）：一句"60x40 底板厚 10mm"→ 5 步、11 秒、Gate 全绿，中间有一次模型自修复。
+
 ## 前后端契约（改界面之前先读，这三条都踩过）
 - **SSE 帧里的枚举是「序列化值」不是「枚举名」**：pydantic 对 `(str, Enum)` 发出的是小写值 —— `"succeeded"` / `"exhausted"` / `"pass"` / `"blocking"`。前端任何以状态为键的表都必须用小写值，用 `SUCCEEDED` 这类枚举名**永远匹配不到**（曾导致 turn 结束屏幕上没有任何结论）。
 - **engine 的 observer 帧里 `images[].path` 是磁盘绝对路径**，浏览器用不了；server 侧必须经 `artifact_url_for()` 转成 `/models/{id}/artifacts/{file}?version={n}` 再发。
