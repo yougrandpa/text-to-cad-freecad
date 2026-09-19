@@ -78,6 +78,18 @@
 - **这类协议要求只有真机能发现**：`tools/stub_llm.py` 不产生 reasoning。离线全绿 ≠ 真机可用。
 - 真机实测（`deepseek-v4-flash`，2026-09-19）：一句"60x40 底板厚 10mm"→ 5 步、11 秒、Gate 全绿，中间有一次模型自修复。
 
+## Gate 的诚实性（核心，别退回）
+- **`bbox_spec`/`mass_spec` 在无对应需求时返回 SKIP 而不是 PASS**。曾经返回 PASS（"no confirmed bbox requirement"）——**没做校验却报通过**，导致"模型只建了两根探针也全绿"。空检查报 PASS 比报 FAIL 危险得多。
+- **`requirement_coverage`**（advisory）在无 confirmed 约束时明确说"只验证了几何自洽，没验证是否符合要求"。
+- **`ir_commit` 的 PASS 文案会说明它是否判过需求**：没判过就明说，不再只写 "Build succeeded"。
+- 全 blocking SKIP 仍 = 不通过（fail-closed 未动）。
+- **`update_requirement`（confirmed=true）是 Gate 唯一的判据来源**；用户给的尺寸/数量/位置必须记下来，否则 Gate 无卷可判。
+
+## ir_patch 工具描述（模型可见的契约，改它要跑测试）
+- **op 必须逐个列全，不能用 `additive_*` 通配** —— 通配等于没告诉模型有这些能力（曾导致模型用 pad 建出三个不接触的实体）。
+- 必须写明：**同一 body 内特征只在几何相交时合并**；`refs` 只声明构建顺序、**不产生几何关系**；贴到已有形体要用 `plane: {kind:"face", feature_id, sub:"FaceN"}`。
+- `tests/unit/test_ir_tools_description.py` 会拿描述与 `FeatureOp` 对账，别再让描述落后于 schema。
+
 ## 前后端契约（改界面之前先读，这三条都踩过）
 - **SSE 帧里的枚举是「序列化值」不是「枚举名」**：pydantic 对 `(str, Enum)` 发出的是小写值 —— `"succeeded"` / `"exhausted"` / `"pass"` / `"blocking"`。前端任何以状态为键的表都必须用小写值，用 `SUCCEEDED` 这类枚举名**永远匹配不到**（曾导致 turn 结束屏幕上没有任何结论）。
 - **engine 的 observer 帧里 `images[].path` 是磁盘绝对路径**，浏览器用不了；server 侧必须经 `artifact_url_for()` 转成 `/models/{id}/artifacts/{file}?version={n}` 再发。
