@@ -243,6 +243,21 @@ class LoopEngine:
 
         # Build the assistant message (OpenAI function-calling shape).
         assistant: dict[str, Any] = {"role": "assistant", "content": reply.text or ""}
+
+        if reply.reasoning_content:
+            # Echo the model's thinking back verbatim when it produced any.
+            #
+            # DeepSeek's thinking mode rejects the next request with a 400 —
+            # "The `reasoning_content` in the thinking mode must be passed back
+            # to the API" — when an assistant message carrying tool calls is
+            # replayed without it. A turn is a multi-step loop, so every step
+            # after the first replays the previous assistant message: omitting
+            # this breaks *any* thinking model at step 2, which is precisely
+            # where it was first observed in the wild. Providers that emit no
+            # reasoning never produce the key, and providers that do not use it
+            # ignore the field.
+            assistant["reasoning_content"] = reply.reasoning_content
+
         gate_report: GateReport | None = None
         if reply.tool_calls:
             assistant["tool_calls"] = [

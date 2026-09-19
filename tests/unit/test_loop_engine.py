@@ -355,3 +355,61 @@ async def test_unknown_tool_is_safe_error_not_crash():
     blob = json.dumps(llm.last_messages)
     assert "[tool error: not_found]" in blob
     assert result.state != TurnState.SUCCEEDED
+
+
+# ─── thinking-mode protocol ────────────────────────────────────────────────
+# Found on the first real DeepSeek run: every turn died at step 2 with
+#   400 "The `reasoning_content` in the thinking mode must be passed back to
+#        the API."
+# Nothing in the offline suite could have caught it — the stub model emits no
+# reasoning, and the requirement only exists in the live protocol.
+
+
+async def test_reasoning_content_is_echoed_back_with_its_tool_calls():
+    """A thinking model's reasoning must be replayed alongside the call.
+
+    A turn is a multi-step loop, so every step after the first replays the
+    previous assistant message — which is exactly why this breaks at step 2 and
+    nowhere else.
+    """
+    ir = make_ir()
+    llm = ScriptedLlm([
+        LlmReply(
+            text="",
+            reasoning_content="let me look at the current model",
+            tool_calls=[ToolCall(id="c1", name="ir_list_features", args={})],
+        ),
+        LlmReply(text="done", reasoning_content="nothing left to do"),
+    ])
+    services = make_services(ir, llm, gate_passed=True)
+    engine = make_engine(services, max_steps=3)
+    await engine.run_turn(
+        Thread(thread_id="t1", model_id="m1"),
+        UserMessage(kind=TurnKind.CREATE, text="x"),
+    )
+
+    replayed = [m for m in llm.last_messages if m.get("role") == "assistant"]
+    assert replayed, "assistant 消息没有被回放"
+    assert replayed[0].get("reasoning_content") == "let me look at the current model", (
+        "thinking 模式下缺少 reasoning_content —— DeepSeek 会以 400 拒绝"
+    )
+
+
+async def test_models_without_reasoning_gain_no_stray_field():
+    """The echo must be conditional: an ordinary model's assistant message must
+    not acquire a `reasoning_content: null`."""
+    ir = make_ir()
+    llm = ScriptedLlm([
+        LlmReply(text="", tool_calls=[ToolCall(id="c1", name="ir_list_features", args={})]),
+        LlmReply(text="done"),
+    ])
+    services = make_services(ir, llm, gate_passed=True)
+    engine = make_engine(services, max_steps=3)
+    await engine.run_turn(
+        Thread(thread_id="t1", model_id="m1"),
+        UserMessage(kind=TurnKind.CREATE, text="x"),
+    )
+
+    replayed = [m for m in llm.last_messages if m.get("role") == "assistant"]
+    assert replayed
+    assert "reasoning_content" not in replayed[0]

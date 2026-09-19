@@ -36,6 +36,15 @@ class LlmReply(BaseModel):
     """Normalised model response the engine consumes."""
 
     text: str = ""
+    reasoning_content: str | None = None
+    """The model's thinking, when it emits any.
+
+    DeepSeek's thinking mode returns it and then **requires it back** on the
+    next request within the same turn; dropping it earns a 400
+    ("The `reasoning_content` in the thinking mode must be passed back to the
+    API"). The engine echoes it through unchanged — it is protocol state, not
+    something we interpret.
+    """
     tool_calls: list[ToolCall] = Field(default_factory=list)
     usage: TokenUsage = Field(default_factory=TokenUsage)
     finish_reason: str | None = None
@@ -158,6 +167,11 @@ class OpenAIClient:
         co = getattr(usage, "completion_tokens", 0) if usage else 0
         return LlmReply(
             text=text,
+            # `reasoning_content` is DeepSeek's name; `reasoning` is what several
+            # other OpenAI-compatible servers use. Either way we keep it, because
+            # a provider that emits it may also require it echoed back.
+            reasoning_content=getattr(msg, "reasoning_content", None)
+            or getattr(msg, "reasoning", None),
             tool_calls=tool_calls,
             usage=TokenUsage(prompt_tokens=pu, completion_tokens=co),
             finish_reason=getattr(choice, "finish_reason", None),
