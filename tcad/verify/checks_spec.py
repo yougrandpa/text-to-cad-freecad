@@ -23,7 +23,7 @@ confirmed.
 
 from __future__ import annotations
 
-from tcad.core.types import CheckContext, CheckResult, Confidence, Severity
+from tcad.core.types import CheckContext, CheckResult, CheckStatus, Confidence, Severity
 from tcad.ir.schema import ConstraintExpr, ConstraintKind
 from tcad.verify.checks_solid import VerifyConfig
 from tcad.verify.specexpr import evaluate
@@ -107,17 +107,69 @@ class SpecCheck:
         )
 
 
-def build_spec_checks(ir, config: VerifyConfig | None = None) -> list[SpecCheck]:
+class RequirementCoverageCheck:
+    """Was anything at all checked *against the request*?
+
+    A green Gate with no confirmed requirement is not evidence that the part is
+    right — it is evidence that the geometry is self-consistent (one solid,
+    exportable, STEP round-trip). Those are different claims, and the difference
+    is exactly what the person who asked for the part cares about.
+
+    Observed live: asked to put arms and legs on a cube, a model built two
+    calibration probes, recorded no requirement, and the turn ended green. Every
+    check the Gate could run had passed; there was simply nothing to check the
+    *request* against, and nothing said so.
+
+    ADVISORY on purpose. The harness's success rule is "a green Gate", and making
+    this blocking would refuse to finish any part described only in prose — which
+    is most first drafts. The honest move is to state what was and was not
+    proven, not to manufacture a failure.
+    """
+
+    id = "requirement_coverage"
+    severity = Severity.ADVISORY
+    confidence = Confidence.DETERMINISTIC
+
+    def run(self, ctx: CheckContext) -> CheckResult:
+        requirements = getattr(ctx.ir, "requirements", None)
+        constraints = list(getattr(requirements, "constraints", None) or [])
+        confirmed = [c for c in constraints if getattr(c, "confirmed", False)]
+
+        if confirmed:
+            return CheckResult(
+                check_id=self.id,
+                status=CheckStatus.PASS,
+                severity=self.severity,
+                confidence=self.confidence,
+                message=f"judged against {len(confirmed)} confirmed requirement(s)",
+            )
+        return CheckResult(
+            check_id=self.id,
+            status=CheckStatus.FAIL,
+            severity=self.severity,
+            confidence=self.confidence,
+            message=(
+                "no confirmed requirement — only self-consistency was verified, "
+                "NOT that the part matches the request. Record the user's numbers "
+                "via update_requirement (confirmed=true)."
+            ),
+        )
+
+
+def build_spec_checks(ir, config: VerifyConfig | None = None) -> list:
     """One ``SpecCheck`` per ``ConstraintExpr`` of a handled kind.
 
     Both confirmed and unconfirmed expressions get a check; the ``confirmed``
     flag only governs whether the result is allowed to block (see ``SpecCheck``).
     """
     config = config or VerifyConfig()
-    checks: list[SpecCheck] = []
+    checks: list = []
     idx = 0
     for expr in ir.requirements.constraints:
         if expr.kind in HANDLED_KINDS:
             checks.append(SpecCheck(expr, idx, config))
             idx += 1
+    # Always report whether anything was judged against the request — including,
+    # and especially, when the answer is "nothing".
+    checks.append(RequirementCoverageCheck())
     return checks

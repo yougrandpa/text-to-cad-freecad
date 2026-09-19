@@ -55,13 +55,52 @@ def _worker_error(payload: dict | None) -> ToolResult:
     )
 
 
-def _format_report(report: GateReport) -> str:
+def _confirmed_constraints(ir: Any) -> list:
+    """The requirements the Gate is allowed to judge against.
+
+    Only ``confirmed=True`` expressions may block, so anything else is not
+    evidence that the part matches what the user asked for.
+    """
+    requirements = getattr(ir, "requirements", None)
+    constraints = getattr(requirements, "constraints", None) or []
+    return [c for c in constraints if getattr(c, "confirmed", False)]
+
+
+def _format_report(report: GateReport, ir: Any = None) -> str:
     """Render the gate report so the model can act on it."""
     if report.passed:
-        return (
+        text = (
             f"GATE PASSED (ir_version={report.ir_version}). "
             f"{len(report.results)} checks run, 0 blocking failures, "
-            f"{len(report.advisory_findings)} advisory finding(s). Build succeeded — you may stop."
+            f"{len(report.advisory_findings)} advisory finding(s)."
+        )
+        if ir is None:
+            return text + " Build succeeded — you may stop."
+
+        judged = len(_confirmed_constraints(ir))
+        if judged:
+            return (
+                text
+                + f" Judged against {judged} confirmed requirement(s)."
+                " Build succeeded — you may stop."
+            )
+
+        # A green Gate with nothing to judge against is the most misleading
+        # result this harness can produce: it reads as "your part is correct"
+        # while proving only that the geometry is self-consistent.
+        #
+        # Observed live. Asked to put arms and legs on a cube, a model built two
+        # calibration probes, never recorded what the user had asked for, and was
+        # told "Build succeeded — you may stop." The Gate had run every check it
+        # could; there was simply nothing to check the *request* against. Say so.
+        return (
+            text
+            + " ⚠ NOT JUDGED AGAINST ANY REQUEST: no confirmed requirement was"
+            " recorded, so the Gate verified only that the geometry is"
+            " self-consistent (one solid, exportable, STEP round-trip). It has NOT"
+            " verified that the part matches what was asked for. If the user named"
+            " any size, count or position, record it with update_requirement"
+            ' ("confirmed": true) and commit again — otherwise nothing checks it.'
         )
     lines = [f"GATE FAILED (ir_version={report.ir_version}). {len(report.blocking_failures)} blocking failure(s):"]
     for r in report.results:
@@ -219,7 +258,7 @@ async def run_commit(
         {"model_id": model_id, "ir_version": ir_version, "passed": report.passed},
     )
 
-    text = _format_report(report)
+    text = _format_report(report, ir)
     if pipeline_notes:
         text += "\n\nUpstream failures that hid the geometry from the Gate:\n" + "\n".join(
             f"  - {n}" for n in pipeline_notes

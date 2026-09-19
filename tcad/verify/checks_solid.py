@@ -171,7 +171,11 @@ class BBoxSpecCheck:
         exprs = [e for e in ctx.ir.requirements.constraints
                  if e.kind == "bbox" and e.confirmed]
         if not exprs:
-            return _r(self, "pass", "no confirmed bbox requirement")
+            # SKIP, not PASS. "There was nothing to check" and "checked and
+            # found correct" are different claims; reporting the first as the
+            # second is how a report ends up green while proving nothing.
+            # SKIP also lands in `skipped_checks`, where a reader can see it.
+            return _r(self, "skip", "no confirmed bbox requirement")
         if d is None or not d.measurements_available:
             return _r(self, "skip", "no valid geometry measurements available")
         fid = ctx.ir.bodies[0].id if ctx.ir.bodies else None
@@ -202,7 +206,11 @@ class MassSpecCheck:
         exprs = [e for e in ctx.ir.requirements.constraints
                  if e.kind == "volume" and e.confirmed]
         if not exprs:
-            return _r(self, "pass", "no confirmed volume requirement")
+            # SKIP, not PASS. "There was nothing to check" and "checked and
+            # found correct" are different claims; reporting the first as the
+            # second is how a report ends up green while proving nothing.
+            # SKIP also lands in `skipped_checks`, where a reader can see it.
+            return _r(self, "skip", "no confirmed volume requirement")
         if d is None or not d.measurements_available:
             return _r(self, "skip", "no valid geometry measurements available")
         fid = ctx.ir.bodies[0].id if ctx.ir.bodies else None

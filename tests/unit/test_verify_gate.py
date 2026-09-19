@@ -36,7 +36,10 @@ def test_passing_gate_on_good_digest(tmp_path):
     rep = _gate(ctx).evaluate("m1", 1)
     assert rep.passed is True
     assert rep.blocking_failures == []
-    assert rep.skipped_checks == []
+    # The fixture records no bbox/volume requirement, so those two checks have
+    # nothing to judge — they now skip and say so, rather than reporting a pass
+    # for work they did not do.
+    assert set(rep.skipped_checks) == {"bbox_spec", "mass_spec"}
 
 
 def test_failing_bbox_blocks_and_attaches_feature_id(tmp_path):

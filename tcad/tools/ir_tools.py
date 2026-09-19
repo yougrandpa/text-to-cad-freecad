@@ -183,12 +183,27 @@ op names and their payload shapes:
   add_feature  payload is a feature:
       {"id": "ft_pad", "name": "base_pad", "op": "pad", "profile_sketch": "sk_base",
        "params": {"length": 10.0, "type": "Length"}}
-      op: pad | pocket | revolution | groove | hole | fillet | chamfer | draft | thickness
-        | linear_pattern | circular_pattern | mirrored | datum_plane | additive_* | subtractive_*
-      pad params:    {"length": <mm>, "type": "Length"|"UpToLast"|"UpToFirst"|"UpToFace"|"UpToShape"}
+      op 必须精确，不存在通配写法：
+        pad | pocket | revolution | groove | hole | fillet | chamfer | draft
+        | thickness | mirrored | linear_pattern | circular_pattern | polar_pattern
+        | multi_transform | datum_plane
+        | additive_box | additive_cylinder | additive_sphere
+        | subtractive_box | subtractive_cylinder | subtractive_sphere
+
+      pad params:    {"length": <mm>, "type": "Length"|"UpToLast"|"UpToFirst"|"UpToFace"}
       pocket params: {"length": <mm>, "type": "Length"|"ThroughAll"|"UpToFirst"|"UpToFace",
                       "reversed": true|false}
                      (a through-slot is {"type": "ThroughAll"})
+      additive_*/subtractive_* are PRIMITIVES: no sketch needed, they carry their own
+      size. Pass lowercase keys matching the object's properties, e.g.
+      {"length": 30, "width": 10, "height": 10}. An unknown key comes back as
+      "unsupported property" — read the object with ir_get rather than guessing.
+
+      ── growing material onto an existing solid (an arm, a boss, a rib) ──
+      Features in one body DO merge into a single solid — but only where they
+      actually overlap in space. Two lumps that do not touch produce a Compound,
+      and the Gate's solid_count check then fails. That is the number one reason
+      "add an arm" fails, and it is a POSITION problem, not a feature-type one.
 
       POCKET DIRECTION — the single most common silent failure:
       a pocket cuts in the direction OPPOSITE its profile's normal. A profile on
@@ -199,7 +214,18 @@ op names and their payload shapes:
       the plate. Cheap check: if a pocket "succeeded" but the volume did not
       change, this is why.
 
-      `refs` lists the feature ids this one depends on; it must stay acyclic.
+      `refs` declares build ORDER only — it creates no geometric relationship.
+      Pointing it at the torso will NOT make the arm grow out of the torso. To
+      attach a feature to an existing solid, do one of:
+        (a) draw its sketch ON one of that solid's faces:
+            "plane": {"kind":"face","feature_id":"ft_body","sub":"Face6"}
+            (look the face number up with ir_get / ir_digest — do not guess it)
+        (b) keep the sketch on an origin plane and use offset / coordinates to
+            place it inside the torso's extent, overlapping it
+      (a) is usually less work: face attachment inherits that face's coordinate
+      system, so there is no mapping to work out by hand.
+
+      `refs` must stay acyclic.
 
   update_sketch      target_id = sketch id; payload = partial sketch fields.
                      `geometry`/`constraints` REPLACE the whole list; use
@@ -213,6 +239,13 @@ op names and their payload shapes:
                      "hole_diameter"|"hole_position"|"symmetric"|"wall_thickness"|
                      "feature_count", "value": ..., "tol": 0.05,
                      "source_text": "<verbatim user words>", "confirmed": true}]}
+                     ⚠ THIS IS THE ONLY THING THE GATE JUDGES AGAINST. Every number
+                     the user gives you — a size, a thickness, a hole diameter, "two
+                     of these" — should be recorded here as a confirmed constraint at
+                     the same time you build the geometry that satisfies it. With none
+                     recorded, a green Gate means only "the geometry is
+                     self-consistent"; it does NOT mean the part is what was asked
+                     for, and ir_commit will tell you so.
                      Only confirmed=true requirements may block the Gate.
                      (`constraints_append` adds instead of replacing; `raw_text` sets
                      the requirement text.)

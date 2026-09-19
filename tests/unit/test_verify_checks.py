@@ -47,9 +47,16 @@ def test_solid_validity_skips_when_unmeasured(tmp_path):
     assert SolidValidityCheck().run(ctx).status == CheckStatus.SKIP
 
 
-def test_bbox_spec_passes_without_requirement(tmp_path):
+def test_bbox_spec_skips_when_there_is_no_requirement(tmp_path):
+    """SKIP, not PASS.
+
+    "There was nothing to check" and "checked and found correct" are different
+    claims, and reporting the first as the second is how a Gate ends up green
+    while proving nothing. That is not hypothetical: it happened live, on a model
+    that had recorded no requirement at all and still reported `bbox_spec pass`.
+    """
     ctx = _ctx(tmp_path)
-    assert BBoxSpecCheck().run(ctx).status == CheckStatus.PASS
+    assert BBoxSpecCheck().run(ctx).status == CheckStatus.SKIP
 
 
 def test_mass_spec_fails_on_volume_deviation(tmp_path):
@@ -88,3 +95,60 @@ def test_round_trip_fails_on_disk_mismatch(tmp_path):
     ctx = _ctx(tmp_path, worker=FakeWorkerWrong())
     r = RoundTripCheck().run(ctx)
     assert r.status == CheckStatus.FAIL
+
+
+# ─── requirement coverage ──────────────────────────────────────────────────
+# A green Gate with nothing to judge against reads as "your part is correct"
+# while proving only that the geometry is self-consistent. Observed live: asked
+# to add arms and legs to a cube, a model built two calibration probes, recorded
+# no requirement, and the turn ended green.
+
+
+def _ir_with(*, confirmed: int, unconfirmed: int = 0):
+    from tcad.ir.schema import IrDocument, RequirementSpec
+
+    return IrDocument(
+        model_id="m1",
+        requirements=RequirementSpec(
+            raw_text="给这个立方体加两个手臂和两条腿",
+            constraints=[
+                *(ConstraintExpr(kind="count", value=2, confirmed=True) for _ in range(confirmed)),
+                *(ConstraintExpr(kind="count", value=2, confirmed=False) for _ in range(unconfirmed)),
+            ],
+        ),
+    )
+
+
+def test_requirement_coverage_fails_when_nothing_was_recorded(tmp_path):
+    from tcad.verify.checks_spec import RequirementCoverageCheck
+
+    r = RequirementCoverageCheck().run(_ctx(tmp_path, ir=_ir_with(confirmed=0)))
+    assert r.status == CheckStatus.FAIL
+    assert r.severity == Severity.ADVISORY, "必须是 advisory —— 不能改变「全绿=完成」"
+    assert "update_requirement" in r.message, "没有告诉模型该怎么补救"
+    assert "NOT" in r.message, "没有说清它没证明什么"
+
+
+def test_requirement_coverage_passes_once_a_requirement_exists(tmp_path):
+    from tcad.verify.checks_spec import RequirementCoverageCheck
+
+    r = RequirementCoverageCheck().run(_ctx(tmp_path, ir=_ir_with(confirmed=2)))
+    assert r.status == CheckStatus.PASS
+    assert "2 confirmed" in r.message
+
+
+def test_unconfirmed_expressions_do_not_count_as_coverage(tmp_path):
+    """`confirmed=False` may never block, so it cannot be evidence either."""
+    from tcad.verify.checks_spec import RequirementCoverageCheck
+
+    r = RequirementCoverageCheck().run(_ctx(tmp_path, ir=_ir_with(confirmed=0, unconfirmed=3)))
+    assert r.status == CheckStatus.FAIL
+
+
+def test_the_coverage_check_is_always_assembled(tmp_path):
+    """It has to run even when there are no constraints at all — that is the
+    case it exists for."""
+    from tcad.verify.checks_spec import build_spec_checks
+
+    checks = build_spec_checks(_ir_with(confirmed=0), None)
+    assert any(c.id == "requirement_coverage" for c in checks)

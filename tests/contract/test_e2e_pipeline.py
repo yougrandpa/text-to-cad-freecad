@@ -266,11 +266,14 @@ def test_gate_passes_on_the_real_model(built, worker):
     assert report.passed is True, f"Gate failed: {report.blocking_failures}\n{details}"
     assert report.blocking_failures == [], f"{report.blocking_failures}\n{details}"
 
-    # Every BLOCKING check must have genuinely verified something. A blocking
-    # SKIP here means an invariant quietly left the Gate.
+    # Every BLOCKING check must have genuinely verified something — or say that it
+    # did not. `bbox_spec` / `mass_spec` skip when no such requirement was
+    # recorded, which is honest reporting rather than a silent pass; anything else
+    # skipping here would mean an invariant quietly left the Gate.
     blocking = {r.check_id for r in report.results if r.severity.value == "blocking"}
+    allowed_skips = {"bbox_spec", "mass_spec"}
     blocking_skips = [c for c in report.skipped_checks if c in blocking]
-    assert blocking_skips == [], f"blocking checks skipped: {blocking_skips}"
+    assert set(blocking_skips) <= allowed_skips, f"blocking checks skipped: {blocking_skips}"
 
     # `wall_thickness` is advisory + approximate by design (design §4.6 item 4):
     # it needs `min_wall_thickness` in the digest, which the worker does not
@@ -282,11 +285,17 @@ def test_gate_passes_on_the_real_model(built, worker):
     )
 
     by_id = {r.check_id: r for r in report.results}
+    # Geometry self-consistency: these must have genuinely run and passed.
     for check_id in (
-        "solid_validity", "solid_count", "bbox_spec", "mass_spec",
+        "solid_validity", "solid_count",
         "sketch_fully_constrained", "round_trip", "exportability",
     ):
         assert by_id[check_id].status is CheckStatus.PASS, (check_id, by_id[check_id].message)
+    # The spec checks have no requirement to judge against in this fixture, so
+    # they must say so by skipping. Reporting a pass for work they did not do is
+    # precisely the failure mode being guarded.
+    for check_id in ("bbox_spec", "mass_spec"):
+        assert by_id[check_id].status is CheckStatus.SKIP, (check_id, by_id[check_id].status)
 
     # round_trip read the STEP back from disk, through the worker's import path.
     rt = by_id["round_trip"]
