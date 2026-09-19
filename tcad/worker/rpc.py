@@ -13,6 +13,7 @@ import traceback
 from tcad.worker.protocol import (
     K_ERROR, K_FEATURE_ID, K_ID, K_KIND, K_MESSAGE, K_METHOD, K_OK, K_PARAMS,
     K_RESULT, K_TRACEBACK, E_COMPILE, E_RUNTIME, WORKER_METHODS, clamp_traceback,
+    first_error, no_detail_message,
 )
 
 from tcad.worker.compiler import compile_ir
@@ -100,11 +101,11 @@ def dispatch(request: dict) -> dict:
         # sketch had conflicting constraints — the single most useful thing it
         # could have been told. Nested failure must not be flattened into success.
         if isinstance(result, dict) and result.get("ok") is False:
-            detail = _first_error(result)
+            detail = first_error(result)
             return _error(
                 req_id, method,
                 detail.get("kind") or E_COMPILE,
-                detail.get("message") or "handler reported failure",
+                detail.get("message") or no_detail_message(result),
                 feature_id=detail.get("feature_id"),
                 tb=detail.get("traceback") or "",
                 elapsed=elapsed,
@@ -119,29 +120,6 @@ def dispatch(request: dict) -> dict:
         return _error(req_id, method, E_RUNTIME,
                       f"{type(exc).__name__}: {exc}", feature_id=None, tb=tb,
                       elapsed=elapsed)
-
-
-def _first_error(result: dict) -> dict:
-    """Normalise a handler's failure payload into one {kind, message, feature_id}.
-
-    Handlers use three shapes, because each was written for its own natural return
-    value: ``errors: [ {...}, ... ]`` (compile/export collect several), ``error`` as
-    a plain string (tessellate), or ``error`` as a dict. Rather than force every
-    handler to agree, normalise at the one place that has to produce a single
-    envelope error.
-    """
-    errors = result.get("errors")
-    if isinstance(errors, list) and errors:
-        first = errors[0]
-        if isinstance(first, dict):
-            return first
-        return {"message": str(first)}
-    err = result.get("error")
-    if isinstance(err, dict):
-        return err
-    if err:
-        return {"message": str(err)}
-    return {}
 
 
 def _error(req_id, method, kind, message, feature_id=None, tb="", elapsed=None) -> dict:

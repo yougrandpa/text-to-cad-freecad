@@ -137,6 +137,7 @@ class WorkerHandle:
         extra_env: dict[str, str] | None = None,
         cwd: str | Path | None = None,
         command_override: list[str] | None = None,
+        restart_on_failure: bool = True,
     ) -> None:
         self.freecad_cmd = freecad_cmd
         self.repo_root = Path(repo_root).resolve()
@@ -149,10 +150,21 @@ class WorkerHandle:
         """Test seam: when set, this argv is executed verbatim instead of building
         the FreeCADCmd command line. Lets the transport be tested without FreeCAD."""
 
+        self.restart_on_failure = restart_on_failure
+        """Whether a dead or wedged worker is replaced instead of being left there.
+
+        Both failure modes are real and neither is recoverable in place: FreeCAD
+        segfaults on some malformed input (``Sketcher.Constraint`` in particular),
+        and a hung OCCT boolean cannot be interrupted — the process stays there,
+        answering nothing. Without this, one bad call wedges the geometry backend
+        for the life of the server and every later turn fails, which is how a
+        single unbuildable part turned into "一直有报错"."""
+
         self._proc: subprocess.Popen[bytes] | None = None
         self._reader: threading.Thread | None = None
         self._responses: dict[int, queue.Queue[RpcResponse]] = {}
         self._lock = threading.Lock()
+        self._restart_lock = threading.Lock()
         self._next_id = 0
         self._stdout_lines: list[str] = []  # non-JSON noise, kept for diagnostics
         self._stderr_lines: list[str] = []
@@ -230,6 +242,29 @@ class WorkerHandle:
     def restart(self) -> None:
         self.close()
         self.start()
+
+    def recover(self, reason: str) -> bool:
+        """Replace a dead or wedged worker. Returns whether one is now usable.
+
+        Called after a transport failure. A crashed process and a hung one need
+        the same treatment — ``close()`` kills it, because a process stuck inside
+        an OCCT call will not act on a closed stdin — and the only difference is
+        the message.
+        """
+        if not self.restart_on_failure or self._closed:
+            return False
+        with self._restart_lock:
+            # Another caller may have recovered it while we waited for the lock.
+            try:
+                if self._proc is not None and self._proc.poll() is None:
+                    log.warning("worker %s: replacing a wedged process (%s)", self.worker_id, reason)
+                else:
+                    log.warning("worker %s: restarting after %s", self.worker_id, reason)
+                self.restart()
+                return True
+            except Exception as exc:  # noqa: BLE001 — recovery must not mask the original error
+                log.error("worker %s: could not restart (%s)", self.worker_id, exc)
+                return False
 
     def close(self, *, timeout_s: float = 5.0) -> None:
         self._closed = True
@@ -383,6 +418,17 @@ class WorkerHandle:
         if self._proc is None:
             raise WorkerCrashed(f"worker {self.worker_id} was never started")
 
+        # A worker that died on the *previous* call is replaced here, so a crash
+        # costs one failed call rather than every subsequent one.
+        if self._proc.poll() is not None and not self._closed:
+            self.recover(f"worker exited with rc={self._proc.returncode}")
+            if self._proc is None or self._proc.poll() is not None:
+                raise WorkerCrashed(
+                    f"worker {self.worker_id} is not running",
+                    returncode=None,
+                    stderr=self.stderr_text(),
+                )
+
         timeout = timeout_s if timeout_s is not None else self.request_timeout_s
         box: queue.Queue[RpcResponse] = queue.Queue(maxsize=1)
         with self._lock:
@@ -394,8 +440,14 @@ class WorkerHandle:
             try:
                 resp = box.get(timeout=timeout)
             except queue.Empty as exc:
+                # A call that did not answer in time is treated as unrecoverable:
+                # the process may be spinning inside OCCT, where no amount of
+                # waiting helps and a later request would queue behind it forever.
+                restarted = self.recover(f"call {method!r} timed out after {timeout}s")
                 raise WorkerError(
-                    f"worker call {method!r} timed out after {timeout}s",
+                    f"worker call {method!r} timed out after {timeout}s"
+                    + ("; the worker was killed and restarted" if restarted
+                       else "; the worker may be wedged (restart disabled)"),
                     ToolErrorKind.TIMEOUT,
                 ) from exc
         finally:
@@ -403,10 +455,14 @@ class WorkerHandle:
                 self._responses.pop(req_id, None)
 
         if resp.id == -1:  # synthetic frame from _fail_all_pending
+            message = resp.error.message if resp.error else "worker died"
+            returncode = self._proc.returncode if self._proc else None
+            stderr = self.stderr_text()
+            restarted = self.recover(f"worker crashed (rc={returncode})")
             raise WorkerCrashed(
-                resp.error.message if resp.error else "worker died",
-                returncode=self._proc.returncode if self._proc else None,
-                stderr=self.stderr_text(),
+                message + ("; the worker was restarted" if restarted else ""),
+                returncode=returncode,
+                stderr=stderr,
             )
         if not resp.ok:
             err = resp.error or RpcError(

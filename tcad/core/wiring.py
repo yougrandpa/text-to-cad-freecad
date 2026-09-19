@@ -479,6 +479,9 @@ def build_services(cfg: Config, *, start_worker: bool = True):
         REPO_ROOT,
         request_timeout_s=float(cfg.runtime.worker_request_timeout_s),
         startup_timeout_s=float(cfg.runtime.worker_startup_timeout_s),
+        # Read here for real. It was declared in the config and never used, so a
+        # wedged or crashed FreeCADCmd stayed wedged for the life of the server.
+        restart_on_failure=bool(cfg.runtime.worker_restart_on_crash),
     )
     if start_worker:
         handle.start()

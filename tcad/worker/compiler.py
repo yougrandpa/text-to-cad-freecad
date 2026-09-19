@@ -89,11 +89,220 @@ def _close_doc(doc) -> None:
         pass
 
 
+def _node_deps(kind: str, node: dict) -> set:
+    """The IR ids a sketch or feature needs to exist before it can be built."""
+    if kind == "sketch":
+        plane = node.get("plane") or {}
+        if plane.get("kind") in ("face", "datum_plane") and plane.get("feature_id"):
+            # A sketch lying on a feature's face is meaningless until that
+            # feature exists.
+            return {plane["feature_id"]}
+        return set()
+    deps = set(node.get("refs") or [])
+    if node.get("profile_sketch"):
+        deps.add(node["profile_sketch"])
+    return deps
+
+
+def _dependency_order(b: dict) -> tuple[list[tuple[str, dict]], list[dict]]:
+    """Order one body's sketches and features so every prerequisite is built first.
+
+    The IR says "features: list order = build order", with sketches as implicit
+    prerequisites — which is *not* the same as "all sketches, then all features".
+    A sketch may be attached to a face (``plane.kind == "face"``) or a datum plane
+    of a feature, and that feature has to exist first. Building every sketch up
+    front made the documented face/datum attachment impossible: the lookup failed
+    with "face target not found" before the feature had been created, and the
+    cascade of follow-on errors buried that one line.
+
+    Stable: nodes are emitted in the IR's declared order whenever dependencies
+    allow, so the common "sketches, then features" body is built exactly as before.
+    """
+    body_id = b.get("id")
+    nodes: list[tuple[str, dict]] = (
+        [("sketch", s) for s in b.get("sketches") or []]
+        + [("feature", f) for f in b.get("features") or []]
+    )
+    known = {node.get("id") for _kind, node in nodes}
+    pending = list(nodes)
+    built: set = set()
+    order: list[tuple[str, dict]] = []
+    errors: list[dict] = []
+
+    while pending:
+        ready = [
+            (kind, node) for kind, node in pending
+            if _node_deps(kind, node) <= built
+        ]
+        if not ready:
+            blocked = [f"{kind}:{node.get('id')}" for kind, node in pending]
+            errors.append({
+                "kind": "semantic",
+                "feature_id": body_id,
+                "message": (
+                    f"body {body_id!r} has a circular or unresolvable dependency "
+                    f"between {blocked} ({len(known)} node(s) declared) — every "
+                    f"refs/profile_sketch/plane target must name something in the "
+                    f"same body."
+                ),
+            })
+            # Emit them anyway so their own problems (if any) are reported too.
+            order.extend(pending)
+            break
+        for kind, node in ready:
+            pending.remove((kind, node))
+            order.append((kind, node))
+            built.add(node.get("id"))
+    return order, errors
+
+
+class _BadConstraint(ValueError):
+    """A constraint shape this build refuses to hand to FreeCAD."""
+
+
 def _datum_quantity(con_type: str, value: float):
-    """Build the Quantity for a setDatum call. Angle -> deg, everything else -> mm."""
+    """The Quantity for a ``setDatum`` call. Angle -> deg, everything else -> mm."""
     if con_type == "Angle":
         return App.Units.Quantity(f"{float(value)} deg")
     return App.Units.Quantity(f"{float(value)} mm")
+
+
+#: Verified construction recipes for ``Sketcher.Constraint``.
+#:
+#: ⚠️ **``Sketcher.Constraint(type, *refs)`` does not validate its arguments.**
+#: An unrecognised shape does not raise — it **segfaults FreeCAD** (SIGSEGV 11,
+#: measured on 26.3.0dev). A native crash cannot be caught by ``except``, takes
+#: the whole geometry worker with it, and is how "在支架底面开一个直径 8mm 的通孔"
+#: brought the harness down: our own recipe built ``Constraint("Radius", geoId)``,
+#: which is exactly one such shape.
+#:
+#: So each type is checked here — arity, and whether it carries a value — before
+#: FreeCAD is called at all. Measured, not guessed: every entry below was verified
+#: against the real kernel, and the shapes that crash are recorded so nobody
+#: reintroduces them.
+#:
+#: ``refs`` are passed positionally, exactly as before. Value-carrying types take
+#: the value **in the constructor** — for Radius/Diameter the split
+#: ``Constraint(type, geoId)`` + ``setDatum`` form is one of the crashing shapes.
+_GEOMETRIC_CONSTRAINTS: dict[str, frozenset[int]] = {
+    # type: the ref counts that are valid (verified)
+    "Coincident": frozenset({4}),
+    "Horizontal": frozenset({1}),
+    "Vertical": frozenset({1}),
+    "Parallel": frozenset({2}),
+    "Perpendicular": frozenset({2}),
+    "Equal": frozenset({2}),
+    "Tangent": frozenset({2, 3}),
+    "PointOnObject": frozenset({3}),
+    "Symmetric": frozenset({5, 6}),
+    "Block": frozenset({1}),
+}
+
+_VALUE_CONSTRAINTS: dict[str, frozenset[int]] = {
+    # type: valid ref counts; the value is required
+    "Distance": frozenset({1, 2}),
+    "DistanceX": frozenset({1, 2}),
+    "DistanceY": frozenset({1, 2}),
+    "Angle": frozenset({2}),
+    "Radius": frozenset({1}),
+    "Diameter": frozenset({1}),
+    "Weight": frozenset({1}),
+}
+
+#: ``(type, ref-count)`` pairs where the **refs-only** construction is safe.
+#:
+#: This matters beyond crash avoidance: a value handed to the constructor makes
+#: the later ``setDatum`` a no-op, and ``setDatum`` is what makes FreeCAD
+#: *validate* the constraint set. Measured on the over-determined rectangle that
+#: `tests/contract/test_wired_pipeline.py` pins: with the value in the constructor
+#: it reports ``solve()=0``, ``DoF=0`` and builds an 8000 mm³ solid — a green Gate
+#: over a broken constraint set. With the refs-only form it raises the conflict.
+#: So wherever the refs-only form is safe, it is the one used.
+_REFS_ONLY_SAFE: frozenset[tuple[str, int]] = frozenset({
+    ("Distance", 2), ("DistanceX", 2), ("DistanceY", 2), ("Angle", 2),
+})
+
+
+def _constraint_args(
+    con_type: str, refs: list, value: float | None
+) -> tuple[tuple, bool]:
+    """``(Constraint args, apply the value with setDatum)``.
+
+    Raises :class:`_BadConstraint` for any shape not verified against the real
+    kernel — FreeCAD answers a malformed constraint with a segfault rather than an
+    exception, so nothing unverified is passed through.
+    """
+    if not isinstance(con_type, str) or not con_type:
+        raise _BadConstraint(f"constraint has no type: {con_type!r}")
+
+    if con_type in _GEOMETRIC_CONSTRAINTS:
+        allowed = _GEOMETRIC_CONSTRAINTS[con_type]
+        if len(refs) not in allowed:
+            raise _BadConstraint(
+                f"{con_type} takes {sorted(allowed)} reference(s), got {len(refs)} "
+                f"({refs}). FreeCAD segfaults on an unrecognised constraint shape, "
+                f"so this is refused here."
+            )
+        if value is not None:
+            raise _BadConstraint(f"{con_type} does not take a value (got {value})")
+        return (con_type, *refs), False
+
+    if con_type in _VALUE_CONSTRAINTS:
+        allowed = _VALUE_CONSTRAINTS[con_type]
+        if len(refs) not in allowed:
+            raise _BadConstraint(
+                f"{con_type} takes {sorted(allowed)} reference(s), got {len(refs)} "
+                f"({refs}). FreeCAD segfaults on an unrecognised constraint shape, "
+                f"so this is refused here."
+            )
+        if value is None:
+            raise _BadConstraint(
+                f'{con_type} needs a numeric value (e.g. "value": 4.0); it is a '
+                f"dimension, and FreeCAD cannot express it without one."
+            )
+        if (con_type, len(refs)) in _REFS_ONLY_SAFE:
+            return (con_type, *refs), True
+        # Only where the refs-only form crashes: the value goes in the
+        # constructor. FreeCAD then skips the redundancy validation for this
+        # constraint — a real, documented weakening, and still far better than a
+        # segfault that takes the worker with it.
+        return (con_type, *refs, float(value)), False
+
+    raise _BadConstraint(
+        f"unsupported constraint type {con_type!r}. Verified types: "
+        f"{', '.join(sorted(_GEOMETRIC_CONSTRAINTS | _VALUE_CONSTRAINTS))}. "
+        f"(FreeCAD crashes on unrecognised constraint shapes, so nothing outside "
+        f"this list is attempted.)"
+    )
+
+
+def _sketch_point(sk, p: dict) -> "App.Vector":
+    """Map one world-space IR point into the sketch's own (u, v) frame.
+
+    **Sketcher takes geometry in the sketch's LOCAL 2-D frame.** The first two
+    components of the vector handed to ``addGeometry`` are the in-plane u/v; the
+    third is ignored for a planar sketch. Feeding it world coordinates therefore
+    silently collapses every profile whose plane is not the sketch's own frame:
+    a YZ profile written as ``(0, y, z)`` became ``(u=0, v=y)`` — all vertices on
+    one line, no wire, no solid, and (before this) *no error either*.
+
+    The sketch's ``Placement`` maps its local frame into the world, so its
+    inverse maps a world point back. It is resolved once the attachment is set
+    and the document has been recomputed, which is why :func:`_add_sketch`
+    recomputes before adding geometry.
+
+    Verified numerically on all three origin planes (world → local):
+    ``XY: (x, y)``, ``XZ: (x, z)``, ``YZ: (y, z)``; a 40×20 rectangle padded 5
+    gives 4000 mm³ on each, with the extrude direction +Z / −Y / +X respectively.
+    """
+    world = App.Vector(
+        float(p.get("x", 0.0)), float(p.get("y", 0.0)), float(p.get("z", 0.0))
+    )
+    try:
+        local = sk.Placement.inverse().multVec(world)
+    except Exception:  # noqa: BLE001 — an unavailable placement must not abort the build
+        return world
+    return App.Vector(local.x, local.y, 0.0)
 
 
 def _add_geometry(sk, g: dict):
@@ -102,33 +311,21 @@ def _add_geometry(sk, g: dict):
     pts = g.get("points") or []
     construction = bool(g.get("construction", False))
     if kind == "line":
-        p0 = pts[0]
-        p1 = pts[1]
-        geo = Part.LineSegment(
-            App.Vector(float(p0["x"]), float(p0["y"]), float(p0["z"])),
-            App.Vector(float(p1["x"]), float(p1["y"]), float(p1["z"])),
-        )
+        p0 = _sketch_point(sk, pts[0])
+        p1 = _sketch_point(sk, pts[1])
+        geo = Part.LineSegment(p0, p1)
     elif kind == "circle":
-        c = pts[0]
-        geo = Part.Circle(
-            App.Vector(float(c["x"]), float(c["y"]), float(c["z"])),
-            App.Vector(0.0, 0.0, 1.0),
-            float(g.get("radius", 1.0)),
-        )
+        c = _sketch_point(sk, pts[0])
+        geo = Part.Circle(c, App.Vector(0.0, 0.0, 1.0), float(g.get("radius", 1.0)))
     elif kind == "arc":
-        c = pts[0]
+        c = _sketch_point(sk, pts[0])
         geo = Part.ArcOfCircle(
-            Part.Circle(
-                App.Vector(float(c["x"]), float(c["y"]), float(c["z"])),
-                App.Vector(0.0, 0.0, 1.0),
-                float(g.get("radius", 1.0)),
-            ),
+            Part.Circle(c, App.Vector(0.0, 0.0, 1.0), float(g.get("radius", 1.0))),
             float(g.get("theta1", 0.0)),
             float(g.get("theta2", 3.141592653589793)),
         )
     elif kind == "point":
-        p = pts[0]
-        geo = Part.Point(App.Vector(float(p["x"]), float(p["y"]), float(p["z"])))
+        geo = Part.Point(_sketch_point(sk, pts[0]))
     else:
         raise ValueError(f"unknown geometry kind: {kind!r}")
     return sk.addGeometry(geo, construction)
@@ -192,6 +389,18 @@ def _add_sketch(doc, body, s: dict, ref_objects: dict) -> dict:
         })
     body.addObject(sk)
 
+    # Resolve the attachment BEFORE adding geometry.
+    #
+    # Sketcher takes geometry in the sketch's own (u, v) frame, and the only
+    # thing that knows that frame is the sketch's Placement — which FreeCAD
+    # computes during a recompute. Without this, an attached sketch still has an
+    # identity placement, `_sketch_point` would map world → world, and every
+    # profile on XZ/YZ would collapse to a line (see `_sketch_point`).
+    try:
+        doc.recompute()
+    except Exception:  # noqa: BLE001 — geometry addition below reports its own errors
+        pass
+
     # ── geometry ──
     for g in s.get("geometry") or []:
         try:
@@ -199,29 +408,44 @@ def _add_sketch(doc, body, s: dict, ref_objects: dict) -> dict:
         except Exception as exc:  # noqa: BLE001
             state["errors"].append({
                 "kind": "compile", "feature_id": s.get("id"),
-                "message": f"geometry {g.get('kind')} failed: {type(exc).__name__}: {exc}",
+                "message": (
+                    f"geometry {g.get('kind')} failed: {type(exc).__name__}: {exc}"
+                    + _profile_hint(sk, s)
+                ),
             })
 
     # ── constraints ──
     for con in s.get("constraints") or []:
         try:
             con_type = con.get("type")
-            refs = con.get("refs") or []
-            idx = sk.addConstraint(Sketcher.Constraint(con_type, *refs))
-            if con.get("value") is not None:
-                try:
-                    sk.setDatum(idx, _datum_quantity(con_type, con["value"]))
-                except ValueError as ve:
-                    # The message is a lie — setDatum maps solver conflicts to
-                    # "Invalid constraint index". Classify as solver, never index.
-                    state["errors"].append({
-                        "kind": "solver",
-                        "feature_id": s.get("id"),
-                        "message": (
-                            f"constraint {con_type}({refs}) value={con.get('value')} "
-                            f"failed to solve: {ve}"
-                        ),
-                    })
+            refs = list(con.get("refs") or [])
+            value = con.get("value")
+            args, via_setdatum = _constraint_args(con_type, refs, value)
+            idx = sk.addConstraint(Sketcher.Constraint(*args))
+            if via_setdatum:
+                # `setDatum` is not merely how the value gets applied — it is what
+                # makes FreeCAD *validate* the constraint set. (The value-in-
+                # constructor form above skips that check, which is why it is used
+                # only where the refs-only form would crash.)
+                sk.setDatum(idx, _datum_quantity(con_type, float(value)))
+        except _BadConstraint as bad:
+            # Our own guard: the shape was rejected before FreeCAD saw it.
+            state["errors"].append({
+                "kind": "semantic",
+                "feature_id": s.get("id"),
+                "message": str(bad),
+            })
+        except ValueError as ve:
+            # FreeCAD maps solver conflicts onto a misleading ValueError whose
+            # text talks about constraint indexes. Classify as solver, never index.
+            state["errors"].append({
+                "kind": "solver",
+                "feature_id": s.get("id"),
+                "message": (
+                    f"constraint {con.get('type')}({refs}) value={value} "
+                    f"failed to solve: {ve}"
+                ),
+            })
         except Exception as exc:  # noqa: BLE001
             state["errors"].append({
                 "kind": "compile", "feature_id": s.get("id"),
@@ -389,15 +613,24 @@ def _build(ir: dict, out_dir: str):
     for b in ir.get("bodies") or []:
         body = doc.addObject("PartDesign::Body", _obj_name(b.get("id"), b.get("name")))
         body.Label = b.get("name") or b.get("id")
-        for s in b.get("sketches") or []:
-            sk_state = _add_sketch(doc, body, s, ref_objects)
-            sketches.append(sk_state)
-            # Surface per-sketch errors (e.g. solver conflicts) to the top level
-            # so the supervisor sees a structured, feature_id-tagged error.
-            errors.extend(sk_state.get("errors") or [])
+
+        order, order_errors = _dependency_order(b)
+        errors.extend(order_errors)
+        for kind, node in order:
+            if kind == "sketch":
+                sk_state = _add_sketch(doc, body, node, ref_objects)
+                sketches.append(sk_state)
+                # Surface per-sketch errors (e.g. solver conflicts) to the top level
+                # so the supervisor sees a structured, feature_id-tagged error.
+                errors.extend(sk_state.get("errors") or [])
+            else:
+                fstate = _apply_feature(doc, body, node, ref_objects)
+                errors.extend(fstate["errors"])
+
+        # The chain is reported in the IR's *declared* order (list order = build
+        # order for features), which is what the model wrote and what a reader
+        # expects — not in the interleaved order the scheduler happened to emit.
         for f in b.get("features") or []:
-            fstate = _apply_feature(doc, body, f, ref_objects)
-            errors.extend(fstate["errors"])
             feature_chain.append({
                 "id": f.get("id"), "name": f.get("name") or f.get("id"),
                 "op": f.get("op"), "params": f.get("params") or {},
@@ -405,6 +638,16 @@ def _build(ir: dict, out_dir: str):
             })
 
     doc.recompute()
+
+    # ── why is there no solid? ────────────────────────────────────────────────
+    #
+    # Collected AFTER the recompute, because "this produced no geometry" is only
+    # knowable then — and it is the one failure the build could previously report
+    # with an empty error list, which the supervisor then rendered as the generic
+    # "handler reported failure". Observed live: a phone stand whose side profile
+    # was silently dropped by the (then missing) world → sketch-frame transform.
+    # The model had nothing to repair and the user nothing to read.
+    errors.extend(_no_geometry_errors(ir, doc, ref_objects))
 
     # Collect resulting solids from every body.
     body_shapes = []
@@ -431,6 +674,200 @@ def _build(ir: dict, out_dir: str):
         "feature_chain": feature_chain,
         "errors": errors,
     }
+
+
+def _obj_state(obj) -> list:
+    try:
+        return [str(s) for s in obj.State]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _linked(link):
+    """The object behind a FreeCAD link property.
+
+    A link property comes back as ``(object, [subelement names])`` — not as the
+    object. Reading ``.Name`` off it silently yields the default, which is how a
+    diagnosis ends up saying ``profile=?`` instead of naming the sketch.
+    """
+    if isinstance(link, tuple) and link:
+        return link[0]
+    return link
+
+
+def _profile_hint(sk, s: dict) -> str:
+    """A second sentence when the profile's points look mis-framed.
+
+    A profile that projects onto a single line, or onto a single point, is not a
+    profile — and there is exactly one common reason: the points were written in
+    the sketch's *local* (u, v) frame (with a zero third component) while the
+    compiler reads them as world coordinates. Naming that saves the reader a
+    round of guessing, so it is worth the few lines.
+    """
+    pts = []
+    for g in s.get("geometry") or []:
+        if g.get("construction"):
+            continue
+        for p in g.get("points") or []:
+            v = _sketch_point(sk, p)
+            pts.append((round(v.x, 9), round(v.y, 9)))
+    unique = sorted(set(pts))
+    framing = (
+        " That is what a profile looks like when its points were written in the "
+        "sketch's local (u, v) frame (third component 0) instead of world "
+        "coordinates: on the YZ plane the in-plane coordinates come from the "
+        "point's y and z (x is the out-of-plane component), on XZ from x and z, "
+        "on XY from x and y."
+    )
+    if len(unique) < 2:
+        return (
+            f" All {len(pts)} profile points are at the same place in the "
+            f"sketch's own frame; a profile needs at least three distinct "
+            f"points." + framing
+        )
+    if len(unique) < 3:
+        return (
+            f" The profile has only {len(unique)} distinct point(s) in the "
+            f"sketch's own frame, so it encloses no area." + framing
+        )
+    area = 0.0
+    (x0, y0) = unique[0]
+    for i in range(1, len(unique) - 1):
+        (x1, y1), (x2, y2) = unique[i], unique[i + 1]
+        area = max(area, abs((x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0)) / 2.0)
+    if area < 1e-9:
+        return (
+            f" All {len(unique)} distinct points lie on ONE LINE in the sketch's "
+            f"own frame, so the profile encloses no area." + framing
+        )
+    return ""
+
+
+def _no_geometry_errors(ir: dict, doc, ref_objects: dict) -> list[dict]:
+    """Structured reasons why a sketch or body yielded no geometry.
+
+    Ordering matters: the supervisor forwards only the first error, so the most
+    specific one (the sketch that could not form a wire) must come first. A body
+    that is empty *because* one of its sketches failed is not reported again —
+    that would bury the actionable line under a restatement of it.
+    """
+    out: list[dict] = []
+    explained_bodies: set = set()
+
+    bodies = ir.get("bodies") or []
+    if not bodies:
+        # Committing an empty document is a real thing to do (a model may commit
+        # before patching anything). Say that, rather than letting it fall through
+        # to a failure with no reason attached.
+        return [{
+            "kind": "schema",
+            "feature_id": None,
+            "message": (
+                "the IR has no bodies, so there is nothing to build. Add a sketch "
+                "and a feature (e.g. a pad) with ir_patch before calling ir_commit."
+            ),
+        }]
+
+    for b in bodies:
+        body_id = b.get("id")
+        for s in b.get("sketches") or []:
+            sk = ref_objects.get(s.get("id"))
+            if sk is None:
+                continue
+            try:
+                shape = sk.Shape
+            except Exception as exc:  # noqa: BLE001
+                out.append({
+                    "kind": "compile", "feature_id": s.get("id"),
+                    "message": f"sketch {s.get('id')!r} has no computable shape: "
+                               f"{type(exc).__name__}: {exc}",
+                })
+                explained_bodies.add(body_id)
+                continue
+            bad = shape is None or shape.isNull()
+            wires = 0
+            if not bad:
+                try:
+                    wires = len(shape.Wires)
+                except Exception:  # noqa: BLE001
+                    wires = 0
+                bad = wires == 0
+            if not bad:
+                continue
+            geom = len([g for g in (s.get("geometry") or []) if not g.get("construction")])
+            cons = len(s.get("constraints") or [])
+            out.append({
+                "kind": "compile",
+                "feature_id": s.get("id"),
+                "message": (
+                    f"sketch {s.get('id')!r} does not form a closed wire "
+                    f"({geom} profile curves, {cons} constraints, "
+                    f"wires={wires}, state={_obj_state(sk)}). "
+                    f"A pad/pocket profile must be a closed loop of connected "
+                    f"curves; check for a gap or a duplicate point between "
+                    f"consecutive curves." + _profile_hint(sk, s)
+                ),
+            })
+            explained_bodies.add(body_id)
+
+    for obj in doc.Objects:
+        if getattr(obj, "TypeId", "") != "PartDesign::Body":
+            continue
+        name = getattr(obj, "Name", "?")
+        if name in explained_bodies:
+            continue
+        try:
+            shape = obj.Shape
+            empty = shape is None or shape.isNull()
+        except Exception:  # noqa: BLE001
+            empty = True
+        if not empty:
+            continue
+
+        details: list[str] = []
+        open_profile = False
+        for o in getattr(obj, "Group", []) or []:
+            type_id = getattr(o, "TypeId", "")
+            if not type_id.startswith("PartDesign::") or type_id == "PartDesign::Body":
+                continue
+            line = (
+                f"{getattr(o, 'Name', '?')}({type_id.split('::')[-1]}) "
+                f"state={_obj_state(o)}"
+            )
+            profile = _linked(getattr(o, "Profile", None))
+            if profile is not None:
+                line += f" profile={getattr(profile, 'Name', '?')}"
+                try:
+                    wires = list(profile.Shape.Wires)
+                    closed = sum(1 for w in wires if w.isClosed())
+                    line += f" wires={len(wires)} closed={closed}"
+                    if wires and closed == 0:
+                        open_profile = True
+                except Exception:  # noqa: BLE001
+                    pass
+            details.append(line)
+        if not details:
+            details = [f"body state={_obj_state(obj)}"]
+
+        reason = ""
+        if open_profile:
+            reason = (
+                " The profile sketch has no closed wire: its curves do not join "
+                "end-to-end (check for a gap or a missing coincidence between "
+                "consecutive curves)."
+            )
+        else:
+            reason = (
+                " The features built, but the result is empty — a profile that is "
+                "not closed, a feature whose computed shape failed, or a "
+                "subtractive feature that removed everything."
+            )
+        out.append({
+            "kind": "compile",
+            "feature_id": name,
+            "message": f"body {name!r} produced no solid: " + "; ".join(details) + "." + reason,
+        })
+    return out
 
 
 def _measure(shape) -> dict:

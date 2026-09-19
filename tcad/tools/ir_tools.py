@@ -159,10 +159,30 @@ op names and their payload shapes:
       specific body; otherwise the first body is used (a fresh one is created when
       the document has none).
 
+      COORDINATES ARE WORLD COORDINATES, AND THEY MUST LIE IN THE SKETCH'S PLANE.
+        A point is placed by the plane the sketch is attached to; the component
+        along that plane's normal is ignored. So:
+          XY plane -> profile points use x and y (leave z = 0)
+          XZ plane -> profile points use x and z (leave y = 0)
+          YZ plane -> profile points use y and z (leave x = 0)
+        A side profile — a wedge, a bracket's upright, a phone stand's incline —
+        belongs on YZ or XZ and is written with real coordinates, e.g.
+        {"x":0,"y":0,"z":0} -> {"x":0,"y":90,"z":0} -> {"x":0,"y":90,"z":60}.
+        Do NOT write local 2-D (u, v) values into x and y for a non-XY plane: on
+        YZ that puts every vertex at x=0, the profile collapses onto a line, and
+        the compile fails with "does not form a closed wire".
+
+      EXTRUSION DIRECTION follows the plane's normal, and a `pad` extrudes along
+      it:
+          XY -> +Z        XZ -> -Y        YZ -> +X
+        Set "reversed": true, or "midplane": true, in the pad's params to extrude
+        the other way / symmetrically.
+
       POSITIONING A PROFILE — prefer `offset` over absolute dimensions:
         Model the profile around the sketch's OWN origin (bind one curve to the
         sketch origin, then dimension the opposite endpoints — the recipe below),
-        then place it with "offset": {"x": ..., "y": ..., "z": ...}.
+        then place it with "offset": {"x": ..., "y": ..., "z": ...} (applied in
+        world axes, after the sketch is attached).
         Dimensioning several points in absolute coordinates instead tends to
         over-determine the sketch: mixing an absolute dimension on a line's start
         point with a horizontal/vertical constraint and a dimension on its end

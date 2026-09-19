@@ -198,14 +198,56 @@ def test_request_timeout_is_reported_as_timeout(handle):
 def test_worker_crash_is_detected(handle):
     with pytest.raises(WorkerCrashed):
         handle._request_raw("die")
-    # give the process a moment to be reaped
-    for _ in range(50):
-        if not handle.is_alive():
-            break
-        import time
 
-        time.sleep(0.02)
-    assert handle.is_alive() is False
+
+def test_a_crashed_worker_is_replaced_so_the_next_call_works(handle):
+    """A native crash must cost one call, not the rest of the session.
+
+    FreeCAD segfaults on some malformed input and there is no way to catch that
+    from Python. Without replacement, every later request would go to a dead
+    process — which is how one unbuildable part turned a whole session into
+    "一直有报错".
+    """
+    with pytest.raises(WorkerCrashed):
+        handle._request_raw("die")
+
+    assert handle.is_alive() is True, "崩溃后没有换一个新 worker"
+    assert handle.request_sync("ping")["pong"] is True
+
+
+def test_a_wedged_worker_is_replaced_on_timeout(handle):
+    """A timeout is treated as unrecoverable, because it usually is.
+
+    A process spinning inside an OCCT call answers nothing and cannot be
+    interrupted, so leaving it in place would make every later call time out too.
+    """
+    with pytest.raises(WorkerError) as ei:
+        handle._request_raw("slow", {"seconds": 30}, timeout_s=0.4)
+    assert ei.value.kind == ToolErrorKind.TIMEOUT
+    assert "restart" in str(ei.value).lower(), "超时没有说明 worker 已被替换"
+
+    assert handle.request_sync("ping")["pong"] is True, "替换后的 worker 仍不可用"
+
+
+def test_automatic_replacement_can_be_turned_off():
+    """`worker_restart_on_crash` is a real setting, not decoration."""
+    h = make_handle(restart_on_failure=False)
+    h.start()
+    try:
+        with pytest.raises(WorkerCrashed):
+            h._request_raw("die")
+        # give the process a moment to be reaped
+        for _ in range(50):
+            if not h.is_alive():
+                break
+            import time
+
+            time.sleep(0.02)
+        assert h.is_alive() is False
+        with pytest.raises(WorkerCrashed):
+            h.request_sync("ping")
+    finally:
+        h.close()
 
 
 def test_restart_recovers_after_crash():

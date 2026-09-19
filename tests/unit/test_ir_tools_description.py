@@ -85,3 +85,34 @@ def test_the_description_still_carries_the_two_silent_failure_traps():
     text = _IR_PATCH_DESCRIPTION
     assert "reversed" in text and "empty space" in text, "Pocket 方向那条丢了"
     assert "Invalid constraint index" in text, "草图定位那条丢了"
+
+
+def test_the_description_states_the_sketch_coordinate_convention():
+    """Undefined is what made a phone stand impossible to build.
+
+    The IR never said which components of a point are used on a non-XY plane, the
+    compiler read them as world coordinates, and a model writing (0, y, z) on YZ
+    got nothing — silently. The rule has to be visible, per plane, because it is
+    not guessable.
+    """
+    text = _IR_PATCH_DESCRIPTION
+    assert "WORLD COORDINATES" in text
+    for plane, axes in (("XY", "x and y"), ("XZ", "x and z"), ("YZ", "y and z")):
+        assert plane in text, f"没有提到 {plane} 平面"
+        assert axes in text, f"没有说明 {plane} 平面用哪两个分量"
+
+
+def test_the_description_states_which_way_a_pad_extrudes():
+    """A model planning a wedge needs to know the material's direction, and the
+    plane normal decides it — not something a model can infer from the IR."""
+    text = _IR_PATCH_DESCRIPTION
+    assert "EXTRUSION DIRECTION" in text
+    for arrow in ("XY -> +Z", "XZ -> -Y", "YZ -> +X"):
+        assert arrow in text, f"没有说明 {arrow}"
+
+
+def test_the_description_warns_against_local_frame_coordinates():
+    """The specific mistake that produced the silent failure."""
+    text = _IR_PATCH_DESCRIPTION
+    assert "local 2-D" in text or "local (u, v)" in text
+    assert "collapses" in text or "does not form a closed wire" in text
