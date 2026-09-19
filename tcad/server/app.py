@@ -312,7 +312,20 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
 
     @app.get("/health")
     def health() -> dict:
-        out = {"status": "ok", "worker_alive": None}
+        """Liveness, plus **which** instance this is.
+
+        ``data_dir`` is here for a reason that cost real confusion: two servers
+        can run on different ports with different data directories, and nothing
+        in the UI distinguished them. Seeing the wrong model in the header then
+        looks like "my configuration was lost" when it is really "this is a
+        different server". Reporting the directory makes the instance
+        identifiable at a glance.
+        """
+        out: dict = {"status": "ok", "worker_alive": None, "data_dir": None}
+        try:
+            out["data_dir"] = str(cfg().storage.data_dir)
+        except Exception:  # noqa: BLE001 — liveness must not depend on this
+            pass
         if app.state.services is not None:
             handle = getattr(app.state.services, "_worker_handle", None)
             out["worker_alive"] = bool(handle.is_alive()) if handle else None

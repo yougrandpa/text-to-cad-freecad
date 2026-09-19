@@ -22,6 +22,7 @@ const state = {
   view: "iso",
   busy: false,
   apiOk: null,
+  dataDir: null,
   lastGate: null,
   settings: null,
   providers: [],
@@ -776,7 +777,35 @@ async function openSettings() {
     $("keyHint").textContent = s.api_key_set
       ? `已设置（${s.api_key_source}）：${s.api_key_masked}`
       : (s.needs_key ? "未设置 —— 该供应商需要 Key" : "该供应商无需 Key");
+
+    // The input is deliberately never filled with the stored secret, so an
+    // empty box is the normal state — say so in the box itself, or it reads as
+    // "my key was not saved".
+    $("apiKeyInput").placeholder = s.api_key_set
+      ? `已保存 ${s.api_key_masked} —— 留空表示不修改`
+      : (s.needs_key ? "粘贴你的 API Key" : "该供应商无需 Key");
+
     $("probeResult").hidden = true;
+
+    // Where this configuration lives, and whether it is on disk at all.
+    // Without it, a second server on a different data directory is
+    // indistinguishable from "my settings disappeared".
+    const file = current.settings_file || "（未知）";
+    const dir = file.replace(/[/\\]settings\.json$/, "");
+    $("storageNote").replaceChildren(
+      el("div", { text: `数据目录  ${dir}` }),
+      el("div", {}, [
+        el("span", { text: `配置文件  ${file}` }),
+        el("span", {
+          class: current.persisted ? "ok" : "warn",
+          text: current.persisted
+            ? "   ✓ 已持久化，重启后仍生效"
+            : "   ⚠ 尚未写入磁盘（当前生效的是 YAML 默认）",
+        }),
+      ]),
+    );
+    $("storageNote").hidden = false;
+
     fillModelOptions(
       state.providers.find((p) => p.id === s.provider)?.models || [],
       "模型名会随代际变化，点「列模型」获取实时列表。"
@@ -875,9 +904,14 @@ async function fetchModels() {
 
 function updateModelChip(s) {
   $("modelChipText").textContent = `${s.provider_label || s.provider} / ${s.model || "未设置"}`;
-  $("modelChip").title = s.api_key_set
-    ? `端点 ${s.base_url} · Key 已设置（${s.api_key_masked}）`
-    : `端点 ${s.base_url} · 未设置 Key`;
+  const parts = [
+    `端点 ${s.base_url}`,
+    s.api_key_set ? `Key 已设置（${s.api_key_masked}）` : "未设置 Key",
+  ];
+  // Two servers can run side by side with different data directories. Without
+  // this in the tooltip there is no way to tell which one a tab is talking to.
+  if (state.dataDir) parts.push(`数据目录 ${state.dataDir}`);
+  $("modelChip").title = parts.join(" · ");
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -965,6 +999,7 @@ async function boot() {
   try {
     const health = await api("/health");
     state.apiOk = true;
+    state.dataDir = health.data_dir || null;
     const alive = health.worker_alive;
     if (alive === null || alive === undefined) {
       // The service stack is built lazily on the first real request, so "not

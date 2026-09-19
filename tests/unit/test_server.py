@@ -180,6 +180,30 @@ def test_health_reports_worker_state(client):
     assert body["worker_alive"] is True
 
 
+def test_health_identifies_which_instance_this_is(client):
+    """Two servers can run side by side with different data directories, and
+    nothing distinguished them — so seeing the wrong model in the UI looked like
+    "my configuration was lost" instead of "this is a different server"."""
+    body = client.get("/health").json()
+    assert body["data_dir"], "health 应报告数据目录"
+    assert body["data_dir"] == str(client.services.config.storage.data_dir)
+
+
+def test_health_still_answers_without_a_service_stack(tmp_path):
+    """`data_dir` must come from the config, not from a live stack — otherwise a
+    server that has not built its stack yet cannot be identified either."""
+    from tcad.config.schema import Config
+    from tcad.server.app import create_app
+
+    cfg = Config()
+    cfg.storage.data_dir = str(tmp_path / "data")
+    app = create_app(None, config=cfg)
+    with TestClient(app) as c:
+        body = c.get("/health").json()
+        assert body["status"] == "ok"
+        assert body["data_dir"] == str(tmp_path / "data")
+
+
 def test_create_model_then_reject_duplicate(client):
     r = client.post("/models", json={"model_id": "bracket", "raw_requirement": "a plate"})
     assert r.status_code == 200

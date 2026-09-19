@@ -367,3 +367,40 @@ def test_the_live_row_is_kept_at_the_bottom():
     js = (UI_DIR / "app.js").read_text(encoding="utf-8")
     body = js.split("function append(node)", 1)[1].split("\n}", 1)[0]
     assert "liveRow" in body, "live 行会被后续内容顶到上面，失去「当前状态」的含义"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# telling one instance from another
+#
+# Two servers can run at once with different data directories. Nothing in the
+# UI distinguished them, so seeing someone else's model in the header read as
+# "my configuration was lost" rather than "this is a different server".
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def test_the_settings_dialog_names_the_instance_and_the_config_file():
+    html = (UI_DIR / "index.html").read_text(encoding="utf-8")
+    assert 'id="storageNote"' in html
+
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    body = js.split("async function openSettings", 1)[1].split("function settingsPatch", 1)[0]
+    assert "settings_file" in body, "没有显示配置文件路径"
+    assert "storageNote" in body
+    assert "persisted" in body, "没有说明配置是否真的写到了磁盘"
+
+
+def test_the_model_chip_can_identify_the_instance():
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    body = js.split("function updateModelChip", 1)[1].split("\n}", 1)[0]
+    assert "dataDir" in body, "顶栏无法分辨实例"
+    assert "data_dir" in js, "没有从 /health 取数据目录"
+
+
+def test_the_key_box_never_reads_as_empty():
+    """The stored secret is deliberately never written into the input, so an
+    empty box is the normal state — the placeholder has to say that, or it reads
+    as "my key was not saved"."""
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    body = js.split("async function openSettings", 1)[1].split("function settingsPatch", 1)[0]
+    assert "apiKeyInput" in body
+    assert "placeholder" in body, "空输入框需要 placeholder 说明「已保存，留空不改」"

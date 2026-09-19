@@ -99,6 +99,13 @@
     </div>
 
     <div class="modal-body">
+      <!-- Which instance am I talking to, and where does this configuration
+           live? Omitted entirely, a second server with a different data
+           directory is indistinguishable from "my settings were lost". Placed
+           first because that is the question you have when the header shows an
+           unfamiliar model. -->
+      <div class="storage-note" id="storageNote" hidden></div>
+
       <div class="probe-result bad" id="settingsError" hidden></div>
 
       <label class="field">

@@ -455,6 +455,23 @@ button:disabled, input:disabled, textarea:disabled, select:disabled {
 .probe-result.ok  { background: rgba(61,220,151,.09); border: 1px solid #1d5a41; color: #a9ebcd; }
 .probe-result.bad { background: rgba(255,107,107,.09); border: 1px solid #6b2a2a; color: #f7c0c0; }
 
+/* Which instance, and where the configuration is stored. Sits at the top of
+   the dialog, so it separates with a rule below rather than above. */
+.storage-note {
+  margin-bottom: 16px;
+  padding-bottom: 11px;
+  border-bottom: 1px solid var(--line-soft);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--fg-faint);
+  line-height: 1.75;
+  word-break: break-all;
+}
+.storage-note[hidden] { display: none; }
+.storage-note .ok { color: var(--ok); }
+.storage-note .warn { color: var(--warn); }
+.storage-note b { color: var(--fg-dim); font-weight: 500; }
+
 /* ── narrow screens ───────────────────────────────────────────────────── */
 
 @media (max-width: 1080px) {
