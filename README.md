@@ -10,7 +10,7 @@ deterministic Gate decides whether it is actually done. FreeCAD is used as a
 
 ```
 Python 3.11+ · pydantic v2 · FastAPI + SSE · SQLite(WAL) · 前端零依赖零构建（原生 ES module）
-491 测试全绿（451 单测 + 40 契约测试，整包约 12 秒）
+517 测试全绿（464 单测 + 53 契约测试，整包约 19 秒）
 ```
 
 ---
@@ -224,10 +224,19 @@ additive_box · additive_cylinder · additive_sphere
 subtractive_box · subtractive_cylinder · subtractive_sphere
 ```
 
-两条最容易让模型建错的语义，已写进工具描述：
+三条最容易让模型建错、也最容易**静默**建错的语义，已写进工具描述：
 
 - **同一 body 内的特征只有在几何上真的相交时才合并**；`refs` **只声明构建顺序，不产生任何几何关系**。
-- 要贴在已有形体上，用 `plane: {kind:"face", feature_id:..., sub:"Face6"}`。
+- 要贴在已有形体上，用 `plane: {kind:"face", feature_id:..., sub:"Face6"}`；构建顺序按依赖解析，
+  画在某个特征面上的草图会在那个特征之后才建。
+- **草图坐标是世界坐标，且必须落在草图自己的平面内**：XY 用 x/y、XZ 用 x/z、YZ 用 y/z，
+  法向那一维被忽略。侧面轮廓（楔形、支架立板、手机支架的斜面）属于 YZ 或 XZ。
+  挤出方向随平面法向：`pad` 在 XY 走 +Z、XZ 走 **−Y**、YZ 走 +X（`reversed` / `midplane` 可改）。
+  这条以前**从未定义**，编译器把坐标当局部 (u,v) 用，于是**所有非 XY 平面上的草图都静默变成一条线**：
+  手机支架的侧面轮廓既建不出实体，也没有任何错误信息（`docs/03` 附录 H）。
+
+约束只接受**实测验证过**的类型与参数形状（`Sketcher.Constraint` 对无法识别的形状不是抛异常，而是直接
+segfault，见「已知限制」）。
 
 ---
 
@@ -396,9 +405,9 @@ cfg = load_config("configs/default.yaml", overlays=["configs/policies/strict.yam
 ## 测试
 
 ```bash
-.venv/bin/python -m pytest tests -q              # 491 全绿（整包约 12 秒）
-.venv/bin/python -m pytest tests/unit -q         # 451，不需要 FreeCAD
-.venv/bin/python -m pytest tests/contract -q     # 40，真跑 FreeCADCmd
+.venv/bin/python -m pytest tests -q              # 517 全绿（整包约 19 秒）
+.venv/bin/python -m pytest tests/unit -q         # 464，不需要 FreeCAD
+.venv/bin/python -m pytest tests/contract -q     # 53，真跑 FreeCADCmd
 ```
 
 打断的**运行时**行为另有一条真实路径可复跑（需要一个慢模型，否则没有「回合中间」可打断）：
@@ -438,8 +447,10 @@ cfg = load_config("configs/default.yaml", overlays=["configs/policies/strict.yam
 | 5 | **无会话重命名 / 删除 / 搜索**，不做会话内换模型 | 会话↔模型绑定单向是有意的。 |
 | 6 | **多标签页未协调** | 服务端没有 per-thread 回合锁，`/chat` 按请求替换 `services.hooks`；并发两个 `/chat` 不是受支持的用法。同一个 `request_id` 起第二个回合会被 409 拒绝（否则被覆盖的那个回合就再也停不下来了）。 |
 | 7 | **打断停的是 supervisor，不是 worker 里的活** | 在飞的 LLM 请求会被真的取消；但已经发给 FreeCAD worker 的一次调用（编译 / 网格化）会在 worker 进程里跑完，结果被丢弃——worker 协议没有中途取消。 |
-| 8 | **不做的范围** | GUI 交互建模 / 自由曲面造型 / 装配约束求解 / 2D 工程图 / 仿真 / CAM / 多用户协作。 |
-| 9 | **本机无法 `push` 到 GitHub** | 代理不转发 `receive-pack` 的响应流（`ls-remote` 正常）。需要换代理或加 SSH key。 |
+| 8 | **`Sketcher.Constraint` 对无法识别的形状会 segfault** | 不是抛异常，是原生崩溃（SIGSEGV，26.3.0dev 实测）。所以编译器只构造**实测验证过**的类型/参数组合，其余一律结构化拒绝（`tests/contract/test_sketch_planes.py`）。**代价**：`Radius`/`Diameter` 只能用「值写在构造函数里」的形式（它们的 refs-only 形式正是会崩的那种），而那种形式下 FreeCAD 不做冗余校验——「同时标半径和直径」这类过约束不会被判为 solver 错误。其余维度约束（`DistanceX/Y` 等）仍走校验路径。 |
+| 9 | **worker 崩溃/卡死靠替换，不是修复** | `worker_restart_on_crash`（默认开）现在真的会生效：崩溃或超时后杀掉旧进程、拉起新的，所以坏调用只毁掉**一次**调用。OCCT 卡死的进程无法中断，只能丢弃。 |
+| 10 | **不做的范围** | GUI 交互建模 / 自由曲面造型 / 装配约束求解 / 2D 工程图 / 仿真 / CAM / 多用户协作。 |
+| 11 | **本机无法 `push` 到 GitHub** | 代理不转发 `receive-pack` 的响应流（`ls-remote` 正常）。需要换代理或加 SSH key。 |
 
 ---
 

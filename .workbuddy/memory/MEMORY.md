@@ -50,7 +50,7 @@
 - **唯一生产装配入口**：`tcad.core.wiring.build_services(config)`。它把各子系统「库形状」适配成 `tcad/tools/base.py` 里的窄 Protocol。
   不要在其他地方重新接线；`LoopEngine.build_default_services(cfg)` 只是转发（传 LoopConfig 会报错）。
 - 装一个完整栈不启 worker（测试用）：`build_services(cfg, start_worker=False)`
-- 跑全部测试：`.venv/bin/python -m pytest tests/ -q`（当前 **491 例全绿**，约 12 秒：451 单测 + 40 契约）
+- 跑全部测试：`.venv/bin/python -m pytest tests/ -q`（当前 **517 例全绿**，约 19 秒：464 单测 + 53 契约）
 - 真端到端（打真 FreeCADCmd）：`pytest tests/contract/ -q`
 - CLI：`.venv/bin/python -m tcad.server.cli --data-dir <dir> new|chat|repl|approvals|approve ...`
 - **Web 界面**：`.venv/bin/python tools/serve.py --data-dir <dir> --port 8765` → http://127.0.0.1:8765/ui/
@@ -139,6 +139,34 @@
   两条路都必须说「已打断本次回合」，**不能**说「已离开该会话」（那是描述用户没做过的事）；按钮在开始 / `finally` / 切走三处收起。
 - **未做**：打断停不了 worker 里已经发出去的活（worker 协议无中途取消）；打断不写进会话记录（与工具调用、Gate 报告同一现状）；真机点按未实测。
 - 复跑脚本：`tools/probes/interrupt_live.py`（需要 `stub_llm.py --delay 1.5` 这样的慢模型，否则没有「回合中间」可打断）。
+
+## 草图坐标 / 约束 / worker 健壮性（真机报障「手机支架做不出来」后补，改编译器前必读）
+- **草图坐标是世界坐标，必须落在草图平面内**：XY→(x,y)、XZ→(x,z)、YZ→(y,z)，法向那一维忽略。
+  Sketcher 内部用的是**局部 (u,v)**，所以编译器必须用 `sk.Placement.inverse()` 把世界点映射进去
+  （映射在 `_add_sketch` 里、**加几何之前**要先 `doc.recompute()` 把 attachment 解析掉，否则 Placement 还是单位阵）。
+  **曾经没有这条**：YZ 上的 `(0,y,z)` 被当成 `(u=0,v=y)`，所有非 XY 草图静默塌成一条线、没有实体也没有报错。
+  `pad` 挤出方向随平面法向：XY→+Z、**XZ→−Y**、YZ→+X。
+- **`Sketcher.Constraint` 对无法识别的形状是 segfault，不是异常**（26.3.0dev 实测 SIGSEGV 11）。
+  崩溃形状举例：`Radius[g]`、`Diameter[g]`、`Coincident[g,p]`（要 4 参）、`Horizontal[g,p]`、
+  `PointOnObject[g1,g2]`（要 3 参）、`Symmetric[a,b,c]`（要 5/6 参）、`DistanceX[g]+setDatum`、
+  `Distance[g]+setDatum`、`Weight[g]+setDatum`。
+  → 编译器只构造 `_GEOMETRIC_CONSTRAINTS` / `_VALUE_CONSTRAINTS` + `_REFS_ONLY_SAFE` 里**实测过**的形状，
+  其余抛 `_BadConstraint` 变成 `kind=semantic` 的清楚报错。**改约束构造前先重跑那张实测表**。
+- **值写进构造函数会跳过 FreeCAD 的冗余校验**：`Constraint("Radius", g, 4.0)` 不崩，但之后的 `setDatum`
+  变成空操作，而过约束矩形在那种形式下 `solve()=0 / DoF=0`、建出实体、**Gate 全绿**（假绿！）。
+  所以：**能用 refs-only 的（`DistanceX/Y[g,p]`、`Distance[g,p]`、`Angle[g1,g2]`）一律 refs-only + setDatum**；
+  只有 refs-only 会崩的 `Radius`/`Diameter` 才把值放进构造函数（代价：这两者不做过约束校验）。
+- **构建顺序按依赖解析，不是「先所有草图再所有特征」**：草图的依赖是它附着的 face/datum_plane 所属特征，
+  特征的依赖是 `profile_sketch` + `refs`。旧顺序让 `plane:{kind:"face"}` **永远不可能成功**。
+  依赖环 → `kind=semantic` 报错，不再静默任意顺序。
+- **编译失败绝不能没有原因**：`_build` 在 recompute 后专门诊断「为什么没有实体」（指名草图/特征、边数、wires、state、
+  以及「是不是写成局部坐标了」）。以前会返回 `ok=false, errors=[]`，RPC 再把它变成一句
+  `handler reported failure` —— 模型无从修、用户无从看（这就是用户那条报障的直接来源）。
+- **worker 崩溃/卡死必须替换进程**：`WorkerHandle.recover()`，由 `cfg.runtime.worker_restart_on_crash` 控制；
+  卡在 OCCT 里的进程不会理关闭 stdin，`close()` 只能 kill。以前这个配置项**代码里从没人读**，
+  于是坏调用之后每一次调用都失败——用户体感就是「一直有报错」。
+- 回归测试：`tests/contract/test_sketch_planes.py`（13 例，真 FreeCAD）、`tests/unit/test_worker_error_detail.py`。
+  真机复跑证据：`docs/renders/phone_stand*.png` + `docs/03` 附录 H。
 
 ## 建模时最容易踩的两条（已写进 ir_patch 工具描述）
 1. **Pocket 方向**：草图在 XY（法向 +Z）时 `PartDesign::Pocket` **默认朝 -Z 切**，而底板在 +Z 侧 → 切进空气，特征什么都不做**却报告成功**（`ok=true`、`errors=[]`、体积不变）。要用 `"reversed": true`。
