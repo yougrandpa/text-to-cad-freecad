@@ -69,6 +69,12 @@
     </div>
     <form class="composer" id="composer">
       <textarea id="input" rows="2" placeholder="描述你要的零件…  Enter 发送，Shift+Enter 换行"></textarea>
+      <!-- While a turn runs the only useful thing to do to it is stop it: the
+           model is already working, so "send" is disabled and this takes its
+           place. Hidden (not merely disabled) the rest of the time — an always
+           visible but dead "stop" reads as a broken button. -->
+      <button type="button" id="stopBtn" class="stop" hidden
+              title="打断当前回合，保留已完成的改动（Esc）">停止</button>
       <button type="submit" id="sendBtn" class="primary">发送</button>
     </form>
   </section>

@@ -17,6 +17,7 @@ Endpoints
 ``GET  /models/{id}/artifacts/{path}``  fetch one artefact (PNG / STEP / STL)
 ``GET  /models/{id}/render``            render a view on demand — see below
 ``POST /chat``                          run a turn; Server-Sent Events stream
+``POST /chat/interrupt``                stop the turn named by ``request_id``
 ``GET  /approvals``                     pending approvals
 ``POST /approvals/{approval_id}``       grant or deny one
 ``GET  /threads``                       conversation list
@@ -55,6 +56,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import uuid
 from collections import deque
 from pathlib import Path
@@ -97,6 +99,28 @@ class ChatRequest(BaseModel):
     thread_id: str | None = None
     kind: TurnKind = TurnKind.CREATE
     privileged_requested: bool = False
+    request_id: str | None = None
+    """The client's name for *this* turn, used to address it later.
+
+    Minted by the client rather than the server for one reason: a stop can then
+    name the turn before any frame has come back. A server-minted id leaves a
+    window in which the client knows a turn is running and the server has not
+    yet learned what to call it — exactly the window in which "stop" would fail
+    while the model kept generating. Omitted by callers that do not need it; the
+    server mints one then.
+    """
+
+
+class InterruptRequest(BaseModel):
+    """Stop the running turn with this ``request_id``.
+
+    Named by turn, not by thread: a thread can have a turn starting up, and
+    "stop whatever is running in this conversation" is ambiguous precisely when
+    it matters. The id the client minted is the one thing that identifies the
+    turn it is looking at.
+    """
+
+    request_id: str
 
 
 class ApprovalDecision(BaseModel):
@@ -278,6 +302,107 @@ def _jsonable(value: Any) -> Any:
         return json.loads(json.dumps(value, default=str))
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# stopping a running turn
+# ══════════════════════════════════════════════════════════════════════════
+
+#: How many "stop this turn" requests to remember that named a turn which had
+#: not registered yet. Bounded because the ids come from callers: an unbounded
+#: map keyed by client input is a slow leak. 64 is far more than the one-strided
+#: race this exists for, and entries are consumed (or evicted) within a request.
+_PENDING_STOP_LIMIT = 64
+
+#: How long such a remembered stop stays valid.
+#:
+#: It exists for the race between "the client pressed stop" and "the server
+#: registered the turn", which is milliseconds wide. Holding it forever would be
+#: worse than dropping it: a stop aimed at a turn that never appeared would sit
+#: there waiting to stop some *unrelated* later turn that happened to reuse the
+#: id — the caller would get an abort it never asked for, with no way to see why.
+#: (Observed for real: a probe that reused its request id across runs had its
+#: second run stopped before the first step.) 30s is orders of magnitude more
+#: than the race needs and still expires long before a reused id could show up.
+_PENDING_STOP_TTL_S = 30.0
+
+
+class RunningTurn:
+    """A turn that is running right now, so another request can stop it.
+
+    Two facts travel together here and must not be conflated:
+
+    * ``stopped`` is the **reason** — somebody asked for this turn to end. The
+      engine reads it through a predicate, so a stop that arrives between two
+      steps, or before the very first one, is still turned into an honest
+      ``ABORTED`` outcome instead of being missed;
+    * ``task.cancel()`` is the **mechanism** — it is what actually interrupts
+      the await in flight. Nearly all of a turn's wall-clock time is one LLM
+      HTTP request, so without the cancellation "stop" would only take effect
+      at the next step boundary, which can be a full model timeout away.
+
+    ``request_stop`` is idempotent: the UI may deliver a click and a keyboard
+    shortcut for the same turn, and a second cancel on a finished task is a
+    no-op rather than an error.
+    """
+
+    def __init__(self, request_id: str, thread_id: str) -> None:
+        self.request_id = request_id
+        self.thread_id = thread_id
+        self.task: asyncio.Task | None = None
+        self.stopped = False
+
+    def is_stop_requested(self) -> bool:
+        return self.stopped
+
+    def request_stop(self) -> None:
+        self.stopped = True
+        if self.task is not None and not self.task.done():
+            self.task.cancel()
+
+
+def _take_pending_stop(
+    pending: dict[str, float], request_id: str, *, now: float | None = None
+) -> bool:
+    """Consume a stop that arrived before its turn existed. False if none did.
+
+    A recorded-but-stale entry answers False as well: it is consumed either way
+    (so nothing accumulates), but a stop aimed at a turn that never showed up
+    must not arm a later, unrelated one.
+    """
+    deadline = pending.pop(request_id, None)
+    if deadline is None:
+        return False
+    return (time.monotonic() if now is None else now) < deadline
+
+
+def _remember_pending_stop(pending: dict[str, float], request_id: str) -> None:
+    """Record a stop for a turn that has not registered yet (bounded, expiring)."""
+    if request_id not in pending and len(pending) >= _PENDING_STOP_LIMIT:
+        oldest = min(pending, key=lambda key: pending[key])
+        pending.pop(oldest, None)
+    pending[request_id] = time.monotonic() + _PENDING_STOP_TTL_S
+
+
+def aborted_turn_result(turn_id: str, thread_id: str, model_id: str) -> Any:
+    """The result of a turn stopped before the engine could report one itself.
+
+    Only reachable when the cancellation lands before ``run_turn`` has entered
+    its own body — everything later is converted into an ``ABORTED`` result by
+    the engine, which knows the real step and token counts. Reporting zeroes
+    here is a statement about what the server actually knows, not a guess, and
+    it still gives the client the one thing that must never be missing: a
+    terminal verdict that says the turn was stopped and was not verified.
+    """
+    from tcad.loop.engine import STOPPED_BY_USER, TurnResult
+
+    return TurnResult(
+        turn_id=turn_id,
+        thread_id=thread_id,
+        model_id=model_id,
+        state=TurnState.ABORTED,
+        error=STOPPED_BY_USER,
+    )
+
+
 def _sse(event: str, data: Any) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
 
@@ -294,6 +419,11 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
     app.state.config = config
     app.state.session_db = None
     app.state.light_store = None
+    #: request_id -> RunningTurn for every turn currently in flight. The client
+    #: mints the id, so a stop can address a turn the server has not finished
+    #: learning about; see `_take_pending_stop` for the other half of that race.
+    app.state.turns = {}
+    app.state.pending_stops = {}
 
     def svc() -> Any:
         if app.state.services is None:
@@ -573,6 +703,17 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
                 f"repointed at another model; open or create a session for it instead.",
             )
         model_id = existing.model_id if existing is not None else req.model_id
+        turn_id = req.request_id or f"c{uuid.uuid4().hex[:12]}"
+        # One id, one running turn. This is the *fast* refusal — a request that
+        # arrives while the turn is already registered gets a clean 409. The
+        # generator re-checks at registration, because between this check and
+        # that one there is a window in which two requests can both pass.
+        if turn_id in app.state.turns:
+            raise HTTPException(
+                409,
+                f"request_id {turn_id!r} is already running; a turn id must be "
+                f"unique while it is in flight (mint a new one per request)",
+            )
 
         def remember_user() -> None:
             try:
@@ -611,8 +752,38 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
                     pass
 
             task: asyncio.Task | None = None
+            running = RunningTurn(turn_id, thread_id)
+            registered = False
             try:
+                # Registration is the authority, not the check in `chat()`: two
+                # requests with the same id can both pass that check before
+                # either generator has run, and the second would overwrite the
+                # first's entry — making the first turn impossible to stop, which
+                # is the exact failure this feature exists to remove. The 409
+                # window has closed by now (the response has started), so the
+                # refusal travels as an error frame instead.
+                if turn_id in app.state.turns:
+                    yield _sse(
+                        "error",
+                        {
+                            "type": "DuplicateRequestId",
+                            "message": (
+                                f"request_id {turn_id!r} is already running; a turn id "
+                                f"must be unique while it is in flight"
+                            ),
+                        },
+                    )
+                    return
                 remember_user()
+                # Registered before the `start` frame, so there is no moment in
+                # which the client can see a turn that the server cannot stop.
+                app.state.turns[turn_id] = running
+                registered = True
+                # ...and a stop that raced the `start` frame — it was already
+                # remembered by /chat/interrupt — is honoured here rather than
+                # having the earlier request report a success it did not achieve.
+                if _take_pending_stop(app.state.pending_stops, turn_id):
+                    running.request_stop()
                 # Inside the try on purpose. A client that disconnects between
                 # the `start` frame and the first progress frame raises
                 # GeneratorExit right here, and a generator closed before its
@@ -620,18 +791,41 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
                 # turn task below would leak.
                 yield _sse(
                     "start",
-                    {"model_id": model_id, "kind": req.kind.value, "thread_id": thread_id},
+                    {
+                        "model_id": model_id,
+                        "kind": req.kind.value,
+                        "thread_id": thread_id,
+                        "request_id": turn_id,
+                    },
                 )
                 task = asyncio.create_task(
-                    run_turn_request(s, req, observer=observe, model_id=model_id)
+                    run_turn_request(
+                        s,
+                        req,
+                        observer=observe,
+                        model_id=model_id,
+                        stop_requested=running.is_stop_requested,
+                    )
                 )
+                running.task = task
                 while not task.done():
                     for ev in tap.drain():
                         yield _sse("progress", ev)
                     while agent_events:
                         yield _sse("agent", agent_events.popleft())
                     await asyncio.sleep(0.02)
-                result = await task
+                try:
+                    result = await task
+                except asyncio.CancelledError:
+                    # The turn task was cancelled. When someone *asked* for that
+                    # stop it is an outcome, and the stream must still conclude
+                    # with a verdict — the whole point of the feature is that a
+                    # stop is visible, not that the text quietly stops. A
+                    # cancellation from anywhere else (this generator being torn
+                    # down, server shutdown) is not ours to reinterpret.
+                    if not (running.is_stop_requested() and task.cancelled()):
+                        raise
+                    result = aborted_turn_result(turn_id, thread_id, model_id)
                 for ev in tap.drain():
                     yield _sse("progress", ev)
                 while agent_events:
@@ -642,6 +836,8 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
             except Exception as exc:  # noqa: BLE001
                 yield _sse("error", {"type": type(exc).__name__, "message": str(exc)})
             finally:
+                if registered:
+                    app.state.turns.pop(turn_id, None)
                 # A turn must not outlive the client that asked for it.
                 #
                 # This mattered less when the loop had a step ceiling: a turn
@@ -660,6 +856,45 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    @app.post("/chat/interrupt")
+    async def interrupt_chat(req: InterruptRequest) -> dict:
+        """Stop the turn with this ``request_id``.
+
+        ``async def`` on purpose: the body only touches in-memory state, and
+        cancelling the turn's task is only safe from the event loop's own thread
+        (a sync endpoint runs in a worker thread, where ``Task.cancel()`` is not
+        thread-safe).
+
+        Deliberately 200 even when nothing is running. "No such turn" is an
+        answer, not a server fault, and the caller has to be able to tell it
+        apart from "the stop itself failed". ``stage`` says where the request
+        landed — ``running`` means a turn was told to stop, ``pending`` means it
+        named a turn the server has not registered yet and will be honoured at
+        registration if it appears.
+        """
+        turn = app.state.turns.get(req.request_id)
+        if turn is not None:
+            turn.request_stop()
+            return {
+                "request_id": req.request_id,
+                "thread_id": turn.thread_id,
+                "interrupted": True,
+                "stage": "running",
+            }
+
+        # Not registered — yet. It may be a turn whose first frame has not been
+        # written. Remember it (bounded), so a stop that raced the `start` frame
+        # is honoured at registration instead of silently doing nothing while
+        # the model carries on generating.
+        _remember_pending_stop(app.state.pending_stops, req.request_id)
+        return {
+            "request_id": req.request_id,
+            "thread_id": None,
+            "interrupted": True,
+            "stage": "pending",
+            "note": "该回合尚未注册；它若随后开始，会在第一步之前停止。",
+        }
 
     # ── approvals ─────────────────────────────────────────────────────────
 
@@ -895,12 +1130,20 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
 
 
 async def run_turn_request(
-    services: Any, req: ChatRequest, observer: Any = None, model_id: str | None = None
+    services: Any,
+    req: ChatRequest,
+    observer: Any = None,
+    model_id: str | None = None,
+    stop_requested: Any = None,
 ):
     """Build the engine and run a single turn. Returns a ``TurnResult``.
 
     ``observer`` is forwarded to the engine so a front end can see the model's
     text and tool calls as they happen (``(kind, data) -> None``).
+
+    ``stop_requested`` is the engine's "has someone asked this turn to stop?"
+    predicate. It is how an interruption from another request becomes an
+    ``ABORTED`` TurnResult instead of a turn that simply vanishes.
 
     ``model_id`` overrides ``req.model_id``. The caller resolves it from the
     session, because a conversation's model is recorded once and must not be
@@ -921,7 +1164,14 @@ async def run_turn_request(
         services, enable_privileged=bool(cfg.policy.allow_privileged)
     )
     limits = budget_limits_from_config(cfg)
-    engine = LoopEngine(services, registry, limits, loop_cfg, observer=observer)
+    engine = LoopEngine(
+        services,
+        registry,
+        limits,
+        loop_cfg,
+        observer=observer,
+        stop_requested=stop_requested,
+    )
     return await engine.run_turn(
         thread, UserMessage(kind=req.kind, text=req.text, privileged_requested=req.privileged_requested)
     )

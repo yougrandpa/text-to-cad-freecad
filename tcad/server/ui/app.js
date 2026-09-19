@@ -113,6 +113,7 @@ function showApiUnavailable(detail) {
   // Stop offering actions that cannot work. A button that produces another 404
   // is worse than a disabled one.
   $("sendBtn").disabled = true;
+  $("stopBtn").disabled = true;
   $("settingsBtn").disabled = true;
   $("modelChip").disabled = true;
   $("input").disabled = true;
@@ -407,7 +408,16 @@ async function handleResult(result) {
       "这不是成功。模型可能自称完成了 —— 以 Gate 报告为准。",
     ],
     failed: ["bad", "✗ 回合失败", result.error || "原因未知"],
-    aborted: ["warn", "回合被中止", ""],
+    // Reached only by an explicit stop (a client that leaves aborts the stream
+    // and gets no result at all), so it can say what actually happened. The
+    // second line is the part that matters: stopping is not a failure, but it
+    // also means the rest of the work was never checked.
+    aborted: [
+      "warn",
+      "⏹ 回合已被打断",
+      "你停止了这次生成。打断前已经写进 IR 的改动仍在（见右侧检查器与视图），" +
+        "但此后没有任何东西经过 Gate 验证 —— 这不是完成。",
+    ],
     awaiting_approval: [
       "warn",
       "⏸ 等待审批",
@@ -431,7 +441,10 @@ async function handleResult(result) {
   }));
 
   const ok = result.state === "succeeded";
-  setStatus(ok ? "ok" : "bad", ok ? "完成" : "未完成");
+  // A stopped turn is neither success nor fault: it is a deliberate outcome, so
+  // it gets neither the green "完成" nor the red "未完成" that a failure gets.
+  const stopped = result.state === "aborted";
+  setStatus(ok ? "ok" : stopped ? "" : "bad", ok ? "完成" : stopped ? "已打断" : "未完成");
 
   // Await the inspector so `state.version` is current before the artefacts and
   // the viewport are read — otherwise the UI can describe a version it has not
@@ -467,6 +480,56 @@ async function ensureModel() {
   }
 }
 
+/** A name for this turn, minted before anything is sent.
+ *
+ * The stop button has to be able to say *which* turn to stop, and it must be
+ * able to say it immediately: waiting for the server's `start` frame would
+ * leave a window in which a click is simply ignored while the model keeps
+ * generating. So the client names its own turn and the server adopts the name.
+ */
+function newRequestId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `c-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/** Stop the turn that is running, without leaving the session.
+ *
+ * Two mechanisms, in order:
+ *
+ *  1. ask the server to cancel exactly this turn — it can, because the client
+ *     named it before sending anything. The outcome comes back on the *same*
+ *     stream as a normal `result` frame with state `aborted`, so the verdict on
+ *     screen still comes from the engine, like every other outcome;
+ *  2. if that request itself fails (an older server, a dead socket), close the
+ *     stream — which the server also reads as "stop this turn". Falling back to
+ *     it beats leaving a model generating with no way to stop it.
+ */
+async function stopTurn() {
+  const turn = state.turn;
+  if (!turn || turn.stopped) return;
+  turn.stopped = true;
+  $("stopBtn").disabled = true;
+  setStatus("busy", "正在打断…");
+  setLive("正在打断这次生成…");
+  try {
+    const res = await api("/chat/interrupt", {
+      method: "POST",
+      body: JSON.stringify({ request_id: turn.requestId }),
+    });
+    if (res && res.stage === "pending") {
+      // The turn had not registered yet; the stop is remembered and will be
+      // honoured at registration. Say that, rather than "stopped" — it has not
+      // stopped *yet*.
+      pushNotice("info", "该回合尚未开始，已记为「一启动就停」。");
+    }
+  } catch (err) {
+    pushNotice("warn", `打断接口不可用（${err.message}），改为断开连接。`);
+    turn.controller.abort();
+  }
+}
+
 async function send(text) {
   const trimmed = text.trim();
   if (!trimmed || state.busy) return;
@@ -490,7 +553,15 @@ async function send(text) {
   // replaced it: its frames render there, its AbortError is reported as "已离开
   // 该会话" *inside a conversation you never left*, and its `finally` deletes the
   // live row of the turn that is still running.
-  const turn = { controller: new AbortController() };
+  //
+  // `requestId` is what "stop" names, and `stopped` records that the user asked
+  // for the end — the only way to tell a deliberate stop from "the user left the
+  // session" if the stop has to fall back to closing the socket.
+  const turn = {
+    controller: new AbortController(),
+    requestId: newRequestId(),
+    stopped: false,
+  };
   state.turn = turn;
   const current = () => state.turn === turn;
 
@@ -498,6 +569,8 @@ async function send(text) {
   state.abort = turn.controller;
   assistantBody = null;
   $("sendBtn").disabled = true;
+  $("stopBtn").hidden = false;
+  $("stopBtn").disabled = false;
   setStatus("busy", "生成中…");
   setLive("正在请求模型…");
   renderSessions();   // the sidebar marks this session as running
@@ -506,7 +579,12 @@ async function send(text) {
   try {
     await ensureModel();
     await streamChat(
-      { model_id: state.modelId, text: trimmed, thread_id: state.threadId },
+      {
+        model_id: state.modelId,
+        text: trimmed,
+        thread_id: state.threadId,
+        request_id: turn.requestId,
+      },
       {
         start: (d) => {
           if (!current()) return;
@@ -528,7 +606,13 @@ async function send(text) {
     // where a deliberate switch used to be reported as a fault.
     if (!current()) return;
     if (err.name === "AbortError") {
-      pushNotice("warn", "已离开该会话，本次回合已中断。");
+      // Two very different reasons land here: the user left the session, or the
+      // user pressed 停止 and the stop had to fall back to closing the socket.
+      // Reporting the second as "you left the session" would be a lie about
+      // what the user just did.
+      pushNotice("warn", turn.stopped
+        ? "已打断本次回合。打断前的改动仍在，但此后没有任何东西经过 Gate 验证。"
+        : "已离开该会话，本次回合已中断。");
     } else {
       pushNotice("bad", `请求失败：${err.message}`);
       setStatus("bad", "出错");
@@ -543,6 +627,8 @@ async function send(text) {
       state.abort = null;
       clearLive();
       $("sendBtn").disabled = false;
+      $("stopBtn").hidden = true;
+      $("stopBtn").disabled = false;
       renderSessions();
     }
   }
@@ -1072,10 +1158,18 @@ function wire() {
       e.preventDefault();
       $("newSessionBtn").click();
     }
+    // Esc is the "get me out of this" key. While a turn is generating, that is
+    // the turn — but only when no dialog is open, or Esc would mean two things
+    // at once and stop a turn the user was not even looking at.
+    if (e.key === "Escape" && state.busy && $("settingsModal").hidden) {
+      e.preventDefault();
+      stopTurn();
+    }
   });
 
   $("settingsBtn").addEventListener("click", openSettings);
   $("modelChip").addEventListener("click", openSettings);
+  $("stopBtn").addEventListener("click", stopTurn);
   $("closeSettings").addEventListener("click", () => { $("settingsModal").hidden = true; });
   $("cancelSettings").addEventListener("click", () => { $("settingsModal").hidden = true; });
   $("saveSettings").addEventListener("click", saveSettings);
@@ -1279,6 +1373,7 @@ async function switchSession(threadId, { force = false } = {}) {
     state.busy = false;
     state.abort = null;
     $("sendBtn").disabled = false;
+    $("stopBtn").hidden = true;
     setStatus("", "已切换会话");
   }
 

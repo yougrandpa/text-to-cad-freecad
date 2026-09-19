@@ -21,6 +21,7 @@ Two non-negotiable invariants enforced here (design §4.1, §9, §10):
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from dataclasses import dataclass
@@ -105,6 +106,18 @@ class LoopConfig(BaseModel):
     data_dir: str = "data"
 
 
+#: The error text of a turn that was stopped from outside, by a person.
+#:
+#: Phrased as what did *not* happen ("nothing after the stop was verified")
+#: rather than as a failure of the model: an interrupted turn is an outcome the
+#: user asked for, and the one thing that must never be implied is that the
+#: remaining work was checked. ``ABORTED`` is already reported by the UI as
+#: explicitly-not-success; this string is the same statement in the payload.
+STOPPED_BY_USER = (
+    "stopped by the user before the Gate passed — nothing after the stop was verified"
+)
+
+
 #: How many *consecutive* steps may return no tool call before the turn is
 #: declared stuck.
 #:
@@ -132,6 +145,22 @@ class LoopEngine:
       raises is swallowed;
     * it is **read-only by construction** — it receives a fresh dict that the
       engine has already finished using, so it cannot mutate the conversation.
+
+    ``stop_requested`` is an optional zero-argument predicate answering "has
+    someone asked this turn to stop?". It exists because a stop arrives from
+    *outside* the loop — another HTTP request, another task — and the loop is
+    the only thing that can turn that into an honest outcome. Two things matter
+    about it and they are deliberately separate:
+
+    * the **predicate** is the reason. The loop consults it at every step
+      boundary, so a stop that lands between two steps (or before the first one)
+      still ends the turn as ``ABORTED`` rather than being missed;
+    * the **cancellation** is the mechanism. A caller that wants the in-flight
+      await to actually stop — the LLM HTTP request is where nearly all the
+      wall-clock time goes — cancels the task as well. ``run_turn`` only
+      converts a ``CancelledError`` into an outcome when the predicate says the
+      cancellation was asked for; a cancellation from anywhere else (server
+      shutdown, a client that hung up) keeps its ordinary asyncio meaning.
     """
 
     def __init__(
@@ -141,6 +170,7 @@ class LoopEngine:
         budget_limits: BudgetLimits,
         config: LoopConfig | None = None,
         observer: Callable[[str, dict], None] | None = None,
+        stop_requested: Callable[[], bool] | None = None,
     ):
         self.services = services
         self.registry = registry
@@ -150,9 +180,27 @@ class LoopEngine:
         self.strategy = make_strategy(self.config.default_strategy)
         self._candidate_reports: list[GateReport] = []
         self._last_commit_passed = False
+        self._last_gate_report: GateReport | None = None
         self._compile_failures = 0
         self._idle_steps = 0
         self._observer = observer
+        self._stop_requested = stop_requested
+
+    # ─── interruption ─────────────────────────────────────────────────────
+
+    def stop_was_requested(self) -> bool:
+        """Whether an outside caller has asked this turn to stop.
+
+        A predicate that itself raises must not break the turn — the same rule
+        the observer follows. "I could not find out whether to stop" is not a
+        reason to abort, and it is certainly not a reason to crash.
+        """
+        if self._stop_requested is None:
+            return False
+        try:
+            return bool(self._stop_requested())
+        except Exception:  # noqa: BLE001
+            return False
 
     # ─── observation ──────────────────────────────────────────────────────
 
@@ -177,6 +225,7 @@ class LoopEngine:
         # for no reason.
         self._idle_steps = 0
         self._compile_failures = 0
+        self._last_gate_report = None
 
         # pre_turn hook (quota / content-safety pre-check).
         self.services.hooks.dispatch(
@@ -192,6 +241,18 @@ class LoopEngine:
                 if isinstance(self.strategy, LoopUntilDoneStrategy):
                     raise
                 result = await LoopUntilDoneStrategy().run(self, turn, messages, allowed)
+        except asyncio.CancelledError:
+            # The in-flight await was cancelled. That is the *mechanism* of a
+            # stop, not its meaning: convert it into an outcome only when the
+            # stop predicate says someone asked for exactly that. Any other
+            # cancellation (server shutdown, the client's request being torn
+            # down) is not ours to reinterpret — it propagates, and the cleanup
+            # above it still runs.
+            if not self.stop_was_requested():
+                raise
+            turn.state = TurnState.ABORTED
+            turn.error = STOPPED_BY_USER
+            result = self._finalize(turn, messages, self._last_gate_report)
         except Exception as e:  # final safety net -> FAILED, still post_turn
             result = TurnResult(
                 turn_id=turn.turn_id,
@@ -242,6 +303,18 @@ class LoopEngine:
     # ─── one step: pre_step -> LLM -> tools ───────────────────────────────
 
     async def _step(self, turn: Turn, messages: list[dict], allowed: set) -> StepYield:
+        # A stop asked for between two steps (or before the first one). Checked
+        # before the pre_step hook: a step that will not run must not announce
+        # itself, and the loop's own condition ends the turn on a changed state.
+        #
+        # This is what makes the stop predicate — not the cancellation — the
+        # authority on the outcome. A cancellation can be missed (a task that
+        # never started, a cancel that races the end of a step); this cannot.
+        if self.stop_was_requested():
+            turn.state = TurnState.ABORTED
+            turn.error = STOPPED_BY_USER
+            return StepYield()
+
         # pre_step hook (context placement / cost ceiling).
         self.services.hooks.dispatch(
             HookEvent.PRE_STEP,
@@ -461,6 +534,7 @@ class LoopEngine:
                 gr = outcome.gate_report
                 if gr is not None:
                     self._candidate_reports.append(gr)
+                    self._last_gate_report = gr
                     gate_report = gr
                     if gr.passed:
                         self._last_commit_passed = True

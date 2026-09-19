@@ -440,6 +440,20 @@ button:disabled, input:disabled, textarea:disabled, select:disabled {
 }
 .primary:hover { filter: brightness(1.08); }
 
+/* The stop button takes the send button's place while a turn runs. Outlined
+   rather than filled on purpose: it *ends* something instead of submitting it,
+   and a filled button beside a disabled "send" would read as the more
+   important action, which it is not. */
+.stop {
+  background: transparent; color: var(--bad); border: 1px solid #6b2a2a;
+  border-radius: 9px; padding: 10px 18px; font-weight: 600; cursor: pointer;
+}
+.stop:hover { color: #fff; border-color: var(--bad); background: rgba(255, 107, 107, .14); }
+/* The button is only meaningful while a turn runs, and `hidden` is how it goes
+   away. Stated explicitly so a later `display` rule on this class cannot leave a
+   dead stop button on screen. */
+.stop[hidden] { display: none; }
+
 /* ── viewport ─────────────────────────────────────────────────────────── */
 
 .tabs { display: flex; gap: 3px; }

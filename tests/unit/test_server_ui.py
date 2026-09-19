@@ -610,3 +610,102 @@ def test_the_active_session_is_marked_while_a_turn_runs():
     send_body = js.split("async function send", 1)[1].split("function handleAgentEvent", 1)[0]
     assert send_body.count("renderSessions()") >= 2, "开始与结束时都要刷新，否则标记不会消失"
 
+
+# ══════════════════════════════════════════════════════════════════════════
+# interrupting a turn from the conversation
+#
+# The user's request: "在对话中可以打断对话". Before this, the only ways a turn
+# could end early were the model finishing, a budget tripping, or the user
+# *leaving the session* — closing the tab was the stop button. Three things have
+# to hold, and each one has a way of looking like it works while it does not:
+#
+#   1. there is a control, and it is visible exactly while it is meaningful;
+#   2. it names the turn it is stopping, before the server could have told the
+#      client anything about that turn;
+#   3. the outcome stays the engine's verdict, so a stopped turn is reported as
+#      `aborted` and never as done.
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def test_the_composer_can_stop_the_turn_it_started():
+    html = (UI_DIR / "index.html").read_text(encoding="utf-8")
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="stopBtn"' in html
+    # Hidden by default — a permanently visible but dead stop button reads as a
+    # broken button, and the app disables enough controls already.
+    assert re.search(r'id="stopBtn"[^>]*hidden', html), "停止按钮默认应是隐藏的"
+    assert ".stop {" in (UI_DIR / "styles.css").read_text(encoding="utf-8"), \
+        "styles.css 没有停止按钮的样式（它会退化成普通按钮）"
+
+    stop_body = js.split("async function stopTurn", 1)[1].split("async function send", 1)[0]
+    assert "/chat/interrupt" in stop_body, "停止按钮没有告诉服务端停哪一个回合"
+    assert "request_id" in stop_body
+    # The socket fallback: if the endpoint is unreachable, hanging up is the
+    # other thing the server reads as "stop this turn".
+    assert "turn.controller.abort()" in stop_body
+
+    send_body = js.split("async function send", 1)[1].split("function handleAgentEvent", 1)[0]
+    assert 'request_id: turn.requestId' in send_body, "回合必须有名字，否则无法被指名停止"
+    # Shown while running, hidden by the cleanup on every exit path.
+    assert '$("stopBtn").hidden = false' in send_body
+    assert '$("stopBtn").hidden = true' in send_body.split("finally", 1)[1], \
+        "结束后停止按钮没有消失"
+    # Switching sessions abandons a turn, so it must not leave the button up.
+    switch_body = js.split("async function switchSession", 1)[1].split("async function loadMessages", 1)[0]
+    assert '$("stopBtn").hidden = true' in switch_body
+
+    wire_body = js.split("function wire()", 1)[1]
+    assert '$("stopBtn").addEventListener("click", stopTurn)' in wire_body
+    assert 'e.key === "Escape"' in wire_body, "Esc 是打断的键盘路径"
+
+
+def test_the_turn_id_is_minted_before_anything_is_sent():
+    """It has to exist before the request, or the first click can be ignored.
+
+    A server-minted id only becomes known on the `start` frame; a stop clicked
+    before it arrives would name nothing, and the honest report would be
+    "nothing was stopped" while the model kept generating.
+    """
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    body = js.split("function newRequestId", 1)[1].split("async function stopTurn", 1)[0]
+    assert "crypto.randomUUID" in body
+    assert "Math.random" in body, "没有 randomUUID 的浏览器需要兜底"
+
+    send_body = js.split("async function send", 1)[1].split("function handleAgentEvent", 1)[0]
+    assert "requestId: newRequestId()" in send_body
+    # Minted in send(), before the request goes out — not read off a `start`
+    # frame that has not arrived yet when the first click happens.
+    assert send_body.index("newRequestId()") < send_body.index("streamChat(")
+
+
+def test_a_stopped_turn_is_reported_as_stopped_and_unverified():
+    """A stop is neither success nor fault, and the one thing it must not imply
+    is that the remaining work was checked."""
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    body = js.split("const verdicts = {", 1)[1].split("\n  };", 1)[0]
+    aborted = body.split("aborted:", 1)[1].split("],", 1)[0]
+    assert "打断" in aborted
+    assert "验证" in aborted, "打断后的回合必须说明「此后没有被验证过」"
+    assert "不是完成" in aborted, "打断不能被读成完成"
+    assert "失败" not in aborted, "打断不是失败，不该用失败的语气"
+
+    result_body = js.split("async function handleResult", 1)[1].split("function ", 1)[0]
+    assert '"aborted"' in result_body, "打断的回合不该沿用失败的状态灯"
+    assert "已打断" in result_body
+
+
+def test_a_deliberate_stop_is_not_reported_as_leaving_the_session():
+    """Both end in AbortError; only one of them is about the session.
+
+    The switch-session path nulls the turn, so a stop that had to fall back to
+    closing the socket is the only case that reaches this branch — reporting it
+    as "已离开该会话" would describe something the user did not do.
+    """
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    send_body = js.split("async function send", 1)[1].split("function handleAgentEvent", 1)[0]
+    catch_body = send_body.split("} catch (err) {", 1)[1].split("} finally {", 1)[0]
+    assert "turn.stopped" in catch_body
+    assert "已打断" in catch_body
+    assert "已离开该会话" in catch_body, "离开会话的提示仍然要存在"
+
