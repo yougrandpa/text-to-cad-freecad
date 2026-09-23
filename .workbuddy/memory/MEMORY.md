@@ -4,7 +4,9 @@
 > 最近一次整理：2026-09-23（压缩去重，并从 §34 补入新教训）。
 
 ## 仓库 / 网络 / 环境
-- 远端 `https://github.com/yougrandpa/text-to-cad-freecad.git`，主分支 `main`；当前 HEAD `00db836`。
+- 远端 `https://github.com/yougrandpa/text-to-cad-freecad.git`，主分支 `main`；当前 HEAD `0c619a9`
+  （`fix(ir,verify,worker,loop,store,server,ui): every guard now takes effect, every claim is measured`，
+  220 files / +158k，覆盖自 `00db836` 以来的第 1–22 轮审计修复；**未推送**）。
 - `free-cad/` 是 FreeCAD 源码依赖，已在 `.gitignore`，**不要提交**。
 - **无法 push GitHub**（代理不转发 `receive-pack` 的响应流；HTTP/2→408，HTTP/1.1→curl 52）。需要换代理或加 SSH key。
 - 执行沙箱禁止写 OS 临时目录 → pytest 必须 `--basetemp=.pytest_tmp`（已在 pyproject）。**该目录每次运行被清空。**
@@ -46,10 +48,14 @@
 
 ## 唯一入口与常用命令
 - **唯一生产装配入口**：`tcad.core.wiring.build_services(config)`；测试用 `start_worker=False`。
-- 全量测试：`.venv/bin/python -m pytest tests -q`（**当前 1007 passed, 0 skipped**，约 164 s —— 4 条真机 e2e 在跑真模型）
+- 全量测试：`.venv/bin/python -m pytest tests -q`（**当前 1007 passed, 0 skipped**；
+  墙钟 79–164 s 波动，差在 4 条真机 e2e 的 provider 延迟）
   `tests/unit`（787，不需 FreeCAD）/ `tests/contract`（真跑 FreeCADCmd）/ `tests/e2e`（需真模型，见下）
 - 环境诊断：`.venv/bin/python tools/doctor.py`（退出码 0 = 可运行；会打印 17/21 ops kernel-verified）
 - 验收产物：`tools/build_acceptance_artifacts.py [--check]` → `review/acceptance/`
+  **改过 `tcad/`、`tools/`、`tests/` 下任何文件后，提交前必须重建**，否则 `--check` 判 STALE
+  （戳记 `source_tree` 覆盖这三棵树的全部 `*.py`，精确到行尾空行；`review/` 本身不在戳记内，
+  所以改报告不会让包过期）。**已提交的 `review/acceptance/` 必须与当次提交同源。**
 - CLI：`.venv/bin/python -m tcad.server.cli --data-dir <dir> new|chat|repl|approvals|approve`
 - **Web 界面**：`tools/serve.py --data-dir <dir> --port 8765` → `http://127.0.0.1:8765/ui/`
   （命令行 `--provider/--model/--base-url` 只作用于内存，不覆盖 UI 保存的设置）
