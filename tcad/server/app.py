@@ -60,14 +60,14 @@ import time
 import uuid
 from collections import deque
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, get_args
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from tcad.config.schema import Config
-from tcad.core.types import TurnKind, TurnState
+from tcad.core.types import RenderStyle, TurnKind, TurnState
 from tcad.ir.schema import IrDocument, RequirementSpec
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -75,10 +75,34 @@ from tcad.ir.schema import IrDocument, RequirementSpec
 # ══════════════════════════════════════════════════════════════════════════
 
 
+def _safe_id_field(kind: str):
+    """A pydantic validator that rejects an id which must not become a path.
+
+    Done at the request model so a bad id is a 422 with a readable message,
+    instead of a 500 from deep inside the store — and so the same rule is applied
+    to every endpoint that takes an id, including the ones added later. ``None``
+    passes through (optional ids are optional, not valid).
+    """
+
+    def _check(value):
+        if value is None:
+            return None
+        from tcad.core.ids import InvalidIdentifier, ensure_safe_id
+
+        try:
+            return ensure_safe_id(value, kind=kind)
+        except InvalidIdentifier as exc:
+            raise ValueError(str(exc)) from exc
+
+    return _check
+
+
 class CreateModelRequest(BaseModel):
     model_id: str
     raw_requirement: str = ""
     """The user's own words. Kept on the IR so requirement provenance survives."""
+
+    _validate_model_id = field_validator("model_id")(_safe_id_field("model_id"))
 
 
 class CreateSessionRequest(BaseModel):
@@ -92,11 +116,16 @@ class CreateSessionRequest(BaseModel):
     model_id: str | None = None
     raw_requirement: str = ""
 
+    _validate_model_id = field_validator("model_id")(_safe_id_field("model_id"))
+
 
 class ChatRequest(BaseModel):
     model_id: str
     text: str
     thread_id: str | None = None
+
+    _validate_model_id = field_validator("model_id")(_safe_id_field("model_id"))
+    _validate_thread_id = field_validator("thread_id")(_safe_id_field("thread_id"))
     kind: TurnKind = TurnKind.CREATE
     privileged_requested: bool = False
     request_id: str | None = None
@@ -186,6 +215,19 @@ def _merge_llm(current: Any, patch: LlmSettingsPatch):
 
 _ALLOWED_VIEWS = {"iso", "front", "top", "right"}
 
+#: Render styles that may appear in the ``/render`` cache key. Derived from the
+#: ``RenderStyle`` literal so the two cannot drift; a style that is not rendered
+#: by the rasteriser must not reach a filename either.
+#
+# ``style`` used to be validated by nothing: it was interpolated straight into
+# ``view-{view}-{style}-{w}x{h}.png``. ``view`` has an allowlist, so the
+# traversal reads as "handled" — but ``style`` walked past it, and
+# ``style=../../../../tmp/x`` resolves to ``<data>/artifacts/tmp/x-800x600.png``,
+# outside the version directory the cache lives in. The same value is the file
+# the endpoint *serves* when it already exists and the file ``produced.replace()``
+# moves the render onto, so it was both a read and a write outside the boundary.
+_ALLOWED_STYLES = frozenset(get_args(RenderStyle))
+
 
 def _resolve_artifact(root: Path, file_path: str) -> Path:
     """Resolve ``file_path`` to a real file inside ``root``, or refuse.
@@ -227,6 +269,26 @@ def _model_exists(store: Any, model_id: str) -> bool:
         return False
     except Exception:  # noqa: BLE001 — an unreadable model is not a free slot
         return True
+
+
+def _verdict_or_none(store: Any, model_id: str, version: int | None) -> dict | None:
+    """The verdict, or ``None`` when the store cannot produce one.
+
+    Best-effort on purpose: a listing that raises because one session's model is
+    unreadable is worse than a listing that says "unknown" for that row.
+    """
+    fn = getattr(store, "verdict", None)
+    if not callable(fn) or version is None:
+        return None
+    try:
+        return fn(model_id, version)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _verified_or_none(store: Any, model_id: str, version: int | None) -> bool | None:
+    v = _verdict_or_none(store, model_id, version)
+    return None if v is None else bool(v.get("verified"))
 
 
 def artifact_url_for(path: str | None) -> str | None:
@@ -432,6 +494,14 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
             from tcad.core.wiring import build_services
 
             app.state.services = build_services(app.state.config)
+        # Attach the conversation store so a turn can replay prior messages into
+        # the model's context (tcad.context.history). Best-effort: a stack whose
+        # config cannot open a session DB still serves geometry, it just cannot
+        # remember the conversation.
+        try:
+            app.state.services.session_db = db()
+        except Exception:  # noqa: BLE001
+            pass
         return app.state.services
 
     def cfg() -> Config:
@@ -582,7 +652,28 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
             if d.exists()
             else []
         )
-        return {"model_id": model_id, "version": v, "dir": str(d), "files": files}
+        return {
+            "model_id": model_id, "version": v, "dir": str(d), "files": files,
+            # Artifacts alone say "files exist"; the verdict says whether THIS
+            # version was graded green. A client must not have to infer the
+            # second from the first.
+            "verdict": _verdict_or_none(s.store, model_id, v),
+        }
+
+    @app.get("/models/{model_id}/verdict")
+    def get_verdict(model_id: str, version: int | None = None) -> dict:
+        """Is the current version verified on disk — and if not, why not.
+
+        Exists because the honest answer is not a boolean the client can derive:
+        a model at v5 whose v5 never passed is a different situation from one
+        whose v4 passed and was then edited, and the reason string distinguishes
+        them.
+        """
+        s = svc()
+        try:
+            return s.store.verdict(model_id, version)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, f"no such model: {model_id}") from exc
 
     @app.get("/models/{model_id}/artifacts/{file_path:path}")
     def get_artifact(
@@ -640,6 +731,10 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
             # its "no model yet" message off this status.
             raise HTTPException(404, f"no such model: {model_id}") from exc
         style = style or c.context.render.style
+        if style not in _ALLOWED_STYLES:
+            raise HTTPException(
+                400, f"unknown style {style!r}; expected one of {sorted(_ALLOWED_STYLES)}"
+            )
         w = int(width or c.context.render.width)
         h = int(height or c.context.render.height)
         if not (16 <= w <= 4096 and 16 <= h <= 4096):
@@ -725,9 +820,13 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
                 pass
 
         async def gen() -> AsyncIterator[str]:
-            original_hooks = s.hooks
-            tap = HookEventTap(original_hooks)
-            s.hooks = tap  # the engine reads services.hooks at call time
+            # A per-request tap, handed to the engine — NOT assigned onto
+            # ``services``. Assigning it (and restoring it in ``finally``) is
+            # shared mutable state: two concurrent /chat requests would each
+            # overwrite the other's tap, and the first to finish would restore
+            # the original dispatcher while the second was still mid-turn, losing
+            # that turn's lifecycle events and hook decisions.
+            tap = HookEventTap(s.hooks)
 
             agent_events: deque[dict] = deque()
 
@@ -805,6 +904,7 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
                         observer=observe,
                         model_id=model_id,
                         stop_requested=running.is_stop_requested,
+                        hooks=tap,
                     )
                 )
                 running.task = task
@@ -847,9 +947,8 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
                 # stops it, and nothing else here would.
                 if task is not None and not task.done():
                     task.cancel()
-                # Unwrap the tap. Assigning it permanently would nest one tap per
-                # request, so a long-lived server would accumulate them.
-                s.hooks = original_hooks
+                # Nothing to unwrap: the tap was passed to the engine, never
+                # assigned onto the shared services bundle.
 
         return StreamingResponse(
             gen(),
@@ -1052,7 +1151,12 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
                 version = store.latest_version(row["model_id"])
             except Exception:  # noqa: BLE001 — an unreadable model must not hide the list
                 version = None
-            sessions.append({**row, "ir_version": version})
+            # `ir_version` alone reads as progress. A session whose latest version
+            # was never verified must not look like one that was.
+            sessions.append({
+                **row, "ir_version": version,
+                "verified": _verified_or_none(store, row["model_id"], version),
+            })
         return {"sessions": sessions}
 
     @app.post("/sessions")
@@ -1135,6 +1239,8 @@ async def run_turn_request(
     observer: Any = None,
     model_id: str | None = None,
     stop_requested: Any = None,
+    history_provider: Any = None,
+    hooks: Any = None,
 ):
     """Build the engine and run a single turn. Returns a ``TurnResult``.
 
@@ -1144,6 +1250,15 @@ async def run_turn_request(
     ``stop_requested`` is the engine's "has someone asked this turn to stop?"
     predicate. It is how an interruption from another request becomes an
     ``ABORTED`` TurnResult instead of a turn that simply vanishes.
+
+    ``history_provider`` is ``(thread_id, current_text) -> list[Message]``. It
+    defaults to reading the conversation store attached to ``services`` as
+    ``session_db``, which is what turns "the transcript is in SQLite" into "the
+    model was told the transcript". Pass it explicitly to override.
+
+    ``hooks`` is a per-turn dispatcher (typically an observer tap). It is passed
+    down to the engine rather than assigned onto ``services``, so two concurrent
+    requests cannot clobber each other's tap.
 
     ``model_id`` overrides ``req.model_id``. The caller resolves it from the
     session, because a conversation's model is recorded once and must not be
@@ -1171,10 +1286,32 @@ async def run_turn_request(
         loop_cfg,
         observer=observer,
         stop_requested=stop_requested,
+        context_assembler=getattr(services, "context_assembler", None),
+        history_provider=history_provider or _default_history_provider(services),
+        hooks=hooks,
     )
     return await engine.run_turn(
         thread, UserMessage(kind=req.kind, text=req.text, privileged_requested=req.privileged_requested)
     )
+
+
+def _default_history_provider(services: Any):
+    """Read prior turns from the session store, when one is attached.
+
+    ``None`` when there is no conversation store: the engine then builds the
+    minimal ``[system, user]`` context, which is the correct behaviour for an
+    embedder that keeps its own transcript.
+    """
+    session_db = getattr(services, "session_db", None)
+    if session_db is None:
+        return None
+
+    def _load(thread_id: str, current_text: str):
+        from tcad.context.history import load_thread_history
+
+        return load_thread_history(session_db, thread_id, current_text=current_text)
+
+    return _load
 
 
 def budget_limits_from_config(cfg: Config):

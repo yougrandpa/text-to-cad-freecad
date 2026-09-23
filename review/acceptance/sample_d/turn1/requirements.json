@@ -1,0 +1,28 @@
+{
+  "sample": "D",
+  "schema_version": 1,
+  "version": 1,
+  "units": "mm",
+  "coordinate_system": "right-handed; plate occupies x∈[0,w], y∈[0,h], z∈[0,t]",
+  "raw_text": "轴线沿 Z 的阶梯轴：粗段 Ø20、高 20；细段 Ø12、高 20。用旋转（revolve）成型",
+  "user_stated_requirements": [
+    {
+      "kind": "stepped_shaft",
+      "value": {
+        "axis": "Z",
+        "coarse_diameter": 20.0,
+        "coarse_height": 20.0,
+        "fine_diameter": 12.0,
+        "fine_height": 20.0,
+        "total_height": 40.0,
+        "feature": "revolution"
+      },
+      "evidence": "粗段 Ø20、高 20；细段 Ø12、高 20",
+      "confirmed": true
+    }
+  ],
+  "system_inferred": [],
+  "later_modifications": [],
+  "generated_from": null,
+  "attempt_id": "acc-20260923T144323Z-2585065a"
+}

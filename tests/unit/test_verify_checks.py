@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from tcad.core.types import CheckStatus, Severity
 from tcad.ir.schema import ConstraintExpr, RequirementSpec
 from tcad.verify.checks_solid import (
@@ -152,3 +154,160 @@ def test_the_coverage_check_is_always_assembled(tmp_path):
 
     checks = build_spec_checks(_ir_with(confirmed=0), None)
     assert any(c.id == "requirement_coverage" for c in checks)
+
+
+def test_a_list_measurement_still_produces_a_verdict():
+    """``CheckResult.measurements`` is a scalar map, but checks report *sets* of
+    things (which formats are empty, which features errored). Handing a list to
+    pydantic raised inside the check, so the Gate recorded an opaque ERROR and
+    the finding itself was lost — objective §5-C's type mismatch."""
+    from tcad.verify.checks_solid import SolidValidityCheck, _r
+
+    r = _r(SolidValidityCheck(), "fail", "n/a",
+           measurements={"empty_formats": ["step", "stl"], "count": 2, "ok": False})
+    assert r.status == CheckStatus.FAIL
+    assert r.measurements == {"empty_formats": "step, stl", "count": 2.0, "ok": False}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# second tier — a confirmed requirement must always produce a verdict
+# ══════════════════════════════════════════════════════════════════════════
+#
+# The first tier was fixed for the list-measurement case above; the second tier
+# (`checks_spec.SpecCheck`) built `CheckResult` directly and never went through
+# the coercion, so it still had the same class of defect in a worse form: for
+# `count`, `feature_count`, `symmetric` and `wall_thickness` the measurement is
+# a *bare scalar*, and pydantic raised on construction. Under the Gate that
+# became an ERROR whose message was a validation traceback — so recording "one
+# solid, please" or "the wall is 3 mm" as the user's confirmed requirement made
+# the build unpassable and hid why. These tests pin the whole set.
+
+_SPEC_DIGEST_HOLE = {
+    "index": 1, "diameter": 6.0, "radius": 3.0, "center": [10.0, 10.0, 0.0],
+    "axis": [0.0, 0.0, 1.0], "depth": 8.0, "through": True,
+}
+
+
+def _spec_ctx(tmp_path, expr, *, solids=1, min_wall=None):
+    from tcad.core.types import CheckContext
+
+    digest = make_digest(solids=solids, holes=[_SPEC_DIGEST_HOLE])
+    if min_wall is not None:
+        digest.key_dimensions["min_wall_thickness"] = min_wall
+    return CheckContext(
+        model_id="m1", ir_version=1,
+        ir=make_ir(), artifact_dir=str(tmp_path), digest=digest,
+    )
+
+
+@pytest.mark.parametrize(
+    "expr, expected_status",
+    [
+        (ConstraintExpr(kind="count", value=1, tol=0, confirmed=True), CheckStatus.PASS),
+        (ConstraintExpr(kind="count", value=5, tol=0, confirmed=True), CheckStatus.FAIL),
+        (ConstraintExpr(kind="feature_count", value=1, tol=0, confirmed=True), CheckStatus.PASS),
+        (ConstraintExpr(kind="wall_thickness", value=2.0, confirmed=True), CheckStatus.PASS),
+    ],
+)
+def test_a_confirmed_scalar_requirement_produces_a_verdict(tmp_path, expr, expected_status):
+    """Every kind whose measurement is a scalar — none may raise."""
+    from tcad.verify.checks_spec import SpecCheck
+
+    r = SpecCheck(expr, 0).run(_spec_ctx(tmp_path, expr, min_wall=3.0))
+    assert r.status == expected_status, r.message
+    assert r.measurements, "the measurement must survive into the report"
+
+
+def test_a_confirmed_structural_requirement_produces_a_verdict(tmp_path):
+    """`symmetric` reports a *dict with a non-float value* — also not a scalar map
+    until it is coerced, and it was one of the kinds that raised."""
+    from tcad.verify.checks_spec import SpecCheck
+
+    expr = ConstraintExpr(kind="symmetric", target="pad1", confirmed=True)
+    r = SpecCheck(expr, 0).run(_spec_ctx(tmp_path, expr))
+    assert r.status in (CheckStatus.PASS, CheckStatus.FAIL), r.message
+
+
+def test_the_gate_never_sees_a_validation_error_from_a_spec_check(tmp_path):
+    """The end the user cares about: a confirmed requirement is judged, not
+    turned into an ERROR carrying a pydantic dump."""
+    from tcad.verify.checks_spec import build_spec_checks
+
+    ir = _ir_with(confirmed=0)
+    ir.requirements.constraints = [
+        ConstraintExpr(kind="count", value=1, tol=0, confirmed=True,
+                       source_text="expect one solid"),
+        ConstraintExpr(kind="feature_count", value=0, tol=0, confirmed=True,
+                       source_text="no features"),
+    ]
+    ctx = _spec_ctx(tmp_path, None)
+    ctx.ir = ir
+    for check in build_spec_checks(ir, None):
+        r = check.run(ctx)  # must not raise
+        assert r.status != CheckStatus.ERROR, (check.id, r.message)
+        assert "validation error" not in r.message.lower(), r.message
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# wall thickness — the user's requirement must be the judge, not the default
+# ══════════════════════════════════════════════════════════════════════════
+#
+# `wall_thickness` is owned by this tier, so the second tier never built a check
+# for it. Combined with the first tier judging only the *config* default, that
+# meant a confirmed "the wall is 3 mm" entered the requirement contract and was
+# then graded against nothing — the objective's "a confirmed requirement must
+# participate in acceptance, and a wall requirement may not be replaced by the
+# default advisory minimum".
+
+
+def _wall_ctx(tmp_path, *, wall, required=None):
+    from tcad.core.types import CheckContext
+
+    # `make_digest` seeds a 2.0 mm wall by default; "not measured" means the key
+    # is *absent*, which is a different state from a measured zero.
+    digest = make_digest(solids=1, min_wall=wall if wall is not None else 2.0)
+    if wall is None:
+        digest.key_dimensions.pop("min_wall_thickness", None)
+    ir = make_ir()
+    if required is not None:
+        ir.requirements.constraints = [
+            ConstraintExpr(kind="wall_thickness", value=required, confirmed=True,
+                           tol=0.01, source_text=f"壁厚 {required}mm"),
+        ]
+    return CheckContext(model_id="m1", ir_version=1, ir=ir,
+                        artifact_dir=str(tmp_path), digest=digest)
+
+
+def test_a_confirmed_wall_requirement_is_judged_against_the_users_number(tmp_path):
+    """3 mm measured, 3 mm asked for: PASS — and it blocks, so it can fail."""
+    r = WallThicknessCheck().run(_wall_ctx(tmp_path, wall=3.0, required=3.0))
+    assert r.status == CheckStatus.PASS, r.message
+    assert r.severity == Severity.BLOCKING
+    assert r.measurements["min_wall_thickness"] == 3.0
+
+
+def test_a_confirmed_wall_requirement_that_is_not_met_fails(tmp_path):
+    r = WallThicknessCheck().run(_wall_ctx(tmp_path, wall=2.0, required=3.0))
+    assert r.status == CheckStatus.FAIL, r.message
+    assert r.severity == Severity.BLOCKING
+    assert "required" in r.message
+
+
+def test_a_confirmed_wall_requirement_without_a_measurement_is_not_a_skip(tmp_path):
+    """Measured geometry, no wall measurement: "cannot verify" is not
+    "not applicable" — it must block and say required_but_unverified."""
+    r = WallThicknessCheck().run(_wall_ctx(tmp_path, wall=None, required=3.0))
+    assert r.status == CheckStatus.ERROR, r.message
+    assert r.severity == Severity.BLOCKING
+    assert "required_but_unverified" in r.message
+
+
+def test_without_a_requirement_the_shop_default_stays_advisory(tmp_path):
+    """The other half of the contract: no requirement recorded means the old
+    advisory behaviour, unchanged — it must not start blocking builds."""
+    r = WallThicknessCheck().run(_wall_ctx(tmp_path, wall=0.5, required=None))
+    assert r.status == CheckStatus.FAIL
+    assert r.severity == Severity.ADVISORY
+
+    skipped = WallThicknessCheck().run(_wall_ctx(tmp_path, wall=None, required=None))
+    assert skipped.status == CheckStatus.SKIP

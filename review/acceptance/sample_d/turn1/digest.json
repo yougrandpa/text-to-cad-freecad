@@ -1,0 +1,169 @@
+{
+  "model_id": "accept_d",
+  "ir_version": 0,
+  "feature_chain": [
+    {
+      "id": "ft_shaft",
+      "name": "shaft",
+      "op": "revolution",
+      "params": {
+        "angle": 360.0,
+        "type": "Angle",
+        "axis": "V_Axis"
+      },
+      "suppressed": false
+    }
+  ],
+  "topology": {
+    "solids": 1,
+    "faces": 5,
+    "edges": 6,
+    "vertexes": 4,
+    "shells": 1
+  },
+  "bbox": {
+    "x": 20.0,
+    "y": 20.000000000000007,
+    "z": 40.0,
+    "x_min": -10.0,
+    "y_min": -10.0,
+    "z_min": -2.2204460492503135e-15
+  },
+  "volume": 8545.132017764237,
+  "area": 2638.9378290154264,
+  "shape_type": "Solid",
+  "is_valid": true,
+  "key_dimensions": {
+    "x": 20.0,
+    "y": 20.000000000000007,
+    "z": 40.0,
+    "min_wall_thickness": 20.0,
+    "sk_shaft__fully_constrained": 0.0,
+    "sk_shaft__dof": 12.0
+  },
+  "holes": [],
+  "faces": [
+    {
+      "name": "Face1",
+      "area": 314.159265,
+      "normal": [
+        -0.0,
+        -0.0,
+        -1.0
+      ],
+      "center": [
+        -0.0,
+        -0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "Face3",
+      "area": 201.06193,
+      "normal": [
+        -0.0,
+        0.0,
+        1.0
+      ],
+      "center": [
+        -0.0,
+        0.0,
+        20.0
+      ]
+    },
+    {
+      "name": "Face5",
+      "area": 113.097336,
+      "normal": [
+        -0.0,
+        0.0,
+        1.0
+      ],
+      "center": [
+        0.0,
+        0.0,
+        40.0
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "name": "Edge1",
+      "kind": "Circle",
+      "length": 62.831853,
+      "mid": [
+        -10.0,
+        0.0,
+        -0.0
+      ],
+      "direction": []
+    },
+    {
+      "name": "Edge2",
+      "kind": "Circle",
+      "length": 62.831853,
+      "mid": [
+        -10.0,
+        0.0,
+        20.0
+      ],
+      "direction": []
+    },
+    {
+      "name": "Edge3",
+      "kind": "Line",
+      "length": 20.0,
+      "mid": [
+        10.0,
+        0.0,
+        10.0
+      ],
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "name": "Edge4",
+      "kind": "Circle",
+      "length": 37.699112,
+      "mid": [
+        -6.0,
+        0.0,
+        20.0
+      ],
+      "direction": []
+    },
+    {
+      "name": "Edge5",
+      "kind": "Circle",
+      "length": 37.699112,
+      "mid": [
+        -6.0,
+        0.0,
+        40.0
+      ],
+      "direction": []
+    },
+    {
+      "name": "Edge6",
+      "kind": "Line",
+      "length": 20.0,
+      "mid": [
+        6.0,
+        0.0,
+        30.0
+      ],
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    }
+  ],
+  "spec_deviation": {},
+  "measurements_available": true,
+  "text": "model: accept_d (v0)\nfeature chain (1):\n  1. shaft [revolution] angle=360.0 type=Angle axis=V_Axis\ntopology: solids=1 faces=5 edges=6 vertexes=4 shells=1\nbbox: x=20.0000 y=20.0000 z=40.0000 (min x=-10.0000 y=-10.0000 z=-0.0000)\nvolume: 8545.132018  area: 2638.937829\nshape_type: Solid  valid: True\nmin_wall_thickness: 20.0000 (closest opposed-face distance with material between)\nholes measured on the BRep: none (no concave cylindrical face)\nsketches:\n  shaft_profile: fully_constrained=no dof=12 solve_status=0",
+  "elapsed_s": 0.1185
+}

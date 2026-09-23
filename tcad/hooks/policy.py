@@ -10,16 +10,33 @@ independent conditions to all hold; a single satisfied check is never enough.
 from __future__ import annotations
 
 import fnmatch
+import inspect
 import os
 import re
 from datetime import datetime, timezone
 from typing import Callable, Optional, Protocol, runtime_checkable
 
 from tcad.core.types import HookDecision, HookEvent, HookResult, HookSpec
+from tcad.hooks.approval import args_fingerprint
 
 # A tool name is "privileged" only when the payload explicitly says so. The gate
 # never infers tier from the model — it trusts the structural ToolTier.
 _PRIVILEGED_TIER = "privileged"
+
+
+def _callable_accepts(fn: Callable, param: str) -> bool:
+    """Whether ``fn`` declares ``param`` (or takes **kwargs).
+
+    Used to keep a one-argument ``approval_lookup`` working without the gate
+    silently dropping the argument binding for callers that do want it.
+    """
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    if param in params:
+        return True
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -215,21 +232,32 @@ class PrivilegedTripleGate:
     tier comes from the structural ``ToolTier``, and the other two conditions
     are environmental/stateful checks.
 
-    ``approval_lookup(tool_name) -> ApprovalLike | None`` is expected to already
-    scope by ``args_hash`` (callers typically bind it, e.g.
-    ``lambda tn: store.lookup_valid(tn, args_hash)``). The gate additionally
-    re-checks ``granted`` and expiry as defence-in-depth.
+    ``approval_lookup(tool_name, args_hash, thread_id) -> ApprovalLike | None`` is
+    expected to scope by all three (a shorter signature is accepted, with the
+    ALLOW reason naming what was *not* bound). The gate computes ``args_hash`` itself from the payload it
+    was handed — with the same :func:`tcad.hooks.approval.args_fingerprint` the
+    engine used to create the request — so the binding cannot be lost by a caller
+    that forgets to pass it. (It used to be the caller's job, and the production
+    wiring did exactly that: ``lambda tool_name: ...lookup_valid(tool_name)``. One
+    approval for ``raw_python`` therefore authorised *any* code for the whole
+    TTL.) The gate additionally re-checks ``granted`` and expiry.
+
+    A one-argument lookup is still accepted for embedders with no per-call
+    binding; the ALLOW reason then says the match was by tool name only, so the
+    weakening is visible rather than implicit.
     """
 
     def __init__(
         self,
         allow_privileged: bool,
-        approval_lookup: Callable[[str], Optional[ApprovalLike]],
+        approval_lookup: Callable[..., Optional[ApprovalLike]],
         sandbox_ok: Callable[[], bool],
     ) -> None:
         self._allow_privileged = bool(allow_privileged)
         self._approval_lookup = approval_lookup
         self._sandbox_ok = sandbox_ok
+        self._lookup_takes_hash = _callable_accepts(approval_lookup, "args_hash")
+        self._lookup_takes_thread = _callable_accepts(approval_lookup, "thread_id")
 
     def __call__(self, event: HookEvent, payload: dict) -> HookResult:
         # Non-privileged tools are simply not this gate's concern.
@@ -241,6 +269,7 @@ class PrivilegedTripleGate:
             )
 
         tool_name = payload.get("tool_name", "<unknown>")
+        args_hash = args_fingerprint(payload.get("args"))
         failed: list[str] = []
 
         # Condition 1: static config.
@@ -255,8 +284,8 @@ class PrivilegedTripleGate:
         if not healthy:
             failed.append("sandbox_unhealthy")
 
-        # Condition 2: a valid approval for this tool name (and args).
-        approval = self._safe_lookup(tool_name)
+        # Condition 2: a valid approval for this tool name AND this exact payload.
+        approval = self._safe_lookup(tool_name, args_hash, payload.get("thread_id"))
         if not self._approval_valid(approval):
             failed.append("no_valid_approval")
 
@@ -267,14 +296,23 @@ class PrivilegedTripleGate:
                 reason=f"privileged gate denied: missing {', '.join(failed)}",
             )
 
+        bound = "tool+args" if self._lookup_takes_hash else "tool only (no args binding)"
+        if self._lookup_takes_hash and self._lookup_takes_thread:
+            bound += "+session"
         return HookResult(
             decision=HookDecision.ALLOW,
             hook_name="privileged_triple_gate",
-            reason=f"privileged call to {tool_name!r} approved",
+            reason=f"privileged call to {tool_name!r} approved ({bound})",
         )
 
-    def _safe_lookup(self, tool_name: str) -> Optional[ApprovalLike]:
+    def _safe_lookup(
+        self, tool_name: str, args_hash: str, thread_id: Optional[str]
+    ) -> Optional[ApprovalLike]:
         try:
+            if self._lookup_takes_hash and self._lookup_takes_thread:
+                return self._approval_lookup(tool_name, args_hash, thread_id)
+            if self._lookup_takes_hash:
+                return self._approval_lookup(tool_name, args_hash)
             return self._approval_lookup(tool_name)
         except Exception:
             return None

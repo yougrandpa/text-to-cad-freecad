@@ -709,3 +709,128 @@ def test_a_deliberate_stop_is_not_reported_as_leaving_the_session():
     assert "已打断" in catch_body
     assert "已离开该会话" in catch_body, "离开会话的提示仍然要存在"
 
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# the approval panel must address the id the API actually returns
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def test_the_ui_addresses_approvals_by_the_field_the_api_returns():
+    """``ApprovalRecord``'s key is ``id``; the UI read ``p.approval_id``.
+
+    Nothing failed loudly: the buttons posted to ``/approvals/undefined``, got a
+    404 (swallowed by the panel's ``catch``), and no approval could be granted
+    from the interface at all. A source-level assertion is the only way to keep
+    this from coming back, because the symptom is an invisible no-op.
+    """
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    assert "p.approval_id" not in js, "the API returns `id`, not `approval_id`"
+    assert "/approvals/${p.id}" in js
+
+
+def test_the_ui_shows_what_is_being_approved():
+    """A tool name alone is not enough for a person to decide."""
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    assert "p.args_summary" in js
+
+
+def test_the_approval_record_key_matches_what_the_ui_uses(client):
+    """The API contract the UI depends on, asserted against the real endpoint."""
+    from tcad.config.loader import load_default_config
+    from tcad.core.wiring import build_hooks
+
+    cfg = load_default_config()
+    hooks, approvals = build_hooks(cfg, str(Path(__file__).resolve().parents[2] / "data"))
+    approvals.request("raw_python", args_hash="sha256:x", thread_id="th",
+                      args_summary='{"code": "print(1)"}')
+
+    from tcad.hooks.approval import ApprovalRecord
+
+    assert "id" in ApprovalRecord.model_fields
+    assert "approval_id" not in ApprovalRecord.model_fields
+    dumped = approvals._load()[-1].model_dump(mode="json")
+    assert set(dumped) >= {"id", "tool_name", "args_summary", "thread_id", "expires_at"}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# async session switching must not let a stale response overwrite the new one
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def test_the_switch_bumps_a_session_epoch():
+    """The token every loader checks has to actually change when you switch."""
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    assert "sessionEpoch: 0," in js
+    switch = js[js.index("async function switchSession"):]
+    switch = switch[: switch.index("\n}\n")] if "\n}\n" in switch else switch[:4000]
+    assert "state.sessionEpoch += 1" in switch, (
+        "switchSession must invalidate in-flight loaders before it changes state")
+
+
+def test_every_async_loader_bails_out_after_its_await():
+    """Source-level guard: each loader takes a token and checks it post-await.
+
+    ``refreshInspector``/``loadArtifacts``/``loadView`` all read state, await the
+    network, then write to the DOM. Without the check, a slow response for the
+    session you just left renders into the panel of the one you just opened — and
+    gets labelled with the new model id, which is worse than showing nothing.
+    """
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    for name in ("refreshInspector", "loadArtifacts", "loadView"):
+        start = js.index(f"async function {name}(")
+        body = js[start:]
+        end = body.index("\n}\n") if "\n}\n" in body else len(body)
+        body = body[:end]
+        assert "sessionToken()" in body, f"{name} does not capture a session token"
+        assert "await" in body, f"{name} is expected to await something"
+        # The check has to come AFTER an await — a guard that runs before the
+        # network call cannot notice that the session changed while it was out.
+        after_first_await = body[body.index("await"):]
+        assert "stale(token)" in after_first_await, (
+            f"{name} never re-checks the session after awaiting")
+
+
+def test_artifact_links_use_the_response_s_identity_not_the_current_state():
+    """The link must be built from what the response described."""
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    start = js.index("async function loadArtifacts(")
+    body = js[start: js.index("\n}\n", start)]
+    # After the await, the model id must come from the token, never state.modelId.
+    after_await = body[body.index("await api("):]
+    assert "${encodeURIComponent(state.modelId)}" not in after_await, (
+        "an in-flight artifacts response must not be re-attributed to whatever "
+        "session is selected when it lands")
+
+
+def test_the_inspector_shows_the_backends_verdict():
+    """The front end must not infer "done" from "files exist"."""
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    assert "/verdict`" in js, "the verdict endpoint is not consulted"
+    assert "async function renderVerdict(" in js
+    assert "v.reason" in js and "v.verified" in js
+
+
+def test_the_session_list_distinguishes_verified_from_unverified():
+    js = (UI_DIR / "app.js").read_text(encoding="utf-8")
+    assert "s.verified === true" in js and "s.verified === false" in js, (
+        "`v5` alone reads as progress; verified and unverified must differ")
+
+
+def test_the_front_end_parses(tmp_path):
+    """A real syntax check, when a JS engine is available.
+
+    The repo deliberately ships no JS test runtime, so a broken front end would
+    otherwise only be discovered in a browser. ``node --check`` is a parser, not a
+    test framework, so using it costs nothing and catches the one class of mistake
+    source assertions cannot: the file not being valid JavaScript at all.
+    """
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not on PATH")
+    proc = subprocess.run([node, "--check", str(UI_DIR / "app.js")],
+                          capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, proc.stderr

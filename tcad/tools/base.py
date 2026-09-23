@@ -39,6 +39,7 @@ from tcad.core.types import (
     TurnKind,
 )
 from tcad.ir.schema import IrPatch as _IrPatch  # noqa: F401  (re-export for handlers)
+from tcad.tools.schema_check import validate_tool_args
 
 # ─── collaborator Protocols ────────────────────────────────────────────────
 # These are the exact method signatures the engine/tools depend on. Teammates
@@ -211,6 +212,26 @@ async def execute_tool(
                 error=ToolError(
                     kind=ToolErrorKind.DENIED,
                     message=f"tool {spec.name!r} (tier={spec.tier.value}) is not permitted in this turn kind",
+                ),
+            )
+        )
+    # The declared argument schema is a contract, not documentation (task §5-A).
+    # Checked *before* the handler so a malformed call cannot half-execute: a
+    # string where an array belongs used to reach the handler, where a truthy
+    # ``views`` was forwarded as-is.
+    problems = validate_tool_args(args, spec)
+    if problems:
+        return ToolOutcome(
+            result=ToolResult(
+                ok=False,
+                error=ToolError(
+                    kind=ToolErrorKind.SCHEMA,
+                    message=(
+                        f"{spec.name}: arguments do not match the tool schema: "
+                        + "; ".join(problems[:4])
+                        + (f" (+{len(problems) - 4} more)" if len(problems) > 4 else "")
+                    ),
+                    hint="re-send the call with the declared argument types",
                 ),
             )
         )

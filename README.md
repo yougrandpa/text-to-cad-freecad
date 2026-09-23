@@ -10,7 +10,7 @@ deterministic Gate decides whether it is actually done. FreeCAD is used as a
 
 ```
 Python 3.11+ · pydantic v2 · FastAPI + SSE · SQLite(WAL) · 前端零依赖零构建（原生 ES module）
-517 测试全绿（464 单测 + 53 契约测试，整包约 19 秒）
+925 测试全绿（758 单测 + 167 契约测试，整包约 32–36 秒）；另有 4 项真实-LLM 端到端测试按环境变量开关（见「测试」）
 ```
 
 ---
@@ -213,7 +213,7 @@ python -m venv .venv
 | `geo_view` | 看渲染图（**占用 context**，因此由声明的视觉检查点把关） |
 | `geo_measure` | 量距离/角度/体积等 |
 | `asset_export` / `asset_import` | 导出 STEP/STL，导入已有 STEP/STL |
-| `raw_python` | **默认不注册**的逃生舱（privileged 档，三重门） |
+| `raw_python` | **默认不注册**的逃生舱（privileged 档，三重门）。审批不是"按工具名发一张长期通行证"：每张审批绑定**工具 + 参数指纹 + 会话/回合 + 有效期**，并把人能读的 payload 摘要一并存下来（`tcad/hooks/approval.py`） |
 
 IR 支持的 op（模型可见的契约，`tests/unit/test_ir_tools_description.py` 会拿它和 schema 对账）：
 
@@ -223,6 +223,50 @@ mirrored · linear_pattern · circular_pattern · polar_pattern · multi_transfo
 additive_box · additive_cylinder · additive_sphere
 subtractive_box · subtractive_cylinder · subtractive_sphere
 ```
+
+**已验证能力 vs 实验性能力**由 `tcad/ir/capability.py` 单独记录，并直接生成给模型的 op 清单——
+`VERIFIED` = 有真内核测试量过几何（`pad` / `pocket` / `revolution` / `groove` / `fillet` / `chamfer` /
+`draft` / `thickness` / `mirrored` / `linear_pattern` / `polar_pattern`，以及六个原语 `additive_*` /
+`subtractive_*`，共 17 个），`EXPERIMENTAL` = 只证明"能 `addObject`"（剩 `hole` / `circular_pattern` /
+`multi_transform` / `datum_plane`），编译后必须自己 `ir_digest` 复测。给模型的描述与校验器读同一张表。
+
+六个原语的**世界坐标放置**用 `placement` 字段（`tests/contract/test_primitive_placement.py`，9 项真内核）：
+`{"position": {"x": 10, "y": 10, "z": 0}}` 是特征自身原点（盒子从它长向 +X/+Y/+Z，圆柱/球以它为中心），
+`{"axis": {"x": 0, "y": 1, "z": 0}, "angle": 90}` 给出绕该轴的旋转（度、逆时针、过 `position`）。
+实测：r6 h20 的圆柱放在 (10,10,0) 与 80×50×8 的板并成**一个**实体、体积 `32000+432π`；同一圆柱绕 Y 转 90° 就
+沿 X 躺下；`subtractive_cylinder` r5 放在 (20,25,−6) 打出 `32000−200π` 的通孔；放到板外的切除按名拒绝
+（`did not change the solid`）。载体是 FreeCAD 的 **`Placement`**——`AttachmentOffset` 在 `MapMode=Deactivated`
+下**不生效**（实测设了它实体一动不动），这条差别搞错就会做出"构建成功但放置被静默忽略"的特性。只有这六个 op
+接受 placement，其他 op 给了会被 `placement_unused` 拒绝；移动已有原语用 `update_feature` 改 `placement`，不要重建零件。
+
+`mirrored` / `linear_pattern` / `polar_pattern` 转正的经过（`tests/contract/test_patterns_mirror.py`）：这三个 op 的
+镜像面/重复轴都是 **LinkSub 引用**，JSON 标量表达不了，而内核缺引用时的失败方式是**静默**的——`LinearPattern`
+没有 `Direction` 会返回**一份**阵列（体积 1000 而不是 3000，`ok=True`），`Mirrored` 没有 `MirrorPlane` 直接返回
+**空形状**。修法是给它们类型化载体：镜像复用草图附着那套 `plane` 字段（`origin_plane`/`datum_plane`/`face`），
+阵列用 `params.axis` 这个**名字**（`X`/`Y`/`Z` 机体轴；`H_Axis` 等草图轴被明确拒绝）。16 项真内核测试断言：
+镜像跨 XZ/XY/自身某个面后体积恰好翻倍、包围盒精确反射，线性阵列 Extent/Spacing/沿 Y 三种模式的孔位**从 BRep
+实测**（20/35/50、20/45、y=15/30），圆周阵列 270°/4 份的孔落在 (15,0)(0,15)(−15,0)(0,−15)，交付的 FCStd 重开后
+`Occurrences` 3→5 多切两个孔、`Suppressed=True` 退回纯底板；缺轴/缺面/错轴名/不存在的面名/空阵列全部是**具名拒绝**。
+`circular_pattern` 仍留在 EXPERIMENTAL：这台机器的 `PartDesign::CircularPattern` 是**间距驱动**的
+（`NumberCircles`/`RadialDistance`），表达不了"N 份均布在一个角度内"——那正是 `polar_pattern` 的用途。
+
+`fillet` / `chamfer` 转正的经过（`tests/contract/test_fillet_chamfer.py`）：它们选的是**边**，所以测试先用 `ir_digest`
+按 `kind`/`length`/`mid`/`direction` 挑出四条竖边（不是硬编码名字），再断言圆角/倒角削掉的体积恰好等于闭式解
+`4(1−π/4)r²t` / `4(d²/2)t`（1e-6 相对误差）、包围盒不变、实体数仍为 1；交付的 FCStd 重开后把 `Radius` 从 5 改成 8，
+体积按新半径重算。**这两条 op 曾经连一次都编译不出来**：`Base` 是在文档还没 recompute、被引用特征还没有 Shape 时
+设置的，于是任何 fillet 都报 "base_feature produced no shape"——同一轮修掉了这个（以及 `ir_digest` 的 `mid` 把
+"半个毫米处"当成中点的问题），补上 11 项真内核回归后才改的状态。
+
+`groove` 转正的经过（`tests/contract/test_groove.py`）：轮廓是圆柱壁上的一个环形截面，绕轴整圈旋转切除的体积
+有闭式解 `π(R²−r²)·w`；测试断言两个数值不同的样例都精确等于该值、180° 恰好切掉一半、**切不到材料时报错而不是成功**
+（编译器给的是 "did not change the solid" 而不是通用失败）、STEP 回读一致、交付的 FCStd 重开后改 `Groove.Angle`
+体积变化恰好等于半个环。验收包里的**样例 E** 就是它（8500π → 180° → 8750π）。
+
+`revolution` 从实验性转正的经过（`tests/contract/test_revolution.py`）：PartDesign::Revolution 需要一个
+`ReferenceAxis`，而它是 `App::PropertyLinkSub`——JSON 标量表达不了；编译器原来建了对象却从不设轴，
+特征要么报错要么什么都不产生。现在 `params.axis`（`V_Axis`/`H_Axis`/`N_Axis` 用草图自身轴，
+`X`/`Y`/`Z` 用 body 原点轴）由编译器翻译成那个 LinkSub，并用阶梯轴的解析体积、包围盒、STEP 回读、
+FCStd 重开后改 `Angle` 的参数量作为证明；无法识别的轴名是**结构化拒绝**，不是拿一个猜的轴去建。
 
 三条最容易让模型建错、也最容易**静默**建错的语义，已写进工具描述：
 
@@ -274,6 +318,8 @@ TurnResult{state, steps, tokens_in/out, gate_report}
 > 就只能在下一个步骤边界生效，最坏要等一整个模型超时）。两者都在引擎里，
 > 且**只有谓词说「是有人要求的」时，`CancelledError` 才会被解释成 ABORTED**——
 > 别的取消（服务端关闭、客户端断开）保持 asyncio 原本的语义。
+> 若此刻正卡在一次 FreeCAD 调用里（编译 / 网格化），这次取消还会**杀掉那个 worker 进程**
+> 并丢弃本次未发布的暂存目录——代价与边界见[已知限制](#已知限制与未验证项) #7。
 
 > 单次请求的**活性**与工作量上限是两件事，别一起删：挂死的 LLM 仍撞 `llm.request_timeout_s`、
 > 挂死的工具仍撞 `ToolSpec.timeout_s`、死 worker 仍撞传输超时。
@@ -295,11 +341,40 @@ Gate 从磁盘重新加载 IR 快照与导出产物（CQRS：**不碰生成路�
 | `round_trip` | blocking | STEP 往返前后体积一致 |
 | `exportability` | blocking | 声明的产物都存在且非空 |
 | `bbox_spec` / `mass_spec` | blocking | 包围盒 / 质量是否符合**已确认**的需求表达式；**无需求时 SKIP** |
-| 规格检查（每个 `ConstraintExpr` 一条） | blocking（仅 confirmed） | 把你说的尺寸/数量/位置变成可执行判定 |
+| 规格检查（每个 `ConstraintExpr` 一条） | blocking（仅 confirmed） | 把你说的尺寸/数量/位置变成可执行判定。`hole_diameter`/`hole_position` 只认**从 BRep 实测**的孔（`digest.holes`），不读 IR 里声明的 `diameter`——圆草图 Pocket 出来的孔一样被数出来，附离偏差不算孔位 |
+| 已确认但测不了 | blocking **ERROR** | 确认过的孔要求却没有 BRep 孔证据时是 `required_but_unverified`（ERROR，不是可忽略的 SKIP，也不是假 PASS） |
+
 | `wall_thickness` | advisory · approximate | 最小壁厚（worker 没测就 SKIP，**绝不编造通过**） |
 | `requirement_coverage` | advisory | 无 confirmed 约束时明说"只验证了几何自洽，没验证是否符合要求" |
 
 `passed` = 无 blocking FAIL/ERROR，**且**不是所有 blocking 检查都 SKIP。
+
+### 「这一版验证过没有」是一个持久化事实，不是一个可以推断的结论
+
+`/models/{id}/verdict`（以及产物列表与会话列表里的 `verified` 字段）回答的是**当前版本现在是否已验证**，
+由 `tcad/store/artifacts.build_verdict` 从两个必须同时成立的事实算出：
+
+1. 落盘的 `GateReport` 是**当前版本**的，且 `passed`；
+2. 该版本的产物**确实已经发布**（第 2 轮的发布门只在通过后才写版本目录）。
+
+任一单独成立都不算 verified，返回的 `reason` 会说明是哪一条不成立。这样做的原因是：`ir_commit` 通过之后
+若又发生了写操作，模型已经前进到新版本，而旧版本的报告**仍然真的**是 passed——把旧报告读成"当前通过"
+就是陈旧的绿灯被显示成实时的绿灯。`verified` 只有在两者都成立时为真，陈旧的通过永远回不来。
+
+---
+
+### 交付是"通过才发布"，不是"写进同一个目录再检查"
+
+每次构建先写进一个**私有暂存目录** `artifacts/<id>/v<N>.staging-<attempt>/`，Gate 只对**这个目录**评分；只有整次构建通过，才用两次 `os.replace` 把它整体换进 `v<N>/`，并写一份 `manifest.json`（逐文件 sha256 + 字节数 + attempt_id）。
+
+三件由此变成结构性事实、而不是靠时间戳猜测：
+
+1. Gate 看到的分区里**只有本次尝试写的文件**——上一次失败留下的 STEP 不可能替本次缺失的导出顶包，因为它根本不在被评分的目录里。
+2. 失败的尝试**从不发布**：暂存目录被丢弃，`v<N>/` 保持上一次已验证的构建原样，"恢复最后一个好版本"就是"什么都不做"。
+3. 崩溃在两次 rename 之间也不会丢版本：旧树先被改名到 `.v<N>.previous`，下一次尝试的 `recover_publish` 会把它换回来。
+
+> 相关测试：`tests/unit/test_artifact_publish.py`（11 项）、`tests/contract/test_wired_pipeline.py` 第 6 节（4 项真内核）。
+> 这 4 项在"把 artifact_dir 换回版本目录"的变异下全部变红——它们真的在测这条性质。
 
 > 这条不变量是被真实缺陷逼出来的：`bbox_spec` 曾在"没有对应需求"时返回 PASS，
 > 于是模型只建了两根探针也"全绿"。**空检查报 PASS 比报 FAIL 危险得多**——
@@ -315,30 +390,40 @@ Gate 从磁盘重新加载 IR 快照与导出产物（CQRS：**不碰生成路�
 ```
 tcad/
 ├── core/          types.py（全部 pydantic 模型）· wiring.py（唯一装配入口 build_services）
+│                  ids.py（model_id/导出名/导入路径的合法性 + 目录包含校验）
 │                  worker_client.py（supervisor 侧的 worker 句柄）
 ├── loop/          engine.py（Turn/Step 状态机）· strategies.py（M1 循环/M2 分叉/M3 对抗）
 │                  budget.py（熔断上限，None = 不设）· commit.py（ir_commit→编译→Gate→回灌）
-├── tools/         base.py（ToolSpec/ToolResult/权限档 + build_default_registry）
+├── tools/         base.py（ToolSpec/ToolResult/权限档 + build_default_registry + 参数 schema 强制）
+│                  schema_check.py（stdlib 迷你 JSON-Schema 校验器）
 │                  ir_tools.py · geo_tools.py · privileged.py
-├── context/       assembler.py（预算装配 + 三档降级）· digest.py（几何摘要投影）· compactor.py
-├── store/         ir_store.py（版本化快照 + 乐观并发）· event_log.py（append-only jsonl）
-│                  session_db.py（SQLite/WAL：threads/turns/steps/messages/approvals）· artifacts.py
+├── context/       assembler.py（预算装配 + 三档降级）· digest.py（几何摘要投影，含稳定特征 id）· compactor.py
+│                  requirements.py（需求合同投影）· verdict.py（上一轮 Gate 结论）· history.py（会话历史回灌）
+├── store/         ir_store.py（版本化快照 + 乐观并发 + **按模型的写入串行化**）· event_log.py（append-only jsonl）
+│                  session_db.py（SQLite/WAL：threads/turns/steps/messages/approvals）
+│                  artifacts.py（digest/时间戳/**暂存→通过后原子发布 + manifest**/当前verdict）
 ├── hooks/         dispatcher.py（确定性合并，fail-closed）· policy.py · approval.py
 ├── verify/        gate.py · checks_solid.py · checks_spec.py · specexpr.py · context.py
 ├── ir/            schema.py · patch.py · naming.py（稳定命名）· validate.py
+│                  capability.py（FeatureOp 能力真相表：VERIFIED / EXPERIMENTAL + 缺口）
 ├── worker/        跑在 FreeCADCmd 进程内：bootstrap.py · rpc.py · compiler.py
-│                  introspect.py · mesh.py · exporters.py · protocol.py · selftest.py
+│                  introspect.py · mesh.py · exporters.py · reopen.py（重开 FCStd 改参再测）
+│                  protocol.py · selftest.py
 ├── render/        仅 supervisor 侧：camera.py · raster.py（numpy z-buffer）· png.py（Pillow 或纯 stdlib）
 ├── llm/           client.py（OpenAI 兼容 + 重试 + token 计数）· hotswap.py（原地换模型）
 ├── server/        app.py（FastAPI + SSE）· cli.py · ui/（index.html · app.js · styles.css）
 └── config/        schema.py · loader.py · providers.py（供应商预设）· settings.py（运行时设置）
 
 tools/             serve.py · stub_llm.py（离线模型替身）· agent_driver.py（操作者即 LLM）
-                   render_sample.py · probes/ · sessions/（脚本化轨迹）
+                   render_sample.py · doctor.py（环境诊断）· build_acceptance_artifacts.py（验收产物）
+                   probes/ · sessions/（脚本化轨迹）
 configs/           default.yaml · policies/strict.yaml（有界档）
-data/              运行期数据（.gitignore）：models/<id>/{v*.json,events.jsonl} · artifacts/ · tcad.sqlite3
+data/              运行期数据（.gitignore）：models/<id>/{v*.json,events.jsonl} · artifacts/<id>/v<N>/
+                   （含 manifest.json 产物清单；失败的尝试只写 v<N>.staging-<attempt>/ 且不发布）
+                   gate_reports/<id>/v<N>.json（上一轮 Gate 结论）· tcad.sqlite3
 docs/              01-需求澄清问卷 · 02-架构设计 · 03-交互界面与模型配置 · renders/
-tests/             unit/（437）· contract/（40，真跑 FreeCADCmd）· fixtures/
+review/            AUDIT_AND_FIXES_ZH.md（审阅报告）· acceptance/（可下载的验收产物 + manifest）
+tests/             unit/（753）· contract/（155，真跑 FreeCADCmd）· e2e/（4，需真实模型服务）· fixtures/
 ```
 
 ---
@@ -377,14 +462,15 @@ cfg = load_config("configs/default.yaml", overlays=["configs/policies/strict.yam
 | `GET` | `/health` | 活性 + `data_dir`（分辨实例）+ `budget`（哪些上限没设） |
 | `POST` | `/chat` | 跑一个 Turn，**SSE 流**：`start` / `progress` / `agent` / `error` / `result` |
 | `POST` | `/chat/interrupt` | 打断 `{request_id}` 指名的那个回合；返回 `stage: running\|pending` |
-| `GET` | `/sessions` | 会话列表：标题、`model_id`、`ir_version`、最近活动时间 |
+| `GET` | `/sessions` | 会话列表：标题、`model_id`、`ir_version`、`verified`、最近活动时间 |
 | `POST` | `/sessions` | 新建会话：同时建它的模型（`model_id` 已存在 → 409） |
 | `GET` | `/threads/{id}/messages` | 会话历史（刷新不丢） |
 | `POST` | `/models` | 播种一个空 IR 模型（已存在 → 409） |
 | `GET` | `/models/{id}/ir` | IR 快照（可 `?version=`） |
 | `GET` | `/models/{id}/render` | **人的**视图：`?view=iso\|front\|top\|right`，按 (版本, 视图, 风格, 尺寸) 磁盘缓存 |
-| `GET` | `/models/{id}/artifacts[/path]` | 产物列表 / 下载 PNG·STEP·STL |
-| `GET`/`POST` | `/approvals[/{id}]` | 待批审批 / 批准或拒绝 |
+| `GET` | `/models/{id}/artifacts[/path]` | 产物列表 / 下载 PNG·STEP·STL（列表带 `verdict`） |
+| `GET` | `/models/{id}/verdict` | **这一版到底验证过没有**：`verified`/`passed`/`graded_version`/`blocking_failures`/`reason`（可 `?version=`） |
+| `GET`/`POST` | `/approvals[/{id}]` | 待批审批（含工具、会话、以及**将要执行的内容摘要**）/ 批准或拒绝 |
 | `GET`/`PUT` | `/settings/llm` | 读（掩码）/ 改配置（热切换） |
 | `GET` | `/settings/providers` · `/settings/models` | 供应商预设 / 代调供应商列模型 |
 | `POST` | `/settings/llm/probe` | 连通性探测（可先测后存） |
@@ -405,9 +491,25 @@ cfg = load_config("configs/default.yaml", overlays=["configs/policies/strict.yam
 ## 测试
 
 ```bash
-.venv/bin/python -m pytest tests -q              # 517 全绿（整包约 19 秒）
-.venv/bin/python -m pytest tests/unit -q         # 464，不需要 FreeCAD
-.venv/bin/python -m pytest tests/contract -q     # 53，真跑 FreeCADCmd
+.venv/bin/python tools/doctor.py                     # 三层前置体检：supervisor / 几何内核 / 模型服务
+.venv/bin/python -m pytest tests -q                  # 908 全绿 + 4 项按开关跳过（整包约 32–36 秒）
+.venv/bin/python -m pytest tests/unit -q             # 753，不需要 FreeCAD
+.venv/bin/python -m pytest tests/contract -q         # 155，真跑 FreeCADCmd
+```
+
+第 3 层（真实 LLM 端到端）需要明确配置的 provider，未配置时**跳过而不是假装通过**：
+
+```bash
+export TCAD_E2E_BASE_URL=http://127.0.0.1:8000/v1 TCAD_E2E_MODEL=<一个会用工具的模型>
+.venv/bin/python -m pytest tests/e2e -q              # 未预写 IR：自然语言 → 真实工具调用 → 真实 FreeCAD
+```
+
+验收包（样例 A/B/C/D/E 的真实 FCStd/STEP/STL + 四视图预览 + IR + 需求合同 + 逐个文件 sha256 清单）由内核现做现测；
+manifest 里还有一份 **源码树摘要**（`tcad/`+`tools/`+`tests/` 下所有 `.py` 的排序 sha256），用来回答"这个包是当前代码建的吗"——本机 `git` 不可用时它就是版本坐标：
+
+```bash
+.venv/bin/python tools/build_acceptance_artifacts.py # 写入 review/acceptance/，任一数字不合就中止且不写清单
+.venv/bin/python tools/build_acceptance_artifacts.py --check  # 包与当前源码树同源 → OK(0)；改过源码 → STALE(1) 并提示重建
 ```
 
 打断的**运行时**行为另有一条真实路径可复跑（需要一个慢模型，否则没有「回合中间」可打断）：
@@ -434,21 +536,110 @@ cfg = load_config("configs/default.yaml", overlays=["configs/policies/strict.yam
 
 ---
 
+## 前端的异步会话切换
+
+切换会话时 `switchSession` 会先 `state.sessionEpoch += 1`。三个异步加载器（`refreshInspector` / `loadArtifacts` / `loadView`）
+在第一个 `await` **之前**取一份 `sessionToken()`，之后每次 `await` 回来都检查 `stale(token)`，过期就直接返回：
+
+- 否则，你刚离开的那个会话的慢响应会落进你刚打开的会话的面板里，而且还会被贴上**新** model id 的标签
+  （产物链接尤其明显：文件是旧模型的，链接指向新模型）。
+- 产物链接一律由**响应所描述的那个身份**（token）拼出，不用 `state.modelId`。
+- 面板里的「验证状态」直接显示后端的 `GET /models/{id}/verdict`（已验证 / 未验证 + 原因 + 阻断项），
+  不从"有文件"推断"已完成"；侧边栏会话列表也区分 `v5 ✓` 与 `v5 ✗`。
+
+前端仍然没有 JS 测试运行时；回归靠源码结构断言 + `ApprovalRecord` 接口契约断言，
+另外加一条 `node --check`（有 node 时执行，没有则跳过）——它抓的是源码断言抓不到的那一类错误：文件根本不是合法 JS。
+
+---
+
+## 贴面草图：能力要能兑现，名字要能查到
+
+`plane: {"kind":"face","feature_id":"ft_plate","sub":"Face6"}` 一直是 IR 的一部分，编译器也一直支持——
+但**没有任何真内核测试量过它**，而且工具描述写着「用 ir_get / ir_digest 查面的编号，不要猜」，`ir_digest`
+却只给了一个**面的数量**。也就是说：指令本身无法执行。
+
+现在两件事都补上了：
+
+- **面清单**：`GeometryDigest.faces`（`FaceInfo`）由 worker 从真实 BRep 读出，每条含 `name`（FreeCAD 的
+  1-based `Face<N>`）、`area`、外法向 `normal`、`center`。只列**平面**（曲面无法承载 FlatFace 附件），
+  上限 32 条，并在 `ir_digest` 渲染的文本里逐条打印——所以模型能按意图挑（"面积 3200 的 +Z 面"），
+  而不是赌一个会随模型变化而移动的编号。
+- **真内核证明**（`tests/contract/test_face_attachment.py`）：贴到顶面 Face6 的凸台体积精确等于
+  `底板 + πr²h`、包围盒 z 精确等于 `t + h` 且不外扩；换成侧面 Face1 用同一份坐标，材料**沿该面法向**
+  长出（x 不变、y/z 变化）——这正是描述里"贴面草图在该面自己的坐标系里解释"的含义；两个数值不同的
+  尺寸组合同样精确。
+
+**顺带修掉一个会把人带偏的诊断**：面名写错时 FreeCAD 不会报错，而是让草图保持未附着，于是轮廓在自己
+的坐标系里塌陷，构建失败信息变成"轮廓不闭合……检查世界坐标"——把模型引向完全错误的方向。现在
+校验器在落盘前就检查 `kind="face"` 的 `feature_id` 存在且 `sub` 非空（`face_target` / `face_sub_missing`），
+编译器在真内核上检查 `sub` 是否真的存在，报错点名该面并列出**可用的面名**。
+
+---
+
+## 参数白名单的意思是「编译器兑现得了」
+
+`_VERIFIED_OP_PARAMS` 里的一个键，过去只要**同名属性存在**就会被列进去。但 `_assign_props` 是用
+JSON 标量去 `setattr`，而这些属性里有 `App::PropertyLinkSub` / `LinkList` / `Part::Shape` / `Vector` ——
+标量根本设不进去。实测（FreeCAD 26.3.0 / 48708）：
+
+```
+params={'length': 5.0, 'up_to_face': 'Face6'} -> raised
+TypeError: type must be 'DocumentObject', 'NoneType' or ('DocumentObject',['String',]) not str
+```
+
+而且这发生在**补丁已经落盘、worker 往返已经花掉之后**。现在白名单只保留 `_assign_props` 真的能设的键
+（Length/Distance/Angle/Bool/Enumeration/Float/Integer/String/Percent/*Constraint），
+碰到被移除的键是**校验错误**并点名替代写法（`param_unsupported`），在落盘之前就拒绝。
+
+分类是**量出来的**，不是猜的：`tests/contract/test_param_capability.py` 在真内核上创建每种 PartDesign 对象，
+对白名单里每个键读 `getTypeIdOfProperty`，并要求它落在可设置的集合里；`tests/unit/test_param_capability.py`
+带一份同样的静态表，让这条守卫在快速单测层也生效。同名键在不同对象上含义不同的事实也被测到：
+`Base` 在 Fillet 上是 `LinkSub`、在 Revolution 上是 `Vector`（基点），`DepthType` 在 Hole 上有、在 Pad 上没有
+——所以拒绝文案是按 **(op, key)** 给的，并且测了一条不变量：**Vector 类型的拒绝必须说 "Vector"，不能写成"边引用"**。
+
+---
+
+## 工具参数 schema 是契约，不是说明
+
+每个 `ToolSpec.params_schema` 都会作为 function declaration 发给模型，并且**在服务端真正执行**
+（`tcad/tools/schema_check.py`，纯 stdlib）。一个不符合声明的调用在**进入 handler 之前**就被拒成
+结构化 `SCHEMA` 错误并点名路径（`arguments.views: expected array, got str ('iso')`）。
+
+- 支持的关键字是一个**封闭集合**（`type`/`required`/`properties`/`items`/`enum`/`anyOf`/`oneOf`/`$ref`/`$defs`/`additionalProperties`），
+  单测会遍历**所有已注册工具**的 schema，断言没有出现集合外的关键字——否则 schema 又会变成部分装饰。
+- `type: integer` 不会接受 `True`（Python 的 bool 是 int 的子类，这里显式排除）。
+- 声明必须与实际行为一致：`ir_patch` 的 `base_version` 同时接受整数与文档里的 `"current"`，
+  schema 也如实声明 `anyOf`——否则强制之后会把一个受支持的写法拒掉。
+
+---
+
+## 标识符与路径边界
+
+`model_id` 来自 HTTP body / URL 路径，`asset_export` 的 `name` 来自**模型自己**，两者过去都被直接拼进文件路径。
+`tcad/core/ids.py` 是唯一判定处：
+
+- **形状规则**（主规则）：合法标识符只能是 `[A-Za-z0-9]` 开头、后接字母/数字/`.`/`_`/`-`、长度 ≤64。它**在构造上**就不可能含有分隔符或 `..`，所以不可能指到父目录之外。
+- **包含校验**（纵深防御 + 真正收路径的地方）：`contained_path()` / `ensure_contained()` 对**解析后**的路径做包含判断，`..` 与符号链接先被折叠——字符串比较才是看起来对、实际不对的那种写法。
+- 落点：`IrStore._model_dir`、`ArtifactStore.dir_for`、`gate_report_path`（store 层，最后一道）、`POST /models` / `POST /sessions` / `/chat` 的请求模型（pydantic → 干净 422，而不是深处 500）、`asset_export` 的导出名、`asset_import` 的导入路径（限定在 `workdir` 与 `data_dir` 之内）。
+- worker 侧 `exporters.py` 有一份**镜像规则**（worker 禁止 `import tcad.core`），`tests/unit/test_ids.py` 用 AST 读它的正则与 supervisor 版本逐项比对，防止两边漂移。
+
+---
+
 ## 已知限制与未验证项
 
 不遮掩，这些是当前的真实边界：
 
 | # | 限制 | 说明 |
 |---|---|---|
-| 1 | **跨回合只延续几何，不延续对话** | 每个 Turn 只喂 `[system, user]`。`session_db` 只存文本、不存工具调用与结果，直接回灌会让模型只看到自己的旁白而看不到工具产出——比没有历史更误导。正解是接 `tcad/context/assembler.py`（已存在、未接线）+ 持久化工具轨迹。 |
+| 1 | **跨回合延续对话，但不回灌工具轨迹** | 每个 Turn 现在会装配受预算约束的上下文：相关历史（`session_db`）、需求合同、当前 IR 摘要（含稳定特征 id）、当前版本、以及上一轮 Gate 结论（`tcad/context/*`）。仍**不**回灌历史工具调用与结果——那会让模型只看到自己的旁白而看不到工具产出；几何事实由摘要块承担，无需从旁白里猜。历史超窗时走三档降级，但**未注入 LLM 摘要器**：被压缩的旧历史落成一条显式占位消息，而不是被静默丢弃。 |
 | 2 | **真机只在 DeepSeek 上验证过** | function calling 与 thinking 并存的真实行为、`probe_llm` 对真实供应商，只在 `deepseek-v4-flash` 上跑过。 |
 | 3 | **`context.window_tokens` 是估值** | 128000 未按真实 token 标定，三档降级（0.70 / 0.85）的阈值因此不准。 |
 | 4 | **界面无认证** | 默认只绑 `127.0.0.1`；绑非回环地址时启动会打印警告。不要暴露到公网。 |
 | 5 | **无会话重命名 / 删除 / 搜索**，不做会话内换模型 | 会话↔模型绑定单向是有意的。 |
-| 6 | **多标签页未协调** | 服务端没有 per-thread 回合锁，`/chat` 按请求替换 `services.hooks`；并发两个 `/chat` 不是受支持的用法。同一个 `request_id` 起第二个回合会被 409 拒绝（否则被覆盖的那个回合就再也停不下来了）。 |
-| 7 | **打断停的是 supervisor，不是 worker 里的活** | 在飞的 LLM 请求会被真的取消；但已经发给 FreeCAD worker 的一次调用（编译 / 网格化）会在 worker 进程里跑完，结果被丢弃——worker 协议没有中途取消。 |
+| 6 | **多标签页仍未协调（但有界）** | 每个请求的 hooks/视觉状态**已经隔离**：观测用的 tap 与 `geo_view` 检查点走 `ToolContext`，不再改写共享的 `services.hooks` / `services._visual_ok`（§5-E）。同一模型的并发写入也已按模型串行化（`IrStore` 的 load→apply→append→snapshot 是一个临界区，§5-D）。**仍未做**的是 per-thread 回合锁：同一会话并发两个 `/chat` 不是受支持的用法，最后一个写快照的赢。同一个 `request_id` 起第二个回合会被 409 拒绝。跨进程写同一个 `data_dir` 也不支持（进程内锁，不是文件锁）。 |
+| 7 | **打断靠杀进程，不是协议级取消** | 在飞的 LLM 请求会被真的取消；已经发给 FreeCAD worker 的一次调用（编译 / 网格化）现在也**真的会停下来**：`WorkerHandle.abort_inflight` 杀掉并回收 worker 进程，被阻塞的调用方立刻拿到 `kind="cancelled"`（`WorkerAborted`），而不是等超时、也不再被误报成崩溃；被放弃的暂存目录同时丢弃，下一次调用按需重启 worker，所以"停止"的代价就是被停的那次构建。**代价与边界**：worker 协议本身没有中途取消，停的是**进程**；一个服务进程只有**一个** worker 进程，所以它也会终止同时使用它的其他调用的 RPC——正常情况下同一模型的并发写已被 `IrStore` 串行化，但跨模型的并发构建会互相牵连，各自收到 `cancelled` 并各自重启。OCCT 卡死的进程同样只能这样丢弃，不能指望它恢复。 |
 | 8 | **`Sketcher.Constraint` 对无法识别的形状会 segfault** | 不是抛异常，是原生崩溃（SIGSEGV，26.3.0dev 实测）。所以编译器只构造**实测验证过**的类型/参数组合，其余一律结构化拒绝（`tests/contract/test_sketch_planes.py`）。**代价**：`Radius`/`Diameter` 只能用「值写在构造函数里」的形式（它们的 refs-only 形式正是会崩的那种），而那种形式下 FreeCAD 不做冗余校验——「同时标半径和直径」这类过约束不会被判为 solver 错误。其余维度约束（`DistanceX/Y` 等）仍走校验路径。 |
-| 9 | **worker 崩溃/卡死靠替换，不是修复** | `worker_restart_on_crash`（默认开）现在真的会生效：崩溃或超时后杀掉旧进程、拉起新的，所以坏调用只毁掉**一次**调用。OCCT 卡死的进程无法中断，只能丢弃。 |
+| 9 | **worker 崩溃/卡死靠替换，不是修复** | `worker_restart_on_crash`（默认开）现在真的会生效：崩溃或超时后杀掉旧进程、拉起新的，所以坏调用只毁掉**一次**调用。用户中断走同一条路（见限制 #7），服务器退出时（含 Ctrl-C）后端也会被关闭，不留孤儿进程。 |
 | 10 | **不做的范围** | GUI 交互建模 / 自由曲面造型 / 装配约束求解 / 2D 工程图 / 仿真 / CAM / 多用户协作。 |
 | 11 | **本机无法 `push` 到 GitHub** | 代理不转发 `receive-pack` 的响应流（`ls-remote` 正常）。需要换代理或加 SSH key。 |
 

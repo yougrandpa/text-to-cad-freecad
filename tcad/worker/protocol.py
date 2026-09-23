@@ -18,6 +18,7 @@ M_INTROSPECT = "introspect_document"
 M_EXPORT = "export_artifacts"
 M_TESSELLATE = "tessellate"
 M_IMPORT_ASSET = "import_asset"
+M_REOPEN_EDIT = "reopen_edit_measure"
 
 WORKER_METHODS: tuple[str, ...] = (
     M_PING,
@@ -27,6 +28,7 @@ WORKER_METHODS: tuple[str, ...] = (
     M_EXPORT,
     M_TESSELLATE,
     M_IMPORT_ASSET,
+    M_REOPEN_EDIT,
 )
 
 # ── error kinds (must stay in sync with tcad.core.types.ToolErrorKind) ────

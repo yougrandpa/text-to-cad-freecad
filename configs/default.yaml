@@ -5,7 +5,11 @@
 version: 1
 
 runtime:
-  freecad_cmd: "./free-cad/FreeCAD/build/debug/bin/FreeCADCmd"
+  # Where FreeCADCmd lives. Override without editing this file:
+  #   export TCAD_FREECAD_CMD=/opt/freecad/bin/FreeCADCmd          (Linux / macOS)
+  #   $env:TCAD_FREECAD_CMD = "C:\FreeCAD\bin\FreeCADCmd.exe"      (Windows)
+  # A bare name (e.g. "FreeCADCmd") is resolved on PATH.
+  freecad_cmd: "${TCAD_FREECAD_CMD:-./free-cad/FreeCAD/build/debug/bin/FreeCADCmd}"
   freecad_python_path: "."          # passed to FreeCADCmd -P so the worker can import tcad
   worker_pool_size: 2               # concurrent workers; >1 is only useful for fork_join
   worker_request_timeout_s: 60.0

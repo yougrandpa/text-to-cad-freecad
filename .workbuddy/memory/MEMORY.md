@@ -1,185 +1,169 @@
 # text_to_cad 项目长期笔记
 
-## 仓库信息
-- 远端：https://github.com/yougrandpa/text-to-cad-freecad.git，主分支 `main`。
-- `free-cad/` 为 FreeCAD 本地源码依赖，已在 `.gitignore` 中忽略，**不要提交**（近 8000 文件）。
+> 详细缺陷史见 `review/AUDIT_AND_FIXES_ZH.md`（已到 §34）。本文件只留**改代码前必须先知道的**。
+> 最近一次整理：2026-09-23（压缩去重，并从 §34 补入新教训）。
 
-## 网络 / 推送约定
-- 当前环境默认代理（`127.0.0.1:50683`）无法访问 GitHub（502 CONNECT tunnel failed），直连超时。
-- 推送 GitHub 必须走本机代理 `127.0.0.1:7890`：
-  ```bash
-  HTTPS_PROXY=http://127.0.0.1:7890 HTTP_PROXY=http://127.0.0.1:7890 \
-  git -c http.proxy=http://127.0.0.1:7890 -c http.version=HTTP/2 push origin main
-  ```
-- git 凭据使用 `osxkeychain`。
-- **`api.deepseek.com` 在本机直连可用**（实测 0.2s 返回 401，即端点通、只差 key），走代理也通 → 配 DeepSeek 时 `use_env_proxy` 勾不勾都行。
-- **npm 走代理会 ECONNRESET**（TLS 握手被掐断，与 git push 同源）→ 用 `--registry=https://registry.npmmirror.com` 直连。
-- **curl 访问 localhost 会被环境代理劫持**（`upstream connect failed`）→ 加 `--noproxy '*'`。
+## 仓库 / 网络 / 环境
+- 远端 `https://github.com/yougrandpa/text-to-cad-freecad.git`，主分支 `main`；当前 HEAD `00db836`。
+- `free-cad/` 是 FreeCAD 源码依赖，已在 `.gitignore`，**不要提交**。
+- **无法 push GitHub**（代理不转发 `receive-pack` 的响应流；HTTP/2→408，HTTP/1.1→curl 52）。需要换代理或加 SSH key。
+- 执行沙箱禁止写 OS 临时目录 → pytest 必须 `--basetemp=.pytest_tmp`（已在 pyproject）。**该目录每次运行被清空。**
+- macOS BSD `grep` 不支持 `\|` 交替 → 用 Grep 工具或 `grep -E`。无 `timeout` 命令。
+- `curl` 访问 localhost 会被环境代理劫持 → 加 `--noproxy '*'`。
+- npm 走代理会 ECONNRESET → `--registry=https://registry.npmmirror.com` 直连。
 
 ## 项目定位
-- 目标：**聊天式生成 CAD 模型**的 Agent Harness（包名 `tcad`）。FreeCAD 全量源码（26.3.0dev）作几何内核与 Python API 引擎，**不改内核**。
-- 设计文档：`docs/02-架构设计.md`（可直接编码）；需求澄清问卷：`docs/01-需求澄清问卷.md`。
-- 设计方法：H=(E,T,C,S,L,V)+P 描述性框架；用户已授权由 AI 自行决策（全部决策标注「默认假设，可推翻」）。
+- 目标：**聊天式生成 CAD 模型**的 Agent Harness（包名 `tcad`）。FreeCAD（26.3.0dev，已构建）作几何内核，**不改内核**。
+- 设计文档 `docs/02-架构设计.md`；需求问卷 `docs/01-需求澄清问卷.md`。
 
 ## 核心架构不变量（改代码前先读）
-1. **几何内核与语义真相分离**：模型永不直接读写 FreeCAD document，只改 IR（特征 DAG + 参数 + 稳定命名）；FreeCAD 降级为「编译器后端」。这是全项目最有区分度的决策，T/S/V 三层形态由它决定。
-2. **成功定义唯一**：Gate 全绿 = 完成。模型声称完成不构成终止条件。
-3. **校验走独立读路径**（CQRS）：Gate 重新从磁盘加载 IR 快照 + 重新读导出产物，不碰生成路径的内存对象。
-4. **单写入口**：IR 只能经 `ir_patch`/`ir_commit` 变更；事件流 append-only 是单一真相源，先写事件再写快照。
-5. **Hook fail-closed**：Hook 异常/超时一律 DENY，永不 fail-open。
-6. **无头优先**：一切能力必须在 `FreeCADCmd` 下可用；依赖 GUI 的能力（真视口渲染）只能是可选增强。
+1. **几何内核与语义真相分离**：模型只改 IR（特征 DAG + 参数 + 稳定命名），不碰 FreeCAD document；FreeCAD 是「编译器后端」。
+2. **成功定义唯一**：Gate 全绿 = 完成。模型声称完成不是终止条件。
+3. **校验走独立读路径**（CQRS）：Gate 重新从磁盘加载 IR 快照 + 重读产物。
+4. **单写入口**：IR 只经 `ir_patch`/`ir_commit` 变更；事件流 append-only 是真相源，先写事件再写快照。
+5. **Hook fail-closed**：Hook 异常/超时一律 DENY。
+6. **无头优先**：一切能力必须在 `FreeCADCmd` 下可用。
+7. **守卫必须接线**（§34 的教训，最重要的一条）：写了检查 ≠ 检查会响。`_dispatch(...)` 的返回值有没有被消费、测量值有没有被写进 digest、配置项有没有被读、错误信息是不是在叫模型做它已经做过的事——这四问能找出大部分残留缺陷。**静默无效比报错危险。**
+8. **诊断必须与它报告的事实同源**：写死的计数、读错的配置段、只验连通的探针、"跳过"的测试——
+   这四样都会让绿色变成假象。**跳过不是通过。**
 
-## FreeCAD API 陷阱（写 worker 代码前必看）
-- `shape.BoundBox` **存在**（`XMin/XMax/.../XLength/YLength/ZLength`）→ 轴对齐校验用它。`optimalBoundingBox()` 是**可旋转 OBB**，拿它比轴对齐规格会偏小。
-  （早期文档曾断言「无 BoundBox 属性」，是**读源码得出的错误结论**，已被运行时实测推翻。以本节为准。）
-- `shape.check()` 实现是成功返回 `None`/失败抛 `ValueError`（与 `.pyi` 的 `-> bool` 不符）→ 必须 try/except，**不能写 `if shape.check():`**。
-- `TopoShape.tessellate(tolerance)` **必须传参**；无参调 TypeError（`.pyi` 的零参签名是错的）。
-- `SketchObject.solve()` 返回 `SolveStatus` 整数，**不是 DOF** → DOF 读 `sketch.DoF`。
-- **无头出不了 PNG**（渲染全在 `src/Gui`）→ worker 回传网格，supervisor 软件光栅化。
-- 不存在：`Part.checkGeometry`、`Part.checkSolid`、`shape.isSolid`、`shape.Vertices`（是 `Vertexes`）。
-- `setDatum()` 在**约束冲突**时抛的是 `ValueError: Invalid constraint index: N` —— 错误信息与真实原因无关。
-- 详细清单与源码行号见 `docs/02-架构设计.md` 附录 A/B；附录 B（运行时实测）**效力高于附录 A（源树阅读）**。
+## FreeCAD API 陷阱
+- `shape.BoundBox` **存在** → 轴对齐校验用它。`optimalBoundingBox()` 是**可旋转 OBB**，比轴对齐规格会偏小。
+- `shape.check()` 成功返回 `None`、失败抛 `ValueError` → 必须 try/except，**不能写 `if shape.check():`**。
+- `TopoShape.tessellate(tolerance)` **必须传参**。`SketchObject.solve()` 返回 SolveStatus，**不是 DOF** → DOF 读 `sketch.DoF`。
+- **无头出不了 PNG** → worker 回传网格，supervisor 软件光栅化。
+- 不存在：`Part.checkGeometry`、`shape.isSolid`、`shape.Vertices`（是 `Vertexes`）。
+- `setDatum()` 在约束冲突时抛 `ValueError: Invalid constraint index: N`（信息与真实原因无关）。
+- **`sandbox-exec` 的 profile 必须以 `(version 1)` 开头**，否则退出码 65「no version specified」，子进程一行代码都不跑。
+- **OCC `IntCurvesFace` 求交器不在本构建的绑定里**（`ModuleNotFoundError`）→ 做射线/厚度分析请用 `distToShape` + `Solid.isInside` 等公开 `Part` API。
+- 源码行号清单见 `docs/02` 附录 A/B；**附录 B（运行时实测）效力高于附录 A（源树阅读）**。
 
-## 构建 / 运行约定
-- FreeCAD 构建：`cd free-cad/FreeCAD && pixi run configure && pixi run build` → `build/debug/bin/FreeCADCmd`。**已构建可用。**
-- worker 启动：`FreeCADCmd -c --console -P <repo_root> tcad/worker/bootstrap.py --pass --worker-id=wN`
-  （**`--pass` 必须放在脚本自身参数之前**，否则 FreeCADCmd 先解析并拒绝未知选项，脚本一行都不执行）
-- 渲染只在 supervisor 侧（numpy + Pillow，PNG 有纯 stdlib zlib 兜底后端），不往 FreeCAD 进程塞第三方依赖。
+## 构建 / 运行
+- FreeCAD 构建：`cd free-cad/FreeCAD && pixi run configure && pixi run build` → `build/debug/bin/FreeCADCmd`。
+- worker：`FreeCADCmd -c --console -P <repo_root> tcad/worker/bootstrap.py --pass --worker-id=wN`
+  （**`--pass` 必须在脚本自身参数之前**）。跑独立脚本：`FreeCADCmd /path/to/script.py`。
+- 渲染只在 supervisor 侧（numpy + Pillow），不往 FreeCAD 进程塞第三方依赖。
 
 ## 唯一入口与常用命令
-- **唯一生产装配入口**：`tcad.core.wiring.build_services(config)`。它把各子系统「库形状」适配成 `tcad/tools/base.py` 里的窄 Protocol。
-  不要在其他地方重新接线；`LoopEngine.build_default_services(cfg)` 只是转发（传 LoopConfig 会报错）。
-- 装一个完整栈不启 worker（测试用）：`build_services(cfg, start_worker=False)`
-- 跑全部测试：`.venv/bin/python -m pytest tests/ -q`（当前 **517 例全绿**，约 19 秒：464 单测 + 53 契约）
-- 真端到端（打真 FreeCADCmd）：`pytest tests/contract/ -q`
-- CLI：`.venv/bin/python -m tcad.server.cli --data-dir <dir> new|chat|repl|approvals|approve ...`
-- **Web 界面**：`.venv/bin/python tools/serve.py --data-dir <dir> --port 8765` → http://127.0.0.1:8765/ui/
-  - 命令行 override（`--provider/--model/--base-url`）只作用于内存（`persist=False`），不会覆盖 UI 里保存的设置。
-- **离线模型替身**（无 Key 也能跑通整条 /chat 路径）：
-  `.venv/bin/python tools/stub_llm.py --script tools/sessions/demo_bracket.json --port 8123`
-  然后 `tools/serve.py --base-url http://127.0.0.1:8123/v1 --model stub-scripted`
-- **「操作者即 LLM」驱动器**（不接模型供应商，自己当模型走真实工具面）：
-  `python -m tools.agent_driver --list-tools --full --only ir_patch`（看模型可见的工具面/schema）
-  `python -m tools.agent_driver --model-id X --calls tools/sessions/stepN.json`（执行一串工具调用）
-  `python -m tools.agent_driver --model-id X --worker-probe`（直接问 worker 要原始结果，排查静默失败用这个）
-- 重新生成渲染样图：`.venv/bin/python tools/render_sample.py` → `docs/renders/`
-- FreeCAD API 探测：`FreeCADCmd tools/probes/smoke_freecad.py` / `probe2.py`
+- **唯一生产装配入口**：`tcad.core.wiring.build_services(config)`；测试用 `start_worker=False`。
+- 全量测试：`.venv/bin/python -m pytest tests -q`（**当前 1007 passed, 0 skipped**，约 164 s —— 4 条真机 e2e 在跑真模型）
+  `tests/unit`（787，不需 FreeCAD）/ `tests/contract`（真跑 FreeCADCmd）/ `tests/e2e`（需真模型，见下）
+- 环境诊断：`.venv/bin/python tools/doctor.py`（退出码 0 = 可运行；会打印 17/21 ops kernel-verified）
+- 验收产物：`tools/build_acceptance_artifacts.py [--check]` → `review/acceptance/`
+- CLI：`.venv/bin/python -m tcad.server.cli --data-dir <dir> new|chat|repl|approvals|approve`
+- **Web 界面**：`tools/serve.py --data-dir <dir> --port 8765` → `http://127.0.0.1:8765/ui/`
+  （命令行 `--provider/--model/--base-url` 只作用于内存，不覆盖 UI 保存的设置）
+- **离线模型替身**：`tools/stub_llm.py --script tools/sessions/demo_bracket.json --port 8123`
+- **「操作者即 LLM」驱动器**：`python -m tools.agent_driver --list-tools --full` / `--calls <stepN.json>` / `--worker-probe`
 
-## 模型配置（M1/M2 新增，改之前先读）
-- **`HotSwapLlm`**：`services.llm` 永远返回同一个对象（engine 在 `engine.py` 的 `_step` 里读它），换模型只替换内部 `_client`，**不重建 services、不重启 FreeCAD**。`configure()` 先建新 client 再原子替换，建失败则保留旧的。
-- **设置优先级**：`settings.json`（UI 写的完整快照）> YAML/环境变量。删掉该文件即回到 YAML。落盘 0600，**回传一律掩码**（`api_key_masked`），前端永远拿不到明文。
-- **`api_key` 的三角语义**（patch 里）：字段缺失=保留；`null`=清除；字符串=设置。靠 `model_fields_set` 区分。
-- **切换 provider 会重置继承字段**（`model`/`base_url`/`api_key_env`/`context_window`），否则 deepseek→ollama 会继续用 DeepSeek 的端点。
-- **`base_url` 为空必须拒绝**：OpenAI SDK 会静默回退到 `api.openai.com`，等于把提示词和 Key 发给了用户没选的厂商。
-- **`base_version: "current"`** 是 `ir_patch` 契约的一部分（服务端解析为当前版本）；显式整数仍是多轮编辑的安全形式。
-- 供应商预设只给**候选**模型名；真实列表由 `GET /settings/models` 代调 provider 的 `GET /models`。DeepSeek 官方中英文档仍并存两代模型名（`deepseek-v4-*` 与 `deepseek-chat`/`deepseek-reasoner`），**不要硬编码**。
-- provider 预设 `use_env_proxy` 默认全 False：本机 `HTTPS_PROXY` 曾把直连失败伪装成"厂商挂了"。
+## 第 3 层（真实 LLM e2e）：已解封，4 passed
+- provider 在 `data/settings.json`（DeepSeek）。**曾经**余额为 0 → 每次 completion `HTTP 402 Insufficient Balance`；
+  现已恢复，第 3 层真跑通过（真模型 + 真内核，~24 s，把交付的 STEP 回读体积 25600 mm³）。
+- `TCAD_E2E_*` 未设置时会回退到 `data/settings.json`；探针是 `tests/e2e/provider_probe.probe_provider`（打一次最小 completion，不是 `GET /models`）。
+- **不要因为没有 key 就说做不到**——先跑探针看真实原因。
+- ⚠️ **长期 BLOCKED 的测试 = 从未被验证过的测试**：解封时 4 条里有 3 条失败，且全是**测试自己**对接口形状的过期假设
+  （`GET /approvals` 是 `{"pending":[…]}` 不是裸列表；`/artifacts` 是 `{…, "files":[…]}` 不是裸列表）。
+  接口是对的、测试是错的。跳过不是通过，也从不是"以后再验也一样"。
+
+## LLM 客户端：参数截断必须能被诊断（C-49，用户实测报障）
+- **`ToolCall.args_error` / `args_raw_len` 是必须的**：`args == {}` 同时表示两种相反的情况——
+  「模型发了个空调用」（它自己的错）与「JSON 被每步 token 上限截断」（chunk 太小）。二者处方相反。
+- `_parse` 曾经 `except JSONDecodeError: args = {}` **把原因扔掉**，于是截断被下游报成
+  "missing required property 'base_version'"——**假诊断**，模型唯一的合理反应是把同样大的 patch 再发一次。
+- 真机证据：`max_tokens=1200` → `finish_reason="length"`，`arguments` 是 1359 字符非法 JSON（结尾 `"direction": [0.0`）。
+  **`finish_reason` 一直在响应里，只是没人读。**
+- `engine._step` 在派发**之前**短路（不进 hook、不进 handler），按原因给处方：`length` → 把 patch 拆小；否则 → 重发合法 JSON。
+- 空字符串**不算错**（无必填参数的工具合法取 `{}`）；合法 JSON 但非对象单独记。
+- **改 `_parse` 时别退回静默**：`tests/unit/test_llm_client.py` 与 `test_loop_engine.py` 各有守卫，
+  其中一条明确断言错误文案里**不得**出现 "missing required property"。
+
+## 模型配置（改之前先读）
+- **`HotSwapLlm`**：`services.llm` 永远返回同一对象，换模型只替换内部 `_client`，不重建 services、不重启 FreeCAD。
+- 设置优先级 `settings.json`（UI 写的完整快照）> YAML/环境变量。落盘 0600，**回传一律掩码**。
+- `api_key` 三角语义：字段缺失=保留；`null`=清除；字符串=设置（靠 `model_fields_set` 区分）。
+- 切换 provider 会**重置继承字段**（`model`/`base_url`/`api_key_env`/`context_window`）。
+- `base_url` 为空必须拒绝（OpenAI SDK 会静默回退到 `api.openai.com`）。
+- provider 预设只给**候选**模型名；真实列表由 `GET /settings/models` 代调 provider 的 `GET /models`。**不要硬编码**。
+- 预设里 `default_model` 可能与端点实际不符（本机 `deepseek-v4-flash` 已不在列表，现为 `deepseek-flash`/`deepseek-v4-pro`）→ 以运行时列表为准。
+- provider 预设 `use_env_proxy` 默认全 False（本机 `HTTPS_PROXY` 曾把直连失败伪装成「厂商挂了」）。
 
 ## 模型协议（真机验证过，别改坏）
-- **DeepSeek 思考模式要求 `reasoning_content` 原样回传**：assistant 消息带 tool_calls 被回放时必须带上它，否则 400（`The reasoning_content in the thinking mode must be passed back to the API`）。链路：`LlmReply.reasoning_content` ← `_parse` 读 `reasoning_content`（回退 `reasoning`）→ engine 构造 assistant 消息时**有则回显、无则不加键**。
-- 一轮 = 多步循环 ⇒ 每步都在回放上一步的 assistant 消息，所以这个缺陷**必然在第 2 步爆**，且**任何思考模型都会**。
-- **这类协议要求只有真机能发现**：`tools/stub_llm.py` 不产生 reasoning。离线全绿 ≠ 真机可用。
-- 真机实测（`deepseek-v4-flash`，2026-09-19）：一句"60x40 底板厚 10mm"→ 5 步、11 秒、Gate 全绿，中间有一次模型自修复。
+- **DeepSeek 思考模式要求 `reasoning_content` 原样回传**：assistant 消息带 tool_calls 被回放时必须带上它，否则 400。
+  链路：`LlmReply.reasoning_content` ← `_parse` → engine 构造 assistant 消息时**有则回显、无则不加键**。
+- 一轮 = 多步循环 ⇒ 每步都在回放上一步 ⇒ 该缺陷**必然在第 2 步爆**，且任何思考模型都会。
+- **这类协议要求只有真机能发现**（stub 不产生 reasoning）：离线全绿 ≠ 真机可用。
 
-## Gate 的诚实性（核心，别退回）
-- **`bbox_spec`/`mass_spec` 在无对应需求时返回 SKIP 而不是 PASS**。曾经返回 PASS（"no confirmed bbox requirement"）——**没做校验却报通过**，导致"模型只建了两根探针也全绿"。空检查报 PASS 比报 FAIL 危险得多。
-- **`requirement_coverage`**（advisory）在无 confirmed 约束时明确说"只验证了几何自洽，没验证是否符合要求"。
-- **`ir_commit` 的 PASS 文案会说明它是否判过需求**：没判过就明说，不再只写 "Build succeeded"。
+## 校验层（Gate）的诚实性——别退回
+- `bbox_spec`/`mass_spec` 在无对应需求时返回 **SKIP 而不是 PASS**。空检查报 PASS 比报 FAIL 危险得多。
 - 全 blocking SKIP 仍 = 不通过（fail-closed 未动）。
-- **`update_requirement`（confirmed=true）是 Gate 唯一的判据来源**；用户给的尺寸/数量/位置必须记下来，否则 Gate 无卷可判。
+- **`update_requirement`（confirmed=true）是 Gate 唯一的判据来源**；用户给的尺寸/数量/位置必须记下来。
+- **`CheckResult` 只接受标量**（`measurements: dict[str,float|str|bool]`，`expected: dict[str,float]|None`）。
+  `specexpr.evaluate` 返回的形态按 kind 而异（裸标量 / 含列表的 dict / `{"counterpart":…}`）
+  → **任何构造 `CheckResult` 的地方都必须过 `checks_solid._as_dict`**（一阶 `_r` 与二阶 `SpecCheck._result` 都已这么做；新加检查别绕过去，否则 confirmed 需求会把构建判成 pydantic ERROR）。
+- **`wall_thickness` 是需求驱动的**：有 confirmed 需求时用**用户的值与容差**判且 BLOCKING，量不到报 `required_but_unverified`；没有需求时才退回配置默认值 + ADVISORY。
+  worker 的 `_measure_min_wall_thickness` 是面配对下界（`distToShape` + `isInside`），只在真量到时写 `key_dimensions`。
 
-## ir_patch 工具描述（模型可见的契约，改它要跑测试）
-- **op 必须逐个列全，不能用 `additive_*` 通配** —— 通配等于没告诉模型有这些能力（曾导致模型用 pad 建出三个不接触的实体）。
-- 必须写明：**同一 body 内特征只在几何相交时合并**；`refs` 只声明构建顺序、**不产生几何关系**；贴到已有形体要用 `plane: {kind:"face", feature_id, sub:"FaceN"}`。
-- `tests/unit/test_ir_tools_description.py` 会拿描述与 `FeatureOp` 对账，别再让描述落后于 schema。
+## IR / ir_patch（模型可见的契约，改它要跑测试）
+- **加字段的正确姿势**：patch 层的 payload 白名单 `_PAYLOAD_FIELDS` **从 `model_fields` 派生**——手写清单会在加字段那天开始拒绝合法载荷。
+- **`add_*` 与 `update_*` 必须共用一份字段映射**（`_merge_feature`/`_merge_sketch`）。曾经 `add_feature` 静默丢弃 `base_feature`/`sub_elements`/`plane`，于是 fillet/chamfer/draft/thickness/mirrored 一条 add 建不出来，报错还叫模型去设置它刚设置过的字段。
+- **未知 payload 键一律按名拒绝**，带允许集合 + difflib 近名提示（`'parms' (did you mean 'params'?)`）。静默忽略 = 产出「类型合法但不是要的东西」。
+- `refs`/`sub_elements` 传字符串必须拒绝（`list("Edge1")` → 5 个不存在的名字）。
+- **`reversed` / `midplane` 是 `params` 键**（不是 payload 顶层）；顶层写会被按名拒绝。
+- op 必须逐个列全，**不能用通配**；`tests/unit/test_ir_tools_description.py` 拿描述与 `FeatureOp` 对账。
+- 同一 body 内特征只在**几何相交**时合并；`refs` 只声明构建顺序、不产生几何关系。
 
-## 熔断上限：可选，且默认不设（用户指令，别再改回硬上限）
-- **`None` = 该维度不设上限**，五项（`max_steps_per_turn` / `max_tokens_per_turn` / `step_timeout_s` / `turn_wall_clock_s` / `max_compile_retries`）在 `configs/default.yaml` 里**全部为 `null`**。
-  用 `None` 而非 `0`/大数：`0` 与 `999999` 的语义都会在不同方向上静默出错，`None` 不会（`0` 在 `is_unlimited` 里是**真上限**，有测试守着）。
-- 无上限时一个 Turn 只会因三件事结束：**Gate 全绿 / `FAILED` / `AWAITING_APPROVAL`**。
-- **有界档 = `configs/policies/strict.yaml`**，它必须把五项**全部**限住（漏一项就留一处无上限）。反证实测：同一 27 步脚本，默认档 26 步 `succeeded`，strict 档第 12 步 `exhausted`。
-- **别把「工作量上限」和「单次请求活性」混为一谈**：取消前者**不影响**后者。挂死的 LLM 调用仍撞 `llm.request_timeout_s`、挂死的工具仍撞 `ToolSpec.timeout_s`、死 worker 仍撞 worker 传输超时。改预算时**不要顺手把这些也去掉**。
-- 无上限状态必须**可见**：`GET /health` 的 `budget.{limits,unbounded,unbounded_all}` + 界面顶栏「无预算上限」徽标。
-- **客户端断开必须终止 Turn**：`/chat` 的 SSE 生成器在 `finally` 里 `task.cancel()`。无上限之前靠 `max_steps_per_turn` 兜底，之后不会自己停。
-  ⚠️ **`yield start` 必须在 `try` 之内**：生成器在进入 `try` 之前被关闭时 `finally` **不执行**，任务就泄漏（这是实测踩到的）。
-- 同时顺手修了：每次 `/chat` 都把 `services.hooks` 包一层 `HookEventTap` 且不还原 → 逐请求累积。现在 `finally` 里还原。
+## 草图坐标（真机报障后补，改编译器前必读）
+- **草图坐标是世界坐标**：XY→(x,y)、XZ→(x,z)、YZ→(y,z)。编译器用 `sk.Placement.inverse()` 把世界点映射进局部，且在加几何**之前**要 `doc.recompute()`。
+- **`offset` 不定位轮廓，还会变形**（真内核实测：40×20 矩形 pad 5，offset (0,0,0)→4000、(10,10,0)→**2500**（同包围盒）、(5,−3,0)→4050/包围盒 40×23）。原因：坐标已是世界坐标，offset 是同一个 Placement 的一部分 → **精确抵消**；若轮廓又绑到草图原点，求解器再把点拖走。
+  → IR 层现在**按名拒绝非零 offset**（`sketch_offset_unsupported`）。**要把轮廓放在别处，就写那个坐标。**
+- **原点绑定与坐标是同一件事的两句话**：`{"Coincident","refs":[i,pt,-1,1]}` 把点绑到草图原点；若坐标写的不是原点，求解器用**移动几何**来同时满足两者——构建成功、切除落在没写过的地方。
+- `pad` 挤出方向随平面法向：XY→+Z、**XZ→−Y**、YZ→+X。
+- **`Sketcher.Constraint` 对无法识别的形状是 segfault 不是异常** → 编译器只构造实测过形状，其余抛 `_BadConstraint`。
+- **值写进构造函数会跳过 FreeCAD 的冗余校验**：能用 refs-only 的（`DistanceX/Y[g,p]`、`Distance[g,p]`、`Angle[g1,g2]`）一律 refs-only + `setDatum`；只有 refs-only 会崩的 `Radius`/`Diameter` 才把值放进构造函数。
+- 构建顺序按依赖解析（不是「先所有草图再所有特征」）；依赖环 → `kind=semantic` 报错。
+- **编译失败绝不能没有原因**：`_build` 在 recompute 后专门诊断「为什么没有实体」。
+- worker 崩溃/卡死必须替换进程（`WorkerHandle.recover()`，受 `runtime.worker_restart_on_crash` 控制）。
+- 回归：`tests/contract/test_sketch_planes.py`（含 offset 实测）、`tests/unit/test_worker_error_detail.py`。
 
-## 前后端契约（改界面之前先读，这三条都踩过）
-- **SSE 帧里的枚举是「序列化值」不是「枚举名」**：pydantic 对 `(str, Enum)` 发出的是小写值 —— `"succeeded"` / `"exhausted"` / `"pass"` / `"blocking"`。前端任何以状态为键的表都必须用小写值，用 `SUCCEEDED` 这类枚举名**永远匹配不到**（曾导致 turn 结束屏幕上没有任何结论）。
-- **engine 的 observer 帧里 `images[].path` 是磁盘绝对路径**，浏览器用不了；server 侧必须经 `artifact_url_for()` 转成 `/models/{id}/artifacts/{file}?version={n}` 再发。
-- **不要用 `StoreAdapter.current_version()` 判断模型是否存在**：它对"模型不存在"和"模型处于 v0"**都返回 0**（而新建的模型就是 v0）。需要区分时用 `load()`；端点对未知模型必须 404 而不是 500。
+## 熔断上限：可选，默认不设（用户指令，别改回硬上限）
+- **`None` = 不设上限**，五项（`max_steps_per_turn`/`max_tokens_per_turn`/`step_timeout_s`/`turn_wall_clock_s`/`max_compile_retries`）在 `configs/default.yaml` 里**全部 null**。用 `None` 而非 `0`/大数。
+- **预算按回合**：`run_turn` 每轮重建 `Budget`（曾经不重建 → 复用引擎时第 2 轮从第 1 轮余量开始，strict 档下被误判 EXHAUSTED）。
+- 有界档 = `configs/policies/strict.yaml`，必须把五项**全部**限住。
+- **别把「工作量上限」和「单次请求活性」混为一谈**：取消前者不影响后者（`llm.request_timeout_s`、`ToolSpec.timeout_s`、worker 传输超时都还在）。
+- 无上限状态必须可见：`GET /health` 的 `budget.{limits,unbounded,unbounded_all}` + 顶栏徽标。
+- **客户端断开必须终止 Turn**：`/chat` 的 SSE 生成器在 `finally` 里 `task.cancel()`；**`yield start` 必须在 `try` 之内**，否则 `finally` 不执行、任务泄漏。
 
-## 会话（列表 / 切换 / 恢复，改前端前先读）
-- **一个会话 = 一次对话 + 它唯一在造的零件**，创建时绑定、不再变更（`POST /chat` 对不符的 `model_id` 回 409）。
-  `GET /sessions` 因此回 `model_id` 与 `ir_version`：**切换会话必须同时换四件东西**（对话流 / 视图 / 产物 / 检查器 + URL `?thread=`），只换对话会让右边三个面板继续描述你已经离开的零件，而且看起来同样权威。
-- **`abort()` 只停网络，不停 JavaScript。** 被切走的回合，它的 SSE 帧回调、`catch`、`finally` **全都会继续跑**：
-  提示会写进新会话、`clearLive()` 会删掉新回合的 live 行、`state.abort = null` 会解掉新回合的 controller。
-  → `send()` 给回合一个**身份对象** `state.turn`，`switchSession` 置 `null`，所有回调以 `state.turn === turn` 为前置条件。
-  **任何"可作废的异步流程"都要有可比较的身份，不能只靠 abort。**
-- **`POST /sessions` 复用已存在的 `model_id` 必须拒绝（409）**：`IrStore.create()` 不是幂等的，它重写 `v0.json`
-  并照样回 `ir_version: 0`，等于一次点击抹掉用户正在做的零件。两个播种端点共用 `_model_exists()`。
-- **列表读取失败 ≠ 列表为空**：`state.sessionsError` 必须渲染成「读取失败 + 重试」，不能显示「还没有会话」。
-  这与 Gate「空检查不许报 PASS」是同一条纪律：**失败不许长得像正常状态**。
-- 视图切换用**缓存优先**（`loadView(false)`）：`/render` 的缓存键是 `(version, view, style, size)`，版本取自该模型自己的 IR，跨会话不可能串图。
-- **限制（未做）**：跨回合只延续 IR 几何，**不延续对话历史**（`_init_messages` 恒为 `[system, user]`）。
-  `session_db` 只存文本、不存工具调用与结果，直接回灌会让模型只看到自己的旁白。正解 = `tcad/context/assembler.py`（已存在、未接线）+ 持久化工具轨迹。
+## Hooks：四个 PRE_* 点都必须**消费**返回值（§34 的教训）
+- `PRE_TURN`/`PRE_STEP` 走 `Engine._halt_on_hook`：`DENY → FAILED`、`ASK → AWAITING_APPROVAL`，**都是结构性停机**（`_drive` 循环条件是 `while state == RUNNING`，模型一次都不会被调用）。
+- `PRE_TOOL_USE` 的 `ASK` 会**中止同批剩余调用**；被跳过的调用仍各拿一条 `tool` 消息（写 "NOT executed"），否则恢复后的线格式不合法、且「它们没跑」这件事被藏起来。
+- `PRE_COMMIT` 的 `ASK` 与 `DENY` 同样早退（提交就是那个写操作，等有人来看时产物已经存在）。
+- `POST_TURN` 永远触发（包括被拒绝的回合）。
 
-## 打断一个回合（`/chat/interrupt`，改 `/chat`、engine 或前端前先读）
-- **`ABORTED` 是第五种终态，来自人**：不是成功，也不是失败。文案必须说清「是谁停的 + 此后没有任何东西经过 Gate 验证」（`STOPPED_BY_USER`）。
-- **谓词说「为什么停」，取消说「怎么停」，两者都在 engine 里**：
-  - `LoopEngine(stop_requested=…)` 是**唯一**判定依据，`_step` 开头检查（停在两步之间、甚至第一步之前都不会漏）；
-  - `task.cancel()` 才是真的打断在飞的 LLM 请求（一轮的墙钟时间几乎全在那一次 HTTP 上；不取消 = 「打断」退化成「等这一步做完」）；
-  - **只有谓词为真时 `CancelledError` 才被解释成 ABORTED**；服务端关闭 / 客户端断开必须保持 asyncio 原本语义（有测试 `test_a_cancellation_nobody_asked_for_is_not_reinterpreted` 守着）。
-- **`request_id` 由客户端在发请求之前铸造**（`crypto.randomUUID`），随 `/chat` 一起送、`start` 帧原样回。
-  服务端铸 id 会留下「客户端知道有回合在跑、服务端还不知道它叫什么」的窗口 —— 那正是停止按钮点了没用、模型继续烧 token 的窗口。
-- **不认识的 id ≠ 报错**：记为「待停止」（有界 64、**30s 过期**、无论如何都被消费），回合注册时第一步之前执行；没有在跑的回合时返回 200 + `stage: pending`，因为「没有这个回合」是答案不是故障。
-  **过期不是保险**：真机验证时探针复用 id，上一轮打空的停止标记把**下一轮**在第一步之前停掉了，屏幕上没有任何解释 —— 瞄准某个回合的停止请求，如果那个回合从未出现，就绝不能去停后来那个碰巧复用 id 的回合。
-- **同一个 `request_id` 起第二个回合 → 409**：覆盖注册表 = 让前一个回合永远停不下来。
-- 前端：运行时出现「停止」（`Esc` 同效），`stopTurn()` **先 POST 接口、失败才退回关闭 SSE**；
-  两条路都必须说「已打断本次回合」，**不能**说「已离开该会话」（那是描述用户没做过的事）；按钮在开始 / `finally` / 切走三处收起。
-- **未做**：打断停不了 worker 里已经发出去的活（worker 协议无中途取消）；打断不写进会话记录（与工具调用、Gate 报告同一现状）；真机点按未实测。
-- 复跑脚本：`tools/probes/interrupt_live.py`（需要 `stub_llm.py --delay 1.5` 这样的慢模型，否则没有「回合中间」可打断）。
+## 前后端契约（改界面前先读）
+- **SSE 帧里的枚举是「序列化值」不是「枚举名」**：`"succeeded"`/`"exhausted"`/`"pass"`/`"blocking"`。用枚举名**永远匹配不到**。
+- engine 的 observer 帧里 `images[].path` 是**磁盘绝对路径**；server 侧必须经 `artifact_url_for()` 转 URL。
+- **不要用 `StoreAdapter.current_version()` 判断模型是否存在**（对它而言「不存在」与「v0」都返回 0）→ 用 `load()`；未知模型必须 404 不是 500。
+- **`/render` 的 `view` 和 `style` 都必须过白名单**（`style` 曾未校验 → 拼进缓存文件名可穿越读/写）。`_ALLOWED_STYLES` 从 `RenderStyle` 派生。
 
-## 草图坐标 / 约束 / worker 健壮性（真机报障「手机支架做不出来」后补，改编译器前必读）
-- **草图坐标是世界坐标，必须落在草图平面内**：XY→(x,y)、XZ→(x,z)、YZ→(y,z)，法向那一维忽略。
-  Sketcher 内部用的是**局部 (u,v)**，所以编译器必须用 `sk.Placement.inverse()` 把世界点映射进去
-  （映射在 `_add_sketch` 里、**加几何之前**要先 `doc.recompute()` 把 attachment 解析掉，否则 Placement 还是单位阵）。
-  **曾经没有这条**：YZ 上的 `(0,y,z)` 被当成 `(u=0,v=y)`，所有非 XY 草图静默塌成一条线、没有实体也没有报错。
-  `pad` 挤出方向随平面法向：XY→+Z、**XZ→−Y**、YZ→+X。
-- **`Sketcher.Constraint` 对无法识别的形状是 segfault，不是异常**（26.3.0dev 实测 SIGSEGV 11）。
-  崩溃形状举例：`Radius[g]`、`Diameter[g]`、`Coincident[g,p]`（要 4 参）、`Horizontal[g,p]`、
-  `PointOnObject[g1,g2]`（要 3 参）、`Symmetric[a,b,c]`（要 5/6 参）、`DistanceX[g]+setDatum`、
-  `Distance[g]+setDatum`、`Weight[g]+setDatum`。
-  → 编译器只构造 `_GEOMETRIC_CONSTRAINTS` / `_VALUE_CONSTRAINTS` + `_REFS_ONLY_SAFE` 里**实测过**的形状，
-  其余抛 `_BadConstraint` 变成 `kind=semantic` 的清楚报错。**改约束构造前先重跑那张实测表**。
-- **值写进构造函数会跳过 FreeCAD 的冗余校验**：`Constraint("Radius", g, 4.0)` 不崩，但之后的 `setDatum`
-  变成空操作，而过约束矩形在那种形式下 `solve()=0 / DoF=0`、建出实体、**Gate 全绿**（假绿！）。
-  所以：**能用 refs-only 的（`DistanceX/Y[g,p]`、`Distance[g,p]`、`Angle[g1,g2]`）一律 refs-only + setDatum**；
-  只有 refs-only 会崩的 `Radius`/`Diameter` 才把值放进构造函数（代价：这两者不做过约束校验）。
-- **构建顺序按依赖解析，不是「先所有草图再所有特征」**：草图的依赖是它附着的 face/datum_plane 所属特征，
-  特征的依赖是 `profile_sketch` + `refs`。旧顺序让 `plane:{kind:"face"}` **永远不可能成功**。
-  依赖环 → `kind=semantic` 报错，不再静默任意顺序。
-- **编译失败绝不能没有原因**：`_build` 在 recompute 后专门诊断「为什么没有实体」（指名草图/特征、边数、wires、state、
-  以及「是不是写成局部坐标了」）。以前会返回 `ok=false, errors=[]`，RPC 再把它变成一句
-  `handler reported failure` —— 模型无从修、用户无从看（这就是用户那条报障的直接来源）。
-- **worker 崩溃/卡死必须替换进程**：`WorkerHandle.recover()`，由 `cfg.runtime.worker_restart_on_crash` 控制；
-  卡在 OCCT 里的进程不会理关闭 stdin，`close()` 只能 kill。以前这个配置项**代码里从没人读**，
-  于是坏调用之后每一次调用都失败——用户体感就是「一直有报错」。
-- 回归测试：`tests/contract/test_sketch_planes.py`（13 例，真 FreeCAD）、`tests/unit/test_worker_error_detail.py`。
-  真机复跑证据：`docs/renders/phone_stand*.png` + `docs/03` 附录 H。
+## 会话 / 打断（改前端前先读）
+- **一个会话 = 一次对话 + 它唯一在造的零件**；切换会话必须同时换四件东西（对话流/视图/产物/检查器 + URL `?thread=`）。
+- **`abort()` 只停网络，不停 JavaScript**：被切走的回合其回调/catch/finally 都会继续跑 → 用**身份对象** `state.turn`，所有回调以 `state.turn === turn` 为前置条件。
+- **`POST /sessions` 复用已存在的 `model_id` 必须 409**（`IrStore.create()` 会重写 `v0.json`）。
+- **列表读取失败 ≠ 列表为空**：必须渲染「读取失败 + 重试」。失败不许长得像正常状态（与 Gate「空检查不许报 PASS」同一条纪律）。
+- `ABORTED` 是**第五种终态、来自人**：文案必须说清「是谁停的 + 此后没有任何东西经过 Gate 验证」。
+- 中断三件套：`stop_requested` 谓词（唯一判定依据）+ `task.cancel()`（真的打断在飞的 LLM 请求）+ **只有谓词为真时 `CancelledError` 才解释成 ABORTED**。
+- `request_id` 由**客户端在发请求之前铸造**；不认识的 id 记为「待停止」（有界 64、30s 过期）；同一 id 起第二个回合 → 409。
+- **限制（未做）**：跨回合只延续 IR 几何，**不延续对话历史**。
 
-## 建模时最容易踩的两条（已写进 ir_patch 工具描述）
-1. **Pocket 方向**：草图在 XY（法向 +Z）时 `PartDesign::Pocket` **默认朝 -Z 切**，而底板在 +Z 侧 → 切进空气，特征什么都不做**却报告成功**（`ok=true`、`errors=[]`、体积不变）。要用 `"reversed": true`。
-2. **草图定位**：把一条线的**起点与终点**都用绝对坐标标注 + H/V 约束 = 求解器冲突。正确做法：轮廓建在**草图自己的原点**上（绑一条线到草图原点 + 标注对侧端点），再用 sketch 的 `offset` 整体定位。
-3. 通用：**静默无效比报错危险**。凡"特征没生效"，先怀疑方向/基准面，再看体积有没有变。
+## 特权工具（raw_python）
+- **默认不注册**（`build_default_registry(enable_privileged=False)`），三重门：`policy.allow_privileged` + 未过期审批（绑定工具+参数摘要+会话+TTL）+ `policy.sandbox_probe` 健康。
+- **沙箱由服务端 `config.sandbox` 决定，模型不能选**：payload 里的 `sandbox` 键会被按名拒绝（schema 也已 `additionalProperties:false`）。
+- 未配置 sandbox → **按要沙箱处理**；`backend="bwrap"`（未实现）→ **失败关闭**。
+- profile 由配置生成并**必须以 `(version 1)` 开头**；实际只保证「写限 writable_root / 可选禁网」，**读全放开、无降权**（`read_only_roots` 未落实，R-10）。
+- `sandbox-exec` 在本机**无法端到端验证**（外层沙箱禁止嵌套）→ 只验证到语法与策略决策。
 
 ## 操作纪律（踩过的坑）
-- **不要在用户正在使用的端口上起演示/验证服务。** 曾用同一个 8765 端口配 `--data-dir .tcad_live2` 指向离线替身跑验证，用户那段时间打开界面看到的是 stub 的配置和无 key 状态，误以为「配置没保存、回到默认模型」。验证请换端口（8766+），或明确告诉用户当前端口被占用。
-- 多实例并存时用 `GET /health` 的 `data_dir` 分辨（UI 的设置对话框与顶栏 tooltip 也会显示）。
-- 用户报「功能 X 没用」时，先确认他连的是哪个实例/数据目录，再怀疑代码。
-
-## 已知环境限制
-- **无法 push 到 GitHub**：认证与体积都正常，pack 能完整上传，但代理不转发 `receive-pack` 的响应流（HTTP/2 → 408，HTTP/1.1 → curl 52 empty reply）。`ls-remote` 正常（下载类 OK）。`~/.ssh` 无密钥。**需要换代理或加 SSH key**；`127.0.0.1:7890` 与默认 50683 都试过，后者连不上 GitHub。
-- 执行沙箱禁止写 OS 临时目录 → pytest 必须用 `--basetemp=.pytest_tmp`（已在 pyproject.toml）。**该目录每次运行会被清空，别把产物放那里。**
-- macOS BSD `grep` 不支持 `\|` 交替 → 用 Grep 工具或 `grep -E`。
-- 无 `timeout` 命令。
+- **不要在用户正在使用的端口上起演示/验证服务**（曾用 8765 跑验证，用户看到的界面是 stub 的配置，误以为「配置没保存」）。验证换 8766+。
+- 多实例并存时用 `GET /health` 的 `data_dir` 分辨。用户报「功能 X 没用」时先确认他连的是哪个实例/数据目录。
+- **验收产物会 STALE**：改了源码就要重建 `review/acceptance/`，`--check` 会告诉你。
+- 改修复前先备份、改完做**变异验证**（还原修复 → 确认测试变红 → 还原源码）。本轮 8/8 全中；这能区分「真守卫」和「恰好也绿」。

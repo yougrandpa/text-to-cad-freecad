@@ -33,6 +33,13 @@ def tessellate(ir: dict | None = None, out_dir: str = "", tolerance: float = Non
     tolerance = float(tolerance)
 
     built = _build(ir, out_dir)
+    # Tessellating a shape the build failed to produce would hand the
+    # renderer a stale/partial Tip as if it were the declared result.
+    if built["errors"]:
+        _close_doc(built["doc"])
+        return {"ok": False, "error": "; ".join(
+            f'{e.get("feature_id") or "?"}: {e.get("message")}' for e in built["errors"]
+        ), "mesh": None}
     shape = built["result_shape"]
 
     mesh = None

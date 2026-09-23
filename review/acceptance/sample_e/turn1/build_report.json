@@ -1,0 +1,31 @@
+{
+  "compile_measurements": {
+    "solids": 1,
+    "faces": 7,
+    "edges": 9,
+    "vertexes": 6,
+    "shells": 1,
+    "volume": 26703.53755551324,
+    "area": 5843.362335677017,
+    "shape_type": "Compound",
+    "is_valid": true,
+    "bbox": {
+      "x": 30.0,
+      "y": 30.000000000000007,
+      "z": 40.0,
+      "x_min": -15.0,
+      "y_min": -15.0,
+      "z_min": 0.0
+    }
+  },
+  "step_readback_volume": 26703.53755551324,
+  "expected_volume": 26703.537555513238,
+  "measured_holes": [],
+  "previews": [
+    "preview_iso.png",
+    "preview_front.png",
+    "preview_top.png",
+    "preview_right.png"
+  ],
+  "verified": true
+}

@@ -1,0 +1,564 @@
+{
+  "model_id": "accept_a",
+  "ir_version": 0,
+  "feature_chain": [
+    {
+      "id": "ft_plate",
+      "name": "pad",
+      "op": "pad",
+      "params": {
+        "length": 8,
+        "type": "Length"
+      },
+      "suppressed": false
+    },
+    {
+      "id": "ft_slot",
+      "name": "slot",
+      "op": "pocket",
+      "params": {
+        "type": "ThroughAll",
+        "reversed": true
+      },
+      "suppressed": false
+    }
+  ],
+  "topology": {
+    "solids": 1,
+    "faces": 10,
+    "edges": 24,
+    "vertexes": 16,
+    "shells": 1
+  },
+  "bbox": {
+    "x": 80.0,
+    "y": 50.0,
+    "z": 8.0,
+    "x_min": 0.0,
+    "y_min": 0.0,
+    "z_min": 0.0
+  },
+  "volume": 25599.99999999999,
+  "area": 9439.999999999998,
+  "shape_type": "Compound",
+  "is_valid": true,
+  "key_dimensions": {
+    "x": 80.0,
+    "y": 50.0,
+    "z": 8.0,
+    "min_wall_thickness": 8.0,
+    "sk_plate__fully_constrained": 0.0,
+    "sk_plate__dof": 6.0,
+    "sk_slot__fully_constrained": 0.0,
+    "sk_slot__dof": 8.0
+  },
+  "holes": [],
+  "faces": [
+    {
+      "name": "Face1",
+      "area": 640.0,
+      "normal": [
+        0.0,
+        -1.0,
+        -0.0
+      ],
+      "center": [
+        40.0,
+        0.0,
+        4.0
+      ]
+    },
+    {
+      "name": "Face2",
+      "area": 400.0,
+      "normal": [
+        -1.0,
+        -0.0,
+        -0.0
+      ],
+      "center": [
+        0.0,
+        25.0,
+        4.0
+      ]
+    },
+    {
+      "name": "Face3",
+      "area": 400.0,
+      "normal": [
+        1.0,
+        -0.0,
+        -0.0
+      ],
+      "center": [
+        80.0,
+        25.0,
+        4.0
+      ]
+    },
+    {
+      "name": "Face4",
+      "area": 3200.0,
+      "normal": [
+        -0.0,
+        -0.0,
+        -1.0
+      ],
+      "center": [
+        40.0,
+        25.0,
+        0.0
+      ]
+    },
+    {
+      "name": "Face5",
+      "area": 3200.0,
+      "normal": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "center": [
+        40.0,
+        25.0,
+        8.0
+      ]
+    },
+    {
+      "name": "Face6",
+      "area": 640.0,
+      "normal": [
+        -0.0,
+        1.0,
+        -0.0
+      ],
+      "center": [
+        40.0,
+        50.0,
+        4.0
+      ]
+    },
+    {
+      "name": "Face7",
+      "area": 320.0,
+      "normal": [
+        -0.0,
+        1.0,
+        0.0
+      ],
+      "center": [
+        40.0,
+        15.0,
+        4.0
+      ]
+    },
+    {
+      "name": "Face8",
+      "area": 160.0,
+      "normal": [
+        -1.0,
+        0.0,
+        0.0
+      ],
+      "center": [
+        60.0,
+        25.0,
+        4.0
+      ]
+    },
+    {
+      "name": "Face9",
+      "area": 320.0,
+      "normal": [
+        0.0,
+        -1.0,
+        0.0
+      ],
+      "center": [
+        40.0,
+        35.0,
+        4.0
+      ]
+    },
+    {
+      "name": "Face10",
+      "area": 160.0,
+      "normal": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "center": [
+        20.0,
+        25.0,
+        4.0
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "name": "Edge1",
+      "kind": "Line",
+      "length": 8.0,
+      "mid": [
+        0.0,
+        0.0,
+        4.0
+      ],
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "name": "Edge2",
+      "kind": "Line",
+      "length": 8.0,
+      "mid": [
+        80.0,
+        0.0,
+        4.0
+      ],
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "name": "Edge3",
+      "kind": "Line",
+      "length": 80.0,
+      "mid": [
+        40.0,
+        0.0,
+        0.0
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "Edge4",
+      "kind": "Line",
+      "length": 80.0,
+      "mid": [
+        40.0,
+        0.0,
+        8.0
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "Edge5",
+      "kind": "Line",
+      "length": 8.0,
+      "mid": [
+        0.0,
+        50.0,
+        4.0
+      ],
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "name": "Edge6",
+      "kind": "Line",
+      "length": 50.0,
+      "mid": [
+        0.0,
+        25.0,
+        0.0
+      ],
+      "direction": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    {
+      "name": "Edge7",
+      "kind": "Line",
+      "length": 50.0,
+      "mid": [
+        0.0,
+        25.0,
+        8.0
+      ],
+      "direction": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    {
+      "name": "Edge8",
+      "kind": "Line",
+      "length": 8.0,
+      "mid": [
+        80.0,
+        50.0,
+        4.0
+      ],
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "name": "Edge9",
+      "kind": "Line",
+      "length": 50.0,
+      "mid": [
+        80.0,
+        25.0,
+        0.0
+      ],
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "name": "Edge10",
+      "kind": "Line",
+      "length": 50.0,
+      "mid": [
+        80.0,
+        25.0,
+        8.0
+      ],
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "name": "Edge11",
+      "kind": "Line",
+      "length": 80.0,
+      "mid": [
+        40.0,
+        50.0,
+        0.0
+      ],
+      "direction": [
+        -1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "Edge12",
+      "kind": "Line",
+      "length": 40.0,
+      "mid": [
+        40.0,
+        15.0,
+        0.0
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "Edge13",
+      "kind": "Line",
+      "length": 20.0,
+      "mid": [
+        60.0,
+        25.0,
+        0.0
+      ],
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "name": "Edge14",
+      "kind": "Line",
+      "length": 40.0,
+      "mid": [
+        40.0,
+        35.0,
+        0.0
+      ],
+      "direction": [
+        -1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "Edge15",
+      "kind": "Line",
+      "length": 20.0,
+      "mid": [
+        20.0,
+        25.0,
+        0.0
+      ],
+      "direction": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    {
+      "name": "Edge16",
+      "kind": "Line",
+      "length": 80.0,
+      "mid": [
+        40.0,
+        50.0,
+        8.0
+      ],
+      "direction": [
+        -1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "Edge17",
+      "kind": "Line",
+      "length": 20.0,
+      "mid": [
+        60.0,
+        25.0,
+        8.0
+      ],
+      "direction": [
+        0.0,
+        -1.0,
+        0.0
+      ]
+    },
+    {
+      "name": "Edge18",
+      "kind": "Line",
+      "length": 40.0,
+      "mid": [
+        40.0,
+        35.0,
+        8.0
+      ],
+      "direction": [
+        1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "Edge19",
+      "kind": "Line",
+      "length": 20.0,
+      "mid": [
+        20.0,
+        25.0,
+        8.0
+      ],
+      "direction": [
+        0.0,
+        1.0,
+        0.0
+      ]
+    },
+    {
+      "name": "Edge20",
+      "kind": "Line",
+      "length": 40.0,
+      "mid": [
+        40.0,
+        15.0,
+        8.0
+      ],
+      "direction": [
+        -1.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "Edge21",
+      "kind": "Line",
+      "length": 8.0,
+      "mid": [
+        60.0,
+        15.0,
+        4.0
+      ],
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "name": "Edge22",
+      "kind": "Line",
+      "length": 8.0,
+      "mid": [
+        20.0,
+        15.0,
+        4.0
+      ],
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "name": "Edge23",
+      "kind": "Line",
+      "length": 8.0,
+      "mid": [
+        60.0,
+        35.0,
+        4.0
+      ],
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "name": "Edge24",
+      "kind": "Line",
+      "length": 8.0,
+      "mid": [
+        20.0,
+        35.0,
+        4.0
+      ],
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    }
+  ],
+  "spec_deviation": {},
+  "measurements_available": true,
+  "text": "model: accept_a (v0)\nfeature chain (2):\n  1. pad [pad] length=8 type=Length\n  2. slot [pocket] type=ThroughAll reversed=True\ntopology: solids=1 faces=10 edges=24 vertexes=16 shells=1\nbbox: x=80.0000 y=50.0000 z=8.0000 (min x=0.0000 y=0.0000 z=0.0000)\nvolume: 25600.000000  area: 9440.000000\nshape_type: Compound  valid: True\nmin_wall_thickness: 8.0000 (closest opposed-face distance with material between)\nholes measured on the BRep: none (no concave cylindrical face)\nsketches:\n  profile: fully_constrained=no dof=6 solve_status=0\n  slot: fully_constrained=no dof=8 solve_status=0",
+  "elapsed_s": 0.1889
+}

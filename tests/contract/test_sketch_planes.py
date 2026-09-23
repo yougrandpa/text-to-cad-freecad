@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -165,14 +166,72 @@ def test_extrusion_direction_follows_the_plane_normal(worker, tmp_path):
     A pad extrudes along the plane's normal: XY→+Z, XZ→−Y, YZ→+X. A model that
     plans a wedge across the width of a phone stand depends on knowing which way
     the material goes.
-    """
-    xy = compile_ir(worker, rect_ir("XY", 40, 20, 5, model_id="dir_xy"), tmp_path)
-    xz = compile_ir(worker, rect_ir("XZ", 40, 20, 5, model_id="dir_xz"), tmp_path)
-    yz = compile_ir(worker, rect_ir("YZ", 40, 20, 5, model_id="dir_yz"), tmp_path)
 
-    assert xy["measurements"]["bbox"]["z_min"] == pytest.approx(0.0)
-    assert xz["measurements"]["bbox"]["y_min"] == pytest.approx(-5.0)
-    assert yz["measurements"]["bbox"]["x_min"] == pytest.approx(0.0)
+    The description is read *here* on purpose. The arrows it prints are a claim
+    about the kernel, so this test compares the claim with the measurement
+    instead of restating it: the solid is measured, the direction it actually
+    grew is derived from that measurement, and the arrow the model reads must
+    name exactly that. Asserting the string against a literal — which is what
+    the unit-layer presence check does — cannot fail when the compiler changes,
+    and would leave the model reading a direction the kernel no longer follows.
+    """
+    from tcad.tools.ir_tools import _IR_PATCH_DESCRIPTION
+
+    claimed = _claimed_extrusion_directions(_IR_PATCH_DESCRIPTION)
+    assert set(claimed) == {"XY", "XZ", "YZ"}, (
+        f"描述里的挤出方向不完整：{claimed}"
+    )
+
+    for plane, (sign, axis) in claimed.items():
+        res = compile_ir(worker, rect_ir(plane, 40, 20, 5, model_id=f"dir_{plane}"),
+                         tmp_path)
+        assert res["ok"] is True, f"{plane}: {res.get('errors')}"
+        measured = _measured_extrusion(plane, res["measurements"]["bbox"])
+        assert measured == (sign, axis), (
+            f"{plane}: 描述承诺 {sign}{axis}，实测是 {measured[0]}{measured[1]}"
+        )
+
+
+def _claimed_extrusion_directions(description: str) -> dict[str, tuple[str, str]]:
+    """Parse the "EXTRUSION DIRECTION" paragraph into {plane: (sign, axis)}.
+
+    Read from the text the model is actually served rather than from a copy, so
+    the thing under test is the promise itself. Only the first paragraph counts —
+    later blocks discuss other subjects and must not be allowed to supply a match.
+    """
+    block = description.split("EXTRUSION DIRECTION", 1)
+    assert len(block) == 2, "描述里没有 EXTRUSION DIRECTION 段"
+    paragraph = block[1].split("\n\n", 1)[0]
+    found = re.findall(r"\b(XY|XZ|YZ)\s*->\s*([+-])([XYZ])\b", paragraph)
+    assert found, "EXTRUSION DIRECTION 段里没有任何 XYZ -> ±轴 的箭头"
+    return {plane: (sign, axis) for plane, sign, axis in found}
+
+
+#: Which world axis each origin plane's normal points along. A property of the
+#: coordinate system, not of the compiler — it is what makes the measurement
+#: below readable as a direction.
+_PLANE_NORMAL = {"XY": "z", "XZ": "y", "YZ": "x"}
+
+
+def _measured_extrusion(plane: str, bbox: dict) -> tuple[str, str]:
+    """Which signed axis the material actually occupies, from the bbox alone.
+
+    The profile is written at 0 on its normal component and the pad is 5 long, so
+    the built solid occupies [0, 5] (the normal's positive side) or [-5, 0] (its
+    negative side). ``max == 5`` versus ``min == -5`` is what tells them apart;
+    the bounds are not taken on faith, they come out of the measurement. The
+    digest's bbox is ``{x, y, z}`` extents plus ``*_min`` corners, so the far
+    bound is computed rather than read.
+    """
+    axis = _PLANE_NORMAL[plane]
+    lo = bbox[f"{axis}_min"]
+    hi = lo + bbox[axis]
+    assert hi - lo > 1e-9, f"{plane}: 该方向上没有厚度，bbox={bbox}"
+    if abs(lo) < 1e-9 and hi > 0:
+        return "+", axis.upper()
+    if abs(hi) < 1e-9 and lo < 0:
+        return "-", axis.upper()
+    raise AssertionError(f"{plane}: 实体不在基点任一侧，bbox={bbox}")
 
 
 def test_the_phone_stand_profile_that_could_not_be_built_now_builds(worker, tmp_path):
@@ -497,3 +556,70 @@ def test_a_wrong_constraint_shape_is_refused_and_the_worker_survives(worker, tmp
     assert worker.is_alive() is True, "拒绝一个畸形约束时把 worker 弄死了"
     res = compile_ir(worker, _hole_ir("after_refusal", []), tmp_path)
     assert res["ok"] is True, "拒绝之后 worker 已经不能用了"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# `offset` does not move the profile — measured, not assumed
+# ══════════════════════════════════════════════════════════════════════════
+#
+# The ir_patch description used to offer `offset` as a way to position a profile
+# on an origin plane. It cannot: sketch geometry is interpreted in WORLD
+# coordinates (each point goes through the sketch Placement's inverse) and the
+# offset is part of that same Placement, so the two cancel exactly. A model that
+# followed the advice got the profile where it did not ask for it, with no error.
+
+
+def _rect_with_offset(offset):
+    ir = rect_ir("XY", 40.0, 20.0, 5.0)
+    sk = ir["bodies"][0]["sketches"][0]
+    if offset is not None:
+        sk["offset"] = {"x": float(offset[0]), "y": float(offset[1]), "z": float(offset[2])}
+    return ir
+
+
+def test_the_offset_that_used_to_be_recommended_deforms_the_part(worker, tmp_path):
+    """Why it is refused rather than tolerated. The profile does not move, the
+    bounding box does not move, and the solid is nevertheless different — only a
+    stated volume or bbox requirement could ever have caught this."""
+    without = compile_ir(worker, _rect_with_offset(None), tmp_path / "a")
+    with_off = compile_ir(worker, _rect_with_offset((10.0, 10.0, 0.0)), tmp_path / "b")
+    assert without.get("ok") is True, without
+    assert with_off.get("ok") is True, with_off
+
+    a = without["measurements"]
+    b = with_off["measurements"]
+    for axis in ("x_min", "y_min", "z_min", "x", "y", "z"):
+        assert b["bbox"][axis] == pytest.approx(a["bbox"][axis], abs=1e-6), (
+            f"bbox {axis} moved — if offset ever starts positioning the profile, "
+            f"this test and the refusal it justifies must both be revisited")
+    assert a["volume"] == pytest.approx(4000.0, rel=1e-9)
+    assert b["volume"] == pytest.approx(2500.0, rel=1e-9), (
+        "the measured consequence of offset=(10,10,0) changed; decide again "
+        "whether refusing it is right")
+
+
+def test_a_non_zero_offset_is_refused_by_the_ir_layer():
+    from tcad.ir.schema import IrDocument
+    from tcad.ir.validate import validate_ir
+
+    ir = IrDocument.model_validate(_rect_with_offset((10.0, 10.0, 0.0)))
+    issues = [i for i in validate_ir(ir) if i.code == "sketch_offset_unsupported"]
+    assert issues and issues[0].severity == "error", [i.code for i in validate_ir(ir)]
+
+    # The message has to carry the fix, not just the refusal.
+    message = issues[0].message
+    assert "Remove the offset" in message, message
+    assert "dimension" in message.lower(), message
+
+    clean = IrDocument.model_validate(_rect_with_offset(None))
+    assert "sketch_offset_unsupported" not in {i.code for i in validate_ir(clean)}
+    # An all-zero offset is a no-op, not an offence.
+    zero = IrDocument.model_validate(_rect_with_offset((0.0, 0.0, 0.0)))
+    assert "sketch_offset_unsupported" not in {i.code for i in validate_ir(zero)}
+
+
+# `offset` does not position a profile, and it deforms one whose geometry is
+# bound to the sketch origin — which is exactly the recipe the ir_patch
+# description used to recommend, so this was the *advised* path, not an exotic
+# one. The IR layer refuses a non-zero offset; the test above pins the measured
+# consequence that justifies the refusal.

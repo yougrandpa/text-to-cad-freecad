@@ -16,18 +16,28 @@ Tolerance semantics per kind (documented, not guessed):
                      "轴对齐尺寸校验用 BoundBox")
   * volume          — relative ratio (design §4.6: ±1%)
   * count           — absolute integer (number of solids)
-  * hole_diameter   — absolute mm per matched hole
-  * hole_position   — absolute mm per axis of the hole's placement
+  * hole_diameter   — absolute mm, against the DIAMETER MEASURED OFF THE BREP
+                     (``digest.holes``), never the IR's declared parameter
+  * hole_position   — absolute mm, as the perpendicular distance from the
+                     expected point to a measured hole axis
   * symmetric       — structural: a mirrored/pattern counterpart must exist
   * wall_thickness  — absolute mm minimum (read from digest if the worker
                        measured it; otherwise None -> SKIP)
   * feature_count   — absolute integer (number of features in the IR)
+
+A hole requirement with no BRep hole evidence returns ``None`` (unverified)
+rather than falling back to the IR: the declared number is the thing under
+test, not a witness.
 """
 
 from __future__ import annotations
 
 from tcad.core.types import GeometryDigest, IrDocument
 from tcad.ir.schema import ConstraintExpr
+
+# mm. Decides only WHICH measured hole a targeted expression refers to; it is
+# never a pass criterion (the expression's own ``tol`` is).
+_HOLE_MATCH_TOL = 0.5
 
 
 def _bbox_measured(d: GeometryDigest) -> dict[str, float]:
@@ -76,27 +86,10 @@ def evaluate(
                                                   "tol": tol}
 
     if kind == "hole_diameter":
-        holes = _matched_holes(expr, ir)
-        if not holes:
-            return None, {"measured": None, "expected": expected, "tol": tol}
-        measured = {h.id: float(h.params.get("Diameter", 0.0)) for h in holes}
-        exp = float(expected)
-        ok = all(abs(v - exp) <= tol for v in measured.values())
-        return ok, {"measured": measured, "expected": exp, "tol": tol}
+        return _hole_measure(expr, digest, ir, "diameter")
 
     if kind == "hole_position":
-        holes = _matched_holes(expr, ir)
-        if not holes:
-            return None, {"measured": None, "expected": expected, "tol": tol}
-        measured = {h.id: _hole_position(h) for h in holes}
-        if any(v is None for v in measured.values()):
-            return None, {"measured": measured, "expected": expected, "tol": tol}
-        exp = expected if isinstance(expected, dict) else {}
-        ok = all(
-            abs(float(measured[h.id].get(ax, 0.0)) - float(exp.get(ax, 0.0))) <= tol
-            for h in holes for ax in ("x", "y", "z")
-        )
-        return ok, {"measured": measured, "expected": exp, "tol": tol}
+        return _hole_measure(expr, digest, ir, "position")
 
     if kind == "symmetric":
         # Best-effort structural check: a mirrored / linear / circular pattern
@@ -128,21 +121,139 @@ def evaluate(
 
 
 def _matched_holes(expr: ConstraintExpr, ir: IrDocument):
-    holes = [f for f in ir.all_features() if f.op == "hole"]
+    """Holes the expression can be judged against.
+
+    Two supported constructions, by design:
+      * ``op == "hole"`` features (parametric hole op).
+      * ``op == "pocket"`` features whose profile sketch is exactly one
+        non-construction circle — a circular pocket IS a hole.
+
+    Anything else (rectangular pocket, multi-circle sketch, no profile) is
+    not matched rather than guessed at: an expression judged against a
+    guessed hole would report a fabricated measurement.
+    """
+    holes = [f for f in ir.all_features()
+             if f.op == "hole" or (f.op == "pocket" and _circle_of(f, ir) is not None)]
     if expr.target:
         holes = [h for h in holes if h.id == expr.target or h.name == expr.target]
     return holes
 
 
-def _hole_position(feature):
+def _circle_of(feature, ir: IrDocument):
+    """The single non-construction circle of the feature's profile sketch,
+    or None when the sketch has zero or several (not an unambiguous hole)."""
+    if not feature.profile_sketch:
+        return None
+    sk = ir.find_sketch(feature.profile_sketch)
+    if sk is None:
+        return None
+    circles = [g for g in sk.geometry
+               if g.kind == "circle" and not g.construction and g.points]
+    if len(circles) != 1:
+        return None
+    return circles[0]
+
+
+def _nominal_axis(feature, ir: IrDocument):
+    """Where the IR *asked* for the hole, as a point on its axis.
+
+    Used only to decide which measured hole a targeted expression refers to —
+    never as the value that is compared. Reporting a declared position as a
+    measured one is exactly the self-grading this module exists to prevent.
+    """
     p = feature.params
-    if "x" in p and "y" in p and "z" in p:
-        return {"x": float(p["x"]), "y": float(p["y"]), "z": float(p["z"])}
-    # fall back to the profile sketch's attachment offset (best-effort)
-    sk = ir.find_sketch(feature.profile_sketch) if feature.profile_sketch else None
-    if sk and sk.offset is not None:
-        return {"x": sk.offset.x, "y": sk.offset.y, "z": sk.offset.z}
+    if all(k in p for k in ("x", "y", "z")):
+        return [float(p["x"]), float(p["y"]), float(p["z"])]
+    circle = _circle_of(feature, ir)
+    if circle is not None and circle.points:
+        c = circle.points[0]
+        return [float(c.x), float(c.y), float(c.z)]
     return None
+
+
+def _axis_distance(point, hole) -> float:
+    """Perpendicular distance from *point* to a measured hole's axis."""
+    foot = hole.get("center") or []
+    axis = hole.get("axis") or []
+    if len(foot) != 3 or len(axis) != 3:
+        return float("inf")
+    w = [point[i] - foot[i] for i in range(3)]
+    cross = [
+        w[1] * axis[2] - w[2] * axis[1],
+        w[2] * axis[0] - w[0] * axis[2],
+        w[0] * axis[1] - w[1] * axis[0],
+    ]
+    return (cross[0] ** 2 + cross[1] ** 2 + cross[2] ** 2) ** 0.5
+
+
+def _measured_holes(digest) -> list[dict]:
+    out = []
+    for h in (getattr(digest, "holes", None) or []):
+        out.append(h if isinstance(h, dict) else h.model_dump())
+    return out
+
+
+def _hole_measure(expr: ConstraintExpr, digest, ir: IrDocument, what: str):
+    """Judge a hole requirement against BRep measurements, never IR numbers.
+
+    The IR contributes only the nominal axis that identifies WHICH measured
+    hole a ``target``-bound expression is about; the compared diameter, depth
+    and position all come from ``digest.holes``, which the worker measured off
+    the built shape. A declared hole the kernel never produced therefore shows
+    up as "no measured hole at this axis" (FAIL), not as a pass.
+    """
+    expected, tol = expr.value, expr.tol
+    measured = _measured_holes(digest)
+    declared = _matched_holes(expr, ir)
+
+    if not measured:
+        reason = ("no hole declared and none measured" if not declared else
+                  "the worker digest carries no BRep hole measurement — "
+                  "hole size/position cannot be verified")
+        return None, {"measured": None, "expected": expected, "tol": tol,
+                      "reason": reason}
+
+    if expr.target:
+        target = ir.find_feature(expr.target)
+        nominal = _nominal_axis(target, ir) if target is not None else None
+        if nominal is None:
+            # Which measured hole does this expression mean? Without a declared
+            # axis there is no honest answer, and judging against every hole
+            # would silently grade the wrong one.
+            return None, {"measured": None, "expected": expected, "tol": tol,
+                          "reason": (f"cannot identify which measured hole "
+                                     f"{expr.target!r} refers to")}
+        window = max(_HOLE_MATCH_TOL, tol)
+        near = [h for h in measured if _axis_distance(nominal, h) <= window]
+        if not near:
+            return False, {
+                "measured": {f"hole{h['index']}": h["center"] for h in measured},
+                "expected": nominal, "tol": tol,
+                "reason": (f"no measured hole axis passes near the declared "
+                           f"position {nominal} of {expr.target!r} "
+                           f"(within {window} mm)"),
+            }
+        measured = near
+
+    if what == "diameter":
+        values = {f"hole{h['index']}": float(h["diameter"]) for h in measured}
+        exp = float(expected)
+        ok = all(abs(v - exp) <= tol for v in values.values())
+        return ok, {"measured": values, "expected": exp, "tol": tol,
+                    "through": {f"hole{h['index']}": bool(h["through"]) for h in measured},
+                    "depth": {f"hole{h['index']}": float(h["depth"]) for h in measured}}
+
+    point = expected if isinstance(expected, dict) else {}
+    axes = [
+        float(point.get(ax, 0.0)) for ax in ("x", "y", "z")
+    ]
+    nearest = min(measured, key=lambda h: _axis_distance(axes, h), default=None)
+    if nearest is None:
+        return None, {"measured": None, "expected": point, "tol": tol}
+    distance = _axis_distance(axes, nearest)
+    values = {f"hole{h['index']}": h["center"] for h in measured}
+    return distance <= tol, {"measured": values, "expected": point, "tol": tol,
+                             "axis_distance_mm": round(distance, 9)}
 
 
 def _find_symmetric_counterpart(target: str, ir: IrDocument):

@@ -43,7 +43,18 @@ def _services(args):
     )
     if getattr(args, "data_dir", None):
         cfg.storage.data_dir = args.data_dir
-    return build_services(cfg)
+    svc = build_services(cfg)
+    # The CLI is a REPL: without a conversation store the second request would
+    # reach the model as though nothing had been said before it. Attaching one
+    # here is what makes "change the height to 50" resolvable against turn 1.
+    # Best-effort — a machine that cannot open SQLite can still run one turn.
+    try:
+        from tcad.store.session_db import SessionDB
+
+        svc.session_db = SessionDB(svc.config.storage.sqlite_file(), check_same_thread=False)
+    except Exception:  # noqa: BLE001
+        pass
+    return svc
 
 
 def _print_events(tap: HookEventTap) -> None:
@@ -69,17 +80,42 @@ def cmd_new(args) -> int:
         svc._worker_handle.close()
 
 
+def _remember(session_db, thread_id: str, model_id: str, role: str, content: str) -> None:
+    """Persist one message for the REPL's conversation history.
+
+    Best-effort: a turn must not fail because bookkeeping did.
+    """
+    if session_db is None:
+        return
+    try:
+        if session_db.get_thread(thread_id) is None:
+            session_db.create_thread(model_id, thread_id=thread_id)
+        session_db.add_message(thread_id, role, content)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _one_turn(svc, args, text: str) -> int:
+    # The tap is passed to the engine, not assigned onto the shared bundle: the
+    # REPL may run concurrently with an HTTP turn against the same services.
     tap = HookEventTap(svc.hooks)
-    svc.hooks = tap
+    thread_id = f"cli-{args.model_id}"
     req = ChatRequest(
         model_id=args.model_id,
         text=text,
+        thread_id=thread_id,
         kind=TurnKind(args.kind),
         privileged_requested=bool(args.privileged),
     )
+    session_db = getattr(svc, "session_db", None)
+    _remember(session_db, thread_id, args.model_id, "user", text)
+
+    def observe(kind: str, data: dict) -> None:
+        if kind == "model" and (data.get("text") or "").strip():
+            _remember(session_db, thread_id, args.model_id, "assistant", data["text"])
+
     print(f"→ {text}")
-    result = asyncio.run(run_turn_request(svc, req))
+    result = asyncio.run(run_turn_request(svc, req, observer=observe, hooks=tap))
     _print_events(tap)
 
     print(f"\n{_STATE_MARK.get(result.state, result.state.value)}")
@@ -137,7 +173,15 @@ def cmd_approvals(args) -> int:
             print("no pending approvals")
             return 0
         for r in pending:
-            print(f"  {r.id}  tool={r.tool_name}  expires={r.expires_at.isoformat()}")
+            where = f"  session={r.thread_id} turn={r.turn_id}" if r.thread_id else "  (unscoped)"
+            print(f"  {r.id}  tool={r.tool_name}  expires={r.expires_at.isoformat()}{where}")
+            # What is actually being authorised. Without this the operator is
+            # asked to grant a tool name and an opaque hash.
+            if getattr(r, "args_summary", None):
+                for line in str(r.args_summary).splitlines() or [""]:
+                    print(f"      | {line}")
+            else:
+                print("      | (no payload recorded)")
         return 0
     finally:
         svc._worker_handle.close()

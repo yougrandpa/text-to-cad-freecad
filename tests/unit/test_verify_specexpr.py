@@ -53,22 +53,45 @@ def test_count_and_feature_count():
     assert fc_bad is False
 
 
+def _measured(index=0, diameter=5.0, center=(10.0, 0.0, 0.0), axis=(0.0, 0.0, 1.0),
+              depth=10.0, through=True):
+    """One hole as the worker's BRep measurement reports it."""
+    return {"index": index, "diameter": diameter, "radius": diameter / 2.0,
+            "axis": list(axis), "center": list(center), "depth": depth,
+            "through": through, "faces": 1}
+
+
 def test_hole_diameter():
+    """The verdict comes from the measured diameter, not the IR's number."""
     ir = _ir_with_hole(diameter=5.0)
-    d = make_digest()
-    ok, info = evaluate(ConstraintExpr(kind="hole_diameter", value=5.0, tol=0.05, target="ft_hole"), d, ir)
-    assert ok is True
-    bad, _ = evaluate(ConstraintExpr(kind="hole_diameter", value=8.0, tol=0.05, target="ft_hole"), d, ir)
+    ok, info = evaluate(
+        ConstraintExpr(kind="hole_diameter", value=5.0, tol=0.05, target="ft_hole"),
+        make_digest(holes=[_measured(diameter=5.0)]), ir)
+    assert ok is True, info
+    assert info["measured"] == {"hole0": 5.0}
+
+    bad, info = evaluate(
+        ConstraintExpr(kind="hole_diameter", value=8.0, tol=0.05, target="ft_hole"),
+        make_digest(holes=[_measured(diameter=5.0)]), ir)
     assert bad is False
+    assert info["measured"] == {"hole0": 5.0}
 
 
 def test_hole_position():
+    """Position = distance from the expected point to the measured axis."""
     ir = _ir_with_hole(pos=(10.0, 0.0, 5.0))
-    d = make_digest()
-    ok, _ = evaluate(ConstraintExpr(kind="hole_position", value={"x": 10.0, "y": 0.0, "z": 5.0}, tol=0.05, target="ft_hole"), d, ir)
+    holes = [_measured(center=(10.0, 0.0, 0.0))]
+    ok, _ = evaluate(
+        ConstraintExpr(kind="hole_position", value={"x": 10.0, "y": 0.0, "z": 5.0},
+                       tol=0.05, target="ft_hole"),
+        make_digest(holes=holes), ir)
     assert ok is True
-    bad, _ = evaluate(ConstraintExpr(kind="hole_position", value={"x": 50.0, "y": 0.0, "z": 5.0}, tol=0.05, target="ft_hole"), d, ir)
+    bad, info = evaluate(
+        ConstraintExpr(kind="hole_position", value={"x": 50.0, "y": 0.0, "z": 5.0},
+                       tol=0.05, target="ft_hole"),
+        make_digest(holes=holes), ir)
     assert bad is False
+    assert info["axis_distance_mm"] == 40.0
 
 
 def test_symmetric_found():
@@ -94,3 +117,94 @@ def test_unmeasurable_returns_none():
     d.key_dimensions.pop("min_wall_thickness", None)
     res, _ = evaluate(ConstraintExpr(kind="wall_thickness", value=1.0), d, IrDocument(model_id="m1", version=1))
     assert res is None
+
+
+# ── regressions: hole matching/diameter/position ────────────────────────────
+
+
+def _ir_with_pocket_hole(center=(20.0, 15.0, 0.0), radius=3.0):
+    """A hole made as a Pocket from a single-circle sketch (no op=hole)."""
+    from tcad.ir.schema import SketchGeom, Vec3
+    sk = SketchSpec(
+        id="sk_ph", name="ph", plane=PlaneRef(kind="origin_plane", plane="XY"),
+        geometry=[SketchGeom(id="c0", kind="circle",
+                             points=[Vec3(x=center[0], y=center[1], z=center[2])],
+                             radius=radius)],
+    )
+    pocket = FeatureSpec(id="ft_pocket", name="pocket_hole", op="pocket",
+                         profile_sketch="sk_ph", params={"depth": 10.0})
+    return IrDocument(model_id="m1", version=1,
+                      bodies=[BodySpec(id="b", name="b", sketches=[sk], features=[pocket])])
+
+
+def test_ir_declared_diameter_can_no_longer_pass_itself():
+    """The regression this exists for: `measured` used to echo the IR param, so
+    a model that wrote diameter=6 was graded on the number it wrote. Now a
+    digest that measured 8 fails a 6 requirement whatever the IR says."""
+    ir = _ir_with_hole(diameter=6.0, pos=(10.0, 10.0, 0.0))
+    ok, info = evaluate(
+        ConstraintExpr(kind="hole_diameter", value=6.0, tol=0.05, target="ft_hole"),
+        make_digest(holes=[_measured(diameter=8.0, center=(10.0, 10.0, 0.0))]), ir)
+    assert ok is False
+    assert info["measured"] == {"hole0": 8.0}
+    assert info["expected"] == 6.0
+
+
+def test_hole_requirement_without_brep_evidence_is_unverified():
+    """No measurement -> None (never a pass). The hole feature existing in the
+    IR is the claim under test, not the proof of it."""
+    ir = _ir_with_pocket_hole(radius=3.0)
+    res, info = evaluate(
+        ConstraintExpr(kind="hole_diameter", value=6.0, tol=0.05, confirmed=True),
+        make_digest(), ir)
+    assert res is None
+    assert "no BRep hole measurement" in info["reason"]
+
+
+def test_pocket_with_circle_profile_still_needs_a_measurement():
+    """A circular Pocket IS a hole — matched by the IR, judged by the kernel."""
+    ir = _ir_with_pocket_hole(center=(20.0, 15.0, 0.0), radius=3.0)
+    holes = [_measured(diameter=6.0, center=(20.0, 15.0, 0.0))]
+    ok, info = evaluate(
+        ConstraintExpr(kind="hole_diameter", value=6.0, tol=0.05, target="ft_pocket"),
+        make_digest(holes=holes), ir)
+    assert ok is True, info
+    assert info["measured"] == {"hole0": 6.0}
+    assert info["through"] == {"hole0": True}
+
+
+def test_declared_hole_the_kernel_never_cut_fails_rather_than_skips():
+    """IR says a hole at (10,10); the BRep has one only at (70,10). That is a
+    wrong build, not an unmeasurable one."""
+    ir = _ir_with_pocket_hole(center=(10.0, 10.0, 0.0))
+    holes = [_measured(diameter=6.0, center=(70.0, 10.0, 0.0))]
+    ok, info = evaluate(
+        ConstraintExpr(kind="hole_position", value={"x": 10.0, "y": 10.0, "z": 0.0},
+                       tol=0.05, target="ft_pocket"),
+        make_digest(holes=holes), ir)
+    assert ok is False
+    assert "no measured hole axis passes near" in info["reason"]
+
+
+def test_pocket_multi_circle_sketch_cannot_be_identified():
+    """Two circles in one profile is not an unambiguous hole — refuse to guess
+    which measured hole the expression means."""
+    from tcad.ir.schema import SketchGeom, Vec3
+    sk = SketchSpec(
+        id="sk_2c", name="two", plane=PlaneRef(kind="origin_plane", plane="XY"),
+        geometry=[
+            SketchGeom(id="c0", kind="circle",
+                       points=[Vec3(x=0.0, y=0.0, z=0.0)], radius=2.0),
+            SketchGeom(id="c1", kind="circle",
+                       points=[Vec3(x=10.0, y=0.0, z=0.0)], radius=2.0),
+        ],
+    )
+    pocket = FeatureSpec(id="ft_p2", name="p2", op="pocket",
+                         profile_sketch="sk_2c", params={"depth": 5.0})
+    ir = IrDocument(model_id="m1", version=1,
+                    bodies=[BodySpec(id="b", name="b", sketches=[sk], features=[pocket])])
+    res, info = evaluate(
+        ConstraintExpr(kind="hole_diameter", value=4.0, tol=0.05, target="ft_p2"),
+        make_digest(holes=[_measured(diameter=4.0, center=(0.0, 0.0, 0.0))]), ir)
+    assert res is None
+    assert "cannot identify" in info["reason"]

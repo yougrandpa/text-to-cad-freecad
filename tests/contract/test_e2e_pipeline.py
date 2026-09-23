@@ -24,15 +24,18 @@ Run:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
 
-from tcad.core.types import CheckStatus, GeometryDigest
+from tcad.core.types import BuildStamp, CheckStatus, GeometryDigest, Severity
 from tcad.core.worker_client import WorkerHandle
 from tcad.ir.schema import ConstraintExpr, IrDocument, RequirementSpec
+from tcad.store.artifacts import write_build_stamp
 from tcad.verify.context import build_check_context
 from tcad.verify.gate import Gate
 
@@ -143,10 +146,22 @@ def worker():
 
 @pytest.fixture(scope="module")
 def built(worker, tmp_path_factory):
-    """Compile + export + introspect once, and lay the artefacts out on disk."""
+    """Compile + export + introspect once, and lay the artefacts out on disk.
+
+    Stamped before the worker runs, exactly like ``run_commit`` does — the Gate
+    refuses to certify the provenance of an unstamped directory.
+    """
     artifact_dir = tmp_path_factory.mktemp("e2e_artifacts")
     ir = make_ir()
     ir_dict = json.loads(ir.model_dump_json())
+    stamp = BuildStamp(
+        attempt_id="e2e-build",
+        model_id=ir.model_id,
+        ir_version=ir.version,
+        started_at=time.time(),
+        ir_sha256=hashlib.sha256(ir.model_dump_json().encode("utf-8")).hexdigest(),
+    )
+    write_build_stamp(artifact_dir, stamp)
 
     compile_res = worker.request_sync("compile_ir", {"ir": ir_dict, "out_dir": str(artifact_dir)})
     assert compile_res.get("ok") is True, f"compile failed: {compile_res}"
@@ -174,6 +189,7 @@ def built(worker, tmp_path_factory):
         "artifact_dir": artifact_dir,
         "ir": ir,
         "ir_path": ir_path,
+        "stamp": stamp,
         "compile": compile_res,
         "export": export_res,
         "digest": digest_dict,
@@ -275,22 +291,32 @@ def test_gate_passes_on_the_real_model(built, worker):
     blocking_skips = [c for c in report.skipped_checks if c in blocking]
     assert set(blocking_skips) <= allowed_skips, f"blocking checks skipped: {blocking_skips}"
 
-    # `wall_thickness` is advisory + approximate by design (design §4.6 item 4):
-    # it needs `min_wall_thickness` in the digest, which the worker does not
-    # compute (the offset-shape heuristic was flagged unreliable on complex
-    # topology). So it is EXPECTED to skip — what matters is that the skip is
-    # reported, never silent, and that it cannot affect `passed`.
-    assert "wall_thickness" in report.skipped_checks, (
-        "an advisory check that could not run must still be reported"
+    # `wall_thickness` is advisory (design §4.6 item 4) when the user recorded no
+    # wall requirement, so it can never affect `passed` here. It used to be
+    # EXPECTED to skip, because the worker computed no `min_wall_thickness` at
+    # all; it now measures one off the BRep, so it must actually run. The
+    # invariant that matters either way: it is *reported*, never silent.
+    by_id_wall = {r.check_id: r for r in report.results}.get("wall_thickness")
+    assert by_id_wall is not None or "wall_thickness" in report.skipped_checks, (
+        "the wall check is absent from both results and skips — silently dropped"
     )
+    if by_id_wall is not None:
+        assert by_id_wall.severity is Severity.ADVISORY, (
+            "with no wall requirement recorded this check must stay advisory; "
+            "making it blocking would fail builds for a shop default"
+        )
 
     by_id = {r.check_id: r for r in report.results}
     # Geometry self-consistency: these must have genuinely run and passed.
     for check_id in (
         "solid_validity", "solid_count",
-        "sketch_fully_constrained", "round_trip", "exportability",
+        "sketch_fully_constrained", "round_trip", "exportability", "provenance",
     ):
         assert by_id[check_id].status is CheckStatus.PASS, (check_id, by_id[check_id].message)
+    # The verdict says which build it graded, and that build is the one the
+    # fixture just ran: the STEP the Gate read was written after the stamp.
+    assert report.attempt_id == built["stamp"].attempt_id
+    assert report.ir_sha256 == built["stamp"].ir_sha256
     # The spec checks have no requirement to judge against in this fixture, so
     # they must say so by skipping. Reporting a pass for work they did not do is
     # precisely the failure mode being guarded.

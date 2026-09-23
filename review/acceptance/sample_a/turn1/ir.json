@@ -1,0 +1,276 @@
+{
+  "model_id": "accept_a",
+  "version": 0,
+  "bodies": [
+    {
+      "id": "body_1",
+      "name": "body_1",
+      "sketches": [
+        {
+          "id": "sk_plate",
+          "name": "profile",
+          "plane": {
+            "kind": "origin_plane",
+            "plane": "XY"
+          },
+          "geometry": [
+            {
+              "id": "g0",
+              "kind": "line",
+              "points": [
+                {
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                },
+                {
+                  "x": 80,
+                  "y": 0,
+                  "z": 0
+                }
+              ]
+            },
+            {
+              "id": "g1",
+              "kind": "line",
+              "points": [
+                {
+                  "x": 80,
+                  "y": 0,
+                  "z": 0
+                },
+                {
+                  "x": 80,
+                  "y": 50,
+                  "z": 0
+                }
+              ]
+            },
+            {
+              "id": "g2",
+              "kind": "line",
+              "points": [
+                {
+                  "x": 80,
+                  "y": 50,
+                  "z": 0
+                },
+                {
+                  "x": 0,
+                  "y": 50,
+                  "z": 0
+                }
+              ]
+            },
+            {
+              "id": "g3",
+              "kind": "line",
+              "points": [
+                {
+                  "x": 0,
+                  "y": 50,
+                  "z": 0
+                },
+                {
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                }
+              ]
+            }
+          ],
+          "constraints": [
+            {
+              "type": "Coincident",
+              "refs": [
+                0,
+                2,
+                1,
+                1
+              ]
+            },
+            {
+              "type": "Coincident",
+              "refs": [
+                1,
+                2,
+                2,
+                1
+              ]
+            },
+            {
+              "type": "Coincident",
+              "refs": [
+                2,
+                2,
+                3,
+                1
+              ]
+            },
+            {
+              "type": "Coincident",
+              "refs": [
+                3,
+                2,
+                0,
+                1
+              ]
+            },
+            {
+              "type": "Coincident",
+              "refs": [
+                0,
+                1,
+                -1,
+                1
+              ]
+            }
+          ]
+        },
+        {
+          "id": "sk_slot",
+          "name": "slot",
+          "plane": {
+            "kind": "origin_plane",
+            "plane": "XY"
+          },
+          "geometry": [
+            {
+              "id": "g0",
+              "kind": "line",
+              "points": [
+                {
+                  "x": 20,
+                  "y": 15,
+                  "z": 0
+                },
+                {
+                  "x": 60,
+                  "y": 15,
+                  "z": 0
+                }
+              ]
+            },
+            {
+              "id": "g1",
+              "kind": "line",
+              "points": [
+                {
+                  "x": 60,
+                  "y": 15,
+                  "z": 0
+                },
+                {
+                  "x": 60,
+                  "y": 35,
+                  "z": 0
+                }
+              ]
+            },
+            {
+              "id": "g2",
+              "kind": "line",
+              "points": [
+                {
+                  "x": 60,
+                  "y": 35,
+                  "z": 0
+                },
+                {
+                  "x": 20,
+                  "y": 35,
+                  "z": 0
+                }
+              ]
+            },
+            {
+              "id": "g3",
+              "kind": "line",
+              "points": [
+                {
+                  "x": 20,
+                  "y": 35,
+                  "z": 0
+                },
+                {
+                  "x": 20,
+                  "y": 15,
+                  "z": 0
+                }
+              ]
+            }
+          ],
+          "constraints": [
+            {
+              "type": "Coincident",
+              "refs": [
+                0,
+                2,
+                1,
+                1
+              ]
+            },
+            {
+              "type": "Coincident",
+              "refs": [
+                1,
+                2,
+                2,
+                1
+              ]
+            },
+            {
+              "type": "Coincident",
+              "refs": [
+                2,
+                2,
+                3,
+                1
+              ]
+            },
+            {
+              "type": "Coincident",
+              "refs": [
+                3,
+                2,
+                0,
+                1
+              ]
+            }
+          ]
+        }
+      ],
+      "features": [
+        {
+          "id": "ft_plate",
+          "name": "pad",
+          "op": "pad",
+          "profile_sketch": "sk_plate",
+          "params": {
+            "length": 8,
+            "type": "Length"
+          },
+          "refs": []
+        },
+        {
+          "id": "ft_slot",
+          "name": "slot",
+          "op": "pocket",
+          "profile_sketch": "sk_slot",
+          "refs": [
+            "ft_plate"
+          ],
+          "params": {
+            "type": "ThroughAll",
+            "reversed": true
+          }
+        }
+      ]
+    }
+  ],
+  "requirements": {
+    "raw_text": "80×50×8 的矩形板，中心有 40×20 的矩形贯穿开口",
+    "constraints": []
+  },
+  "notes": []
+}

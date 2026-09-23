@@ -1,0 +1,187 @@
+{
+  "model_id": "accept_e_v2",
+  "version": 0,
+  "bodies": [
+    {
+      "id": "body_1",
+      "name": "body_1",
+      "sketches": [
+        {
+          "id": "sk_outer",
+          "name": "outer",
+          "plane": {
+            "kind": "origin_plane",
+            "plane": "XY"
+          },
+          "geometry": [
+            {
+              "id": "g0",
+              "kind": "circle",
+              "points": [
+                {
+                  "x": 0.0,
+                  "y": 0.0,
+                  "z": 0.0
+                }
+              ],
+              "radius": 15.0
+            }
+          ],
+          "constraints": [
+            {
+              "type": "Radius",
+              "refs": [
+                0
+              ],
+              "value": 15.0
+            }
+          ]
+        },
+        {
+          "id": "sk_groove",
+          "name": "groove_profile",
+          "plane": {
+            "kind": "origin_plane",
+            "plane": "XZ"
+          },
+          "geometry": [
+            {
+              "id": "g0",
+              "kind": "line",
+              "points": [
+                {
+                  "x": 10.0,
+                  "y": 0.0,
+                  "z": 18.0
+                },
+                {
+                  "x": 15.0,
+                  "y": 0.0,
+                  "z": 18.0
+                }
+              ]
+            },
+            {
+              "id": "g1",
+              "kind": "line",
+              "points": [
+                {
+                  "x": 15.0,
+                  "y": 0.0,
+                  "z": 18.0
+                },
+                {
+                  "x": 15.0,
+                  "y": 0.0,
+                  "z": 22.0
+                }
+              ]
+            },
+            {
+              "id": "g2",
+              "kind": "line",
+              "points": [
+                {
+                  "x": 15.0,
+                  "y": 0.0,
+                  "z": 22.0
+                },
+                {
+                  "x": 10.0,
+                  "y": 0.0,
+                  "z": 22.0
+                }
+              ]
+            },
+            {
+              "id": "g3",
+              "kind": "line",
+              "points": [
+                {
+                  "x": 10.0,
+                  "y": 0.0,
+                  "z": 22.0
+                },
+                {
+                  "x": 10.0,
+                  "y": 0.0,
+                  "z": 18.0
+                }
+              ]
+            }
+          ],
+          "constraints": [
+            {
+              "type": "Coincident",
+              "refs": [
+                0,
+                2,
+                1,
+                1
+              ]
+            },
+            {
+              "type": "Coincident",
+              "refs": [
+                1,
+                2,
+                2,
+                1
+              ]
+            },
+            {
+              "type": "Coincident",
+              "refs": [
+                2,
+                2,
+                3,
+                1
+              ]
+            },
+            {
+              "type": "Coincident",
+              "refs": [
+                3,
+                2,
+                0,
+                1
+              ]
+            }
+          ]
+        }
+      ],
+      "features": [
+        {
+          "id": "ft_cyl",
+          "name": "cylinder",
+          "op": "pad",
+          "profile_sketch": "sk_outer",
+          "refs": [],
+          "params": {
+            "length": 40.0,
+            "type": "Length"
+          }
+        },
+        {
+          "id": "ft_groove",
+          "name": "groove",
+          "op": "groove",
+          "profile_sketch": "sk_groove",
+          "refs": [
+            "ft_cyl"
+          ],
+          "params": {
+            "angle": 180.0,
+            "type": "Angle",
+            "axis": "V_Axis"
+          }
+        }
+      ]
+    }
+  ],
+  "requirements": {
+    "raw_text": "",
+    "constraints": []
+  },
+  "notes": []
+}

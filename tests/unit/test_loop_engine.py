@@ -139,12 +139,20 @@ class FakeContext:
 
 
 class FakeHooks:
-    def __init__(self, deny_tool=None):
+    def __init__(self, deny_tool=None, decisions=None, reason="policy says no"):
         self.events = []
         self.deny_tool = deny_tool
+        # ``event -> HookDecision``. Lets a test deny or ask at PRE_TURN /
+        # PRE_STEP / PRE_COMMIT — the points where the engine used to throw the
+        # decision away — without assembling a whole hook bundle.
+        self.decisions = dict(decisions or {})
+        self.reason = reason
 
     def dispatch(self, event, payload):
         self.events.append((event, payload))
+        if event in self.decisions:
+            return HookResult(decision=self.decisions[event], hook_name="test",
+                              reason=self.reason)
         if event == HookEvent.PRE_TOOL_USE and self.deny_tool and payload.get("tool_name") == self.deny_tool:
             return HookResult(decision=HookDecision.DENY, hook_name="test",
                               reason=f"policy denies {self.deny_tool}")
@@ -510,3 +518,310 @@ async def test_any_tool_call_resets_the_stall_counter():
     # tool calls in between reset the counter.
     assert llm.calls > 4, llm.calls
     assert "no progress" in (result.error or ""), result.error
+
+
+# ─── pass-state lifecycle: reset per turn, invalidation on post-pass writes ──
+
+
+async def test_pass_state_resets_between_turns():
+    """A commit that passed in turn N must not count as a pass in turn N+1.
+
+    The engine is reused across turns (the CLI REPL does exactly that); the
+    per-turn reset in run_turn is what stops turn N's green gate from silently
+    satisfying turn N+1 or turn N's candidates from being promotable later.
+    """
+    ir = make_ir()
+    llm = ScriptedLlm([
+        LlmReply(tool_calls=[ToolCall(id="c1", name="ir_commit", args={"message": "go"})]),
+        LlmReply(tool_calls=[ToolCall(id="c2", name="ir_commit", args={"message": "again"})]),
+    ])
+    svc = make_services(ir, llm, gate_passed=True)
+    engine = make_engine(svc, max_steps=10)
+    thread = Thread(thread_id="th1", model_id="m1")
+
+    r1 = await engine.run_turn(thread, UserMessage(kind=TurnKind.CREATE, text="bracket"))
+    assert r1.state == TurnState.SUCCEEDED
+    assert engine._last_commit_passed is True
+    assert len(engine._candidate_reports) == 1
+
+    # Same engine, next turn — and now the gate fails. Turn N's pass must not
+    # leak in: the turn can only fail, and only this turn's report may be
+    # among the candidates.
+    svc.gate.passed = False
+    r2 = await engine.run_turn(thread, UserMessage(kind=TurnKind.MODIFY, text="change it"))
+    assert r2.state != TurnState.SUCCEEDED
+    assert engine._last_commit_passed is False
+    assert len(engine._candidate_reports) == 1
+
+
+async def test_successful_write_after_pass_invalidates_pass():
+    """Within one step batch: commit passes, then a successful ir_patch writes.
+
+    The IR the Gate graded is no longer the current IR, so "passed" must not
+    survive the write — even though the turn itself still finalizes from the
+    gate report it legitimately earned at commit time.
+    """
+    ir = make_ir()
+    llm = ScriptedLlm([
+        LlmReply(tool_calls=[
+            ToolCall(id="c1", name="ir_commit", args={"message": "go"}),
+            ToolCall(id="c2", name="ir_patch", args={
+                "base_version": "current",
+                "ops": [{"op": "rename", "target_id": "f1",
+                         "payload": {"name": "pad1b"}, "reason": "post-pass rename"}],
+            }),
+        ]),
+    ])
+    svc = make_services(ir, llm, gate_passed=True)
+    engine = make_engine(svc, max_steps=10)
+    thread = Thread(thread_id="th1", model_id="m1")
+
+    result = await engine.run_turn(thread, UserMessage(kind=TurnKind.CREATE, text="bracket"))
+    assert result.state == TurnState.SUCCEEDED
+    assert len(svc.store.applied) == 1  # the patch really went through
+    assert engine._last_commit_passed is False  # ...and the pass died with it
+
+
+async def test_failed_write_after_pass_does_not_invalidate():
+    """A denied/failed write changed nothing, so the pass it did not touch
+    must remain valid."""
+    from tcad.core.types import ToolErrorKind
+
+    ir = make_ir()
+
+    def _reject(ir, patch):
+        return [SimpleNamespace(
+            kind=ToolErrorKind.SEMANTIC, message="no such feature",
+            feature_id="nope", hint=None,
+        )]
+
+    llm = ScriptedLlm([
+        LlmReply(tool_calls=[
+            ToolCall(id="c1", name="ir_commit", args={"message": "go"}),
+            ToolCall(id="c2", name="ir_patch", args={
+                "base_version": "current",
+                "ops": [{"op": "rename", "target_id": "nope",
+                         "payload": {"name": "x"}, "reason": "bad target"}],
+            }),
+        ]),
+    ])
+    svc = make_services(ir, llm, gate_passed=True)
+    svc.store.validate_patch = _reject
+    engine = make_engine(svc, max_steps=10)
+    thread = Thread(thread_id="th1", model_id="m1")
+
+    result = await engine.run_turn(thread, UserMessage(kind=TurnKind.CREATE, text="bracket"))
+    assert result.state == TurnState.SUCCEEDED
+    assert len(svc.store.applied) == 0  # rejected before touching the store
+    assert engine._last_commit_passed is True
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# every PRE_* decision must take effect (§5-D)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# PRE_TURN and PRE_STEP were dispatched with their return value thrown away, so
+# a DENY there was indistinguishable from an allow: the turn ran to completion
+# with the policy that had just refused it. PRE_TOOL_USE handled DENY but not
+# ASK's *consequence* — the turn was marked AWAITING_APPROVAL and the rest of
+# the batch was executed anyway, i.e. writes continued past the point where a
+# human was being asked about one of them.
+
+
+async def test_a_denied_pre_turn_never_reaches_the_model():
+    ir = make_ir()
+    llm = ScriptedLlm([LlmReply(tool_calls=[
+        ToolCall(id="c1", name="ir_commit", args={"message": "go"})])])
+    hooks = FakeHooks(decisions={HookEvent.PRE_TURN: HookDecision.DENY},
+                      reason="quota exhausted")
+    svc = make_services(ir, llm, gate_passed=True, hooks=hooks)
+    engine = make_engine(svc, max_steps=4)
+
+    result = await engine.run_turn(
+        Thread(thread_id="th1", model_id="m1"),
+        UserMessage(kind=TurnKind.CREATE, text="bracket"))
+
+    assert result.state == TurnState.FAILED
+    assert llm.calls == 0, "the model was called after a pre_turn DENY"
+    assert len(svc.store.applied) == 0
+    assert "quota exhausted" in (result.error or "")
+    # post_turn still fires: observers count turns, and a refused one is a turn.
+    assert HookEvent.POST_TURN in [e for e, _ in hooks.events]
+    assert HookEvent.PRE_STEP not in [e for e, _ in hooks.events]
+
+
+async def test_a_denied_pre_step_never_reaches_the_model():
+    ir = make_ir()
+    llm = ScriptedLlm([LlmReply(tool_calls=[
+        ToolCall(id="c1", name="ir_commit", args={"message": "go"})])])
+    hooks = FakeHooks(decisions={HookEvent.PRE_STEP: HookDecision.DENY},
+                      reason="context ceiling hit")
+    svc = make_services(ir, llm, gate_passed=True, hooks=hooks)
+    engine = make_engine(svc, max_steps=4)
+
+    result = await engine.run_turn(
+        Thread(thread_id="th1", model_id="m1"),
+        UserMessage(kind=TurnKind.CREATE, text="bracket"))
+
+    assert result.state == TurnState.FAILED
+    assert llm.calls == 0
+    assert "context ceiling hit" in (result.error or "")
+
+
+async def test_a_pre_turn_ask_suspends_without_executing_anything():
+    ir = make_ir()
+    llm = ScriptedLlm([LlmReply(tool_calls=[
+        ToolCall(id="c1", name="ir_commit", args={"message": "go"})])])
+    hooks = FakeHooks(decisions={HookEvent.PRE_TURN: HookDecision.ASK},
+                      reason="a human must approve this model")
+    svc = make_services(ir, llm, gate_passed=True, hooks=hooks)
+    engine = make_engine(svc, max_steps=4)
+
+    result = await engine.run_turn(
+        Thread(thread_id="th1", model_id="m1"),
+        UserMessage(kind=TurnKind.CREATE, text="bracket"))
+
+    assert result.state == TurnState.AWAITING_APPROVAL
+    assert llm.calls == 0
+    assert len(svc.store.applied) == 0
+    assert "no write of any kind" in (result.error or "")
+
+
+async def test_an_ask_stops_the_rest_of_the_same_tool_batch():
+    """The model asks for two patches in one step and trips an ASK on the first.
+    The second must NOT run: an approval prompt that executes the writes behind
+    it is worse than no prompt, because it looks like it worked."""
+    ir = make_ir()
+    patch_args = {"base_version": "current",
+                  "ops": [{"op": "rename", "target_id": "f1",
+                           "payload": {"name": "x"}, "reason": "n"}],
+                  "summary": "n"}
+    llm = ScriptedLlm([LlmReply(tool_calls=[
+        ToolCall(id="c1", name="ir_patch", args=dict(patch_args)),
+        ToolCall(id="c2", name="ir_patch", args=dict(patch_args)),
+    ])])
+    hooks = FakeHooks(decisions={HookEvent.PRE_TOOL_USE: HookDecision.ASK},
+                      reason="needs a human")
+    svc = make_services(ir, llm, gate_passed=True, hooks=hooks)
+    engine = make_engine(svc, max_steps=4)
+
+    result = await engine.run_turn(
+        Thread(thread_id="th1", model_id="m1"),
+        UserMessage(kind=TurnKind.CREATE, text="bracket"))
+
+    assert result.state == TurnState.AWAITING_APPROVAL
+    assert len(svc.store.applied) == 0, (
+        "a tool call after the ASK was executed anyway")
+    # The skipped call still gets a `tool` message: the wire format requires an
+    # answer for every tool_call id, and silence would also hide the drop.
+    blob = json.dumps(llm.last_messages)
+    assert "NOT executed" in blob
+
+
+async def test_the_budget_is_per_turn_even_when_the_engine_is_reused():
+    """The CLI REPL drives every turn through one engine. The budget was built
+    once in ``__init__`` and never reset, so turn 2 started with turn 1's steps
+    already spent — under a bounded policy an ordinary second turn could be
+    reported EXHAUSTED, and ``turn.steps`` was a running session total."""
+    ir = make_ir()
+    thread = Thread(thread_id="th1", model_id="m1")
+
+    llm = ScriptedLlm([])
+    svc = make_services(ir, llm, gate_passed=True)
+    engine = make_engine(svc, max_steps=3)
+
+    # Turn 1 burns the whole budget without ever committing -> EXHAUSTED.
+    r1 = await engine.run_turn(thread, UserMessage(kind=TurnKind.CREATE, text="a"))
+    assert r1.state == TurnState.EXHAUSTED
+    spent = engine.budget.steps
+    assert spent >= 3
+
+    # Turn 2 gets a budget of its own, not "whatever is left of turn 1's".
+    llm2 = ScriptedLlm([LlmReply(tool_calls=[
+        ToolCall(id="c1", name="ir_commit", args={"message": "go"})])])
+    svc2 = make_services(ir, llm2, gate_passed=True)
+    engine.services = svc2
+    engine.registry = build_default_registry(svc2)
+    r2 = await engine.run_turn(thread, UserMessage(kind=TurnKind.CREATE, text="b"))
+
+    assert r2.state == TurnState.SUCCEEDED, r2.error
+    assert r2.steps <= 2, (
+        f"turn 2 reported {r2.steps} steps — the previous turn's are still counted")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# a tool call whose arguments never parsed must say so
+# ══════════════════════════════════════════════════════════════════════════
+#
+# Observed live: `ir_patch` came back with arguments cut off at the per-step
+# token ceiling (`finish_reason="length"`, a 1359-character `arguments` string
+# ending mid-array). The client turned the JSONDecodeError into `{}`, so the
+# schema check reported "missing required property 'base_version'; missing
+# required property 'ops'" — about two keys the model had been in the middle of
+# writing. Its only rational response was to resend the same too-large patch.
+
+
+def _truncated_call(name="ir_patch", raw_len=1359, error=None):
+    return ToolCall(
+        id="c1", name=name, args={},
+        args_error=error or "Unterminated array at character 1358 of 1359 characters of arguments",
+        args_raw_len=raw_len,
+    )
+
+
+async def test_a_truncated_tool_call_names_the_token_ceiling_not_a_missing_key():
+    ir = make_ir()
+    llm = ScriptedLlm([LlmReply(
+        tool_calls=[_truncated_call()], finish_reason="length",
+    )])
+    svc = make_services(ir, llm, gate_passed=True)
+    engine = make_engine(svc, max_steps=3)
+
+    await engine.run_turn(Thread(thread_id="th1", model_id="m1"),
+                          UserMessage(kind=TurnKind.CREATE, text="手机支架"))
+
+    blob = json.dumps(llm.last_messages)
+    assert "token ceiling" in blob, blob[-500:]
+    assert "SMALLER patch" in blob
+    assert "1359 characters" in blob
+    # The lie that started this: the model was told it had forgotten keys.
+    assert "missing required property" not in blob
+    # And nothing was applied.
+    assert len(svc.store.applied) == 0
+
+
+async def test_a_malformed_tool_call_asks_for_well_formed_json():
+    """The other cause. Same symptom downstream, opposite prescription — a model
+    told to "send a smaller patch" for malformed JSON would shrink a call that
+    was never too large."""
+    ir = make_ir()
+    llm = ScriptedLlm([LlmReply(
+        tool_calls=[_truncated_call(error="Expecting value at character 0 of 4 characters of arguments",
+                                    raw_len=4)],
+        finish_reason="tool_calls",
+    )])
+    svc = make_services(ir, llm, gate_passed=True)
+    engine = make_engine(svc, max_steps=3)
+
+    await engine.run_turn(Thread(thread_id="th1", model_id="m1"),
+                          UserMessage(kind=TurnKind.CREATE, text="bracket"))
+
+    blob = json.dumps(llm.last_messages)
+    assert "well-formed JSON" in blob
+    assert "token ceiling" not in blob, "a malformed call must not be blamed on the budget"
+
+
+async def test_an_unparsable_call_never_reaches_the_handler_or_a_hook():
+    """It is not a real tool call: nothing should be dispatched for it."""
+    ir = make_ir()
+    llm = ScriptedLlm([LlmReply(tool_calls=[_truncated_call()], finish_reason="length")])
+    hooks = FakeHooks()
+    svc = make_services(ir, llm, gate_passed=True, hooks=hooks)
+    engine = make_engine(svc, max_steps=3)
+
+    await engine.run_turn(Thread(thread_id="th1", model_id="m1"),
+                          UserMessage(kind=TurnKind.CREATE, text="手机支架"))
+
+    assert len(svc.store.applied) == 0
+    pre_tool = [p for e, p in hooks.events if e == HookEvent.PRE_TOOL_USE]
+    assert pre_tool == [], "a call with no arguments must not be offered to policy hooks"

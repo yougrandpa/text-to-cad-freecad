@@ -31,8 +31,10 @@ The ``create`` event stores the *initial* IR so replay has a base. Subsequent
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 
+from tcad.core.ids import contained_path, ensure_safe_id
 from tcad.core.types import IrEvent, ToolError, ToolErrorKind
 from tcad.ir.patch import PatchOutcome, apply_patch
 from tcad.ir.schema import IrDocument, IrPatch
@@ -46,11 +48,43 @@ class IrStore:
     def __init__(self, data_dir: str | os.PathLike[str] = _DEFAULT_DATA_DIR) -> None:
         self.data_dir = Path(data_dir)
         self._log = EventLog(self.data_dir)
+        #: One lock per model, held across the whole read-modify-write.
+        #:
+        #: The event log has an append lock of its own, but that only orders the
+        #: *writes*. Without this, two concurrent ``apply_patch`` calls both read
+        #: vN, both pass the ``base_version`` check (a comparison against the
+        #: document each of them loaded), and both snapshot v(N+1) — one patch
+        #: silently lost while both callers were told they succeeded. Optimistic
+        #: concurrency only means something if the check and the write are one
+        #: critical section.
+        #:
+        #: Scope, stated honestly: this serialises writers **within one process**,
+        #: which is what the shipped stack has (one ``IrStore`` inside one
+        #: ``StoreAdapter``, one local server). It is not a cross-process file
+        #: lock; a second process writing the same ``data_dir`` would need one.
+        self._locks: dict[str, threading.RLock] = {}
+        self._locks_guard = threading.Lock()
+
+    def _lock_for(self, model_id: str) -> threading.RLock:
+        with self._locks_guard:
+            lock = self._locks.get(model_id)
+            if lock is None:
+                lock = threading.RLock()
+                self._locks[model_id] = lock
+            return lock
 
     # ── paths ──────────────────────────────────────────────────────────────────
 
     def _model_dir(self, model_id: str) -> Path:
-        return self.data_dir / "models" / model_id
+        """The model's directory — validated, because ``model_id`` is a path part.
+
+        Validated here and not only at the API: this is the last point before the
+        name becomes a path, and a caller that reaches the store directly (a
+        script, a test, a future front end) must not be able to escape
+        ``data_dir`` either.
+        """
+        ensure_safe_id(model_id, kind="model_id")
+        return contained_path(self.data_dir, "models", model_id)
 
     def _snapshot_path(self, model_id: str, version: int) -> Path:
         return self._model_dir(model_id) / f"v{version}.json"
@@ -67,16 +101,20 @@ class IrStore:
         ir = ir.model_copy(deep=True)
         ir.model_id = model_id
         ir.version = 0
-        self._write_snapshot(model_id, ir)
-        event = IrEvent(
-            model_id=model_id,
-            kind="patch_applied",
-            ir_version_before=None,
-            ir_version_after=0,
-            actor="model",
-            payload={"action": _CREATE_KIND, "ir": ir.model_dump()},
-        )
-        self._log.append(model_id, event)
+        # Same critical section as apply_patch: a create that races a patch must
+        # not be able to interleave a v0 snapshot between the patch's read and
+        # its write.
+        with self._lock_for(model_id):
+            self._write_snapshot(model_id, ir)
+            event = IrEvent(
+                model_id=model_id,
+                kind="patch_applied",
+                ir_version_before=None,
+                ir_version_after=0,
+                actor="model",
+                payload={"action": _CREATE_KIND, "ir": ir.model_dump()},
+            )
+            self._log.append(model_id, event)
         return ir
 
     # ── load ─────────────────────────────────────────────────────────────────────
@@ -129,30 +167,36 @@ class IrStore:
     # ── apply_patch (ordered: event first, then snapshot) ───────────────────────
 
     def apply_patch(self, model_id: str, patch: IrPatch) -> tuple[IrDocument, IrEvent]:
-        """Apply ``patch`` and durably store it. Returns ``(new_ir, event)``."""
-        current = self.load(model_id)  # raises FileNotFoundError if not created
-        outcome: PatchOutcome = apply_patch(current, patch)
+        """Apply ``patch`` and durably store it. Returns ``(new_ir, event)``.
 
-        event = IrEvent(
-            model_id=model_id,
-            kind="patch_applied",
-            ir_version_before=current.version,
-            ir_version_after=outcome.version,
-            actor="model",
-            payload={
-                "action": "apply",
-                "patch": patch.model_dump(),
-                "summary": outcome.summary,
-                "changes": outcome.changes,
-                "created_ids": outcome.created_ids,
-                "renamed_ids": outcome.renamed_ids,
-            },
-        )
-        # 1) write-ahead: event durable before the snapshot
-        self._log.append(model_id, event)
-        # 2) atomic snapshot
-        self._write_snapshot(model_id, outcome.ir)
-        return outcome.ir, event
+        The load → apply → append → snapshot sequence is one critical section per
+        model. Without it the ``base_version`` check is a TOCTOU race: two writers
+        can both read vN, both pass, and both write v(N+1).
+        """
+        with self._lock_for(model_id):
+            current = self.load(model_id)  # raises FileNotFoundError if not created
+            outcome: PatchOutcome = apply_patch(current, patch)
+
+            event = IrEvent(
+                model_id=model_id,
+                kind="patch_applied",
+                ir_version_before=current.version,
+                ir_version_after=outcome.version,
+                actor="model",
+                payload={
+                    "action": "apply",
+                    "patch": patch.model_dump(),
+                    "summary": outcome.summary,
+                    "changes": outcome.changes,
+                    "created_ids": outcome.created_ids,
+                    "renamed_ids": outcome.renamed_ids,
+                },
+            )
+            # 1) write-ahead: event durable before the snapshot
+            self._log.append(model_id, event)
+            # 2) atomic snapshot
+            self._write_snapshot(model_id, outcome.ir)
+            return outcome.ir, event
 
     # ── rollback / snapshot bookkeeping ──────────────────────────────────────────
 

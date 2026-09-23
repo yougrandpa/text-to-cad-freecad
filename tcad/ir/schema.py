@@ -60,6 +60,32 @@ class PlaneRef(BaseModel):
     sub: str = ""
 
 
+class PlacementSpec(BaseModel):
+    """Where an origin-placed feature sits, in WORLD coordinates (mm).
+
+    The primitives (``additive_*`` / ``subtractive_*``) carry their own size but
+    have no sketch to take a position from, so without this field they can only
+    be built at the origin — which for a part spanning x∈[0,80] means a boss that
+    cannot be put on the part at all.
+
+    Measured (FreeCAD 26.3.0 / rev 48708, ``/tmp/probe_c31.py``): a PartDesign
+    primitive's ``AttachmentOffset`` is inert while ``MapMode`` is Deactivated
+    (setting it left the shape at x=[0,80] unchanged), while its ``Placement``
+    moves the solid. So ``position``/``axis``/``angle`` land on ``Placement``.
+    The rotation is about ``axis`` through ``position``, counter-clockwise,
+    degrees.
+
+    Only the ops in ``validate._PLACEMENT_OPS`` may carry one: for every other op
+    the position comes from the sketch or the reference, and a placement would be
+    a second, contradictory answer to the same question.
+    """
+
+    model_config = ConfigDict(frozen=True)
+    position: Vec3
+    axis: Vec3 | None = None      # rotation axis; required if angle != 0
+    angle: float = 0.0            # degrees, about `axis` through `position`
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # Sketch
 # ══════════════════════════════════════════════════════════════════════════
@@ -175,6 +201,36 @@ class FeatureSpec(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
     refs: list[str] = Field(default_factory=list)  # -> FeatureSpec.id, forms a DAG
     suppress: bool = False
+
+    # ── sub-element references (fillet/chamfer) ──────────────────────────
+    #
+    # ``PartDesign::Fillet.Base`` / ``Chamfer.Base`` are an ``App::PropertyLinkSub``:
+    # a (feature, [sub-element names]) pair. A scalar param cannot express that, so
+    # it gets its own typed fields rather than a magic ``params["base"]`` — that key
+    # was refused precisely because a string there dies inside FreeCAD.
+    #
+    # Additive and defaulted, so an older document parses unchanged.
+    #: Which feature the names in ``sub_elements`` belong to (``FeatureSpec.id``).
+    base_feature: str | None = None
+    #: Sub-element names on that feature, e.g. ``["Edge1", "Edge5"]``. The names
+    #: come from the geometry digest, which lists them with their length and kind
+    #: so a model can pick by intent instead of guessing.
+    sub_elements: list[str] = Field(default_factory=list)
+
+    # ── plane references ────────────────────────────────────────────────
+    #
+    # ``PartDesign::Mirrored.MirrorPlane`` is another ``PropertyLinkSub`` — it
+    # names a plane, not a scalar — so it gets the *same* typed shape a sketch
+    # uses for its attachment (origin plane / datum plane / a face of a feature).
+    # One mental model for "a plane reference in this IR", two places that need it.
+    plane: PlaneRef | None = None
+
+    # ── world placement (primitives only) ───────────────────────────────
+    #
+    # Everything else takes its position from a sketch or a reference. The
+    # primitives carry their own size and nothing else, so they need somewhere
+    # to say *where* — otherwise they can only ever build at the origin.
+    placement: PlacementSpec | None = None
 
 
 class BodySpec(BaseModel):

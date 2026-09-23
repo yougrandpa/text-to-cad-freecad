@@ -1,0 +1,98 @@
+{
+  "ok": true,
+  "measurements": {
+    "solids": 1,
+    "faces": 6,
+    "edges": 12,
+    "vertexes": 8,
+    "shells": 1,
+    "volume": 4272.566008882119,
+    "area": 1959.4689145077132,
+    "shape_type": "Solid",
+    "is_valid": true,
+    "bbox": {
+      "x": 20.0,
+      "y": 10.000000000000004,
+      "z": 40.0,
+      "x_min": -10.0,
+      "y_min": 0.0,
+      "z_min": -2.220446049250313e-15
+    }
+  },
+  "feature_states": {
+    "body_1": {
+      "type_id": "PartDesign::Body",
+      "state": [
+        "Up-to-date"
+      ]
+    },
+    "Origin": {
+      "type_id": "App::Origin",
+      "state": [
+        "Up-to-date"
+      ]
+    },
+    "X_Axis": {
+      "type_id": "App::Line",
+      "state": [
+        "Up-to-date"
+      ]
+    },
+    "Y_Axis": {
+      "type_id": "App::Line",
+      "state": [
+        "Up-to-date"
+      ]
+    },
+    "Z_Axis": {
+      "type_id": "App::Line",
+      "state": [
+        "Up-to-date"
+      ]
+    },
+    "XY_Plane": {
+      "type_id": "App::Plane",
+      "state": [
+        "Up-to-date"
+      ]
+    },
+    "XZ_Plane": {
+      "type_id": "App::Plane",
+      "state": [
+        "Up-to-date"
+      ]
+    },
+    "YZ_Plane": {
+      "type_id": "App::Plane",
+      "state": [
+        "Up-to-date"
+      ]
+    },
+    "Origin001": {
+      "type_id": "App::Point",
+      "state": [
+        "Up-to-date"
+      ]
+    },
+    "sk_shaft": {
+      "type_id": "Sketcher::SketchObject",
+      "state": [
+        "Up-to-date"
+      ]
+    },
+    "ft_shaft": {
+      "type_id": "PartDesign::Revolution",
+      "state": [
+        "Up-to-date"
+      ]
+    }
+  },
+  "errors": [],
+  "sketches": {
+    "sk_shaft": {
+      "circles": [],
+      "constraints": []
+    }
+  },
+  "elapsed_s": 0.0243
+}

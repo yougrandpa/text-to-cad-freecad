@@ -1,0 +1,85 @@
+{
+  "expected_volume": 30391.504561362024,
+  "step_readback_volume": 30391.50456136202,
+  "measured_holes": [
+    {
+      "radius": 4.0,
+      "diameter": 8.0,
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "center": [
+        10.0,
+        10.0,
+        0.0
+      ],
+      "depth": 8.0,
+      "through": true,
+      "faces": 1,
+      "index": 0
+    },
+    {
+      "radius": 4.0,
+      "diameter": 8.0,
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "center": [
+        10.0,
+        40.0,
+        0.0
+      ],
+      "depth": 8.0,
+      "through": true,
+      "faces": 1,
+      "index": 1
+    },
+    {
+      "radius": 4.0,
+      "diameter": 8.0,
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "center": [
+        70.0,
+        10.0,
+        0.0
+      ],
+      "depth": 8.0,
+      "through": true,
+      "faces": 1,
+      "index": 2
+    },
+    {
+      "radius": 4.0,
+      "diameter": 8.0,
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "center": [
+        70.0,
+        40.0,
+        0.0
+      ],
+      "depth": 8.0,
+      "through": true,
+      "faces": 1,
+      "index": 3
+    }
+  ],
+  "previews": [
+    "preview_iso.png",
+    "preview_front.png",
+    "preview_top.png",
+    "preview_right.png"
+  ],
+  "verified": true
+}

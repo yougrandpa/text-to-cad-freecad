@@ -50,6 +50,7 @@ class AssembleContext(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     system_prompt: str = ""
+    requirements_text: str = ""
     digest_text: str = ""
     gate_report_text: str = ""
     history: list[Message] = Field(default_factory=list)
@@ -75,19 +76,28 @@ class ContextAssembler:
     async def build(self, ctx: AssembleContext, images: list[ImageRef]) -> list[Message]:
         b = self.budget
         sys_tokens = _est(ctx.system_prompt)
+        req_tokens = _est(ctx.requirements_text)
         digest_tokens = _est(ctx.digest_text)
         gate_tokens = _est(ctx.gate_report_text)
         image_tokens = sum(im.tokens_estimate for im in images) or (b.images if images else 0)
         history_tokens = sum(m.tokens_estimate or _est(m.content) for m in ctx.history)
 
-        fixed = sys_tokens + digest_tokens + gate_tokens + image_tokens
+        fixed = sys_tokens + req_tokens + digest_tokens + gate_tokens + image_tokens
         used = fixed + history_tokens
         level = self._level(used, b.window_tokens)
 
-        # fixed prefix (present at every level)
+        # Fixed prefix (present at every level).
+        #
+        # The requirement contract sits next to the persona on purpose: it is the
+        # one block that says what the part is being *judged against*, and it must
+        # survive every degradation level — including MINIMAL, which drops the
+        # conversation precisely when the window is tight and the model is most
+        # likely to lose track of the ask.
         out: list[Message] = [
             Message(role="system", content=ctx.system_prompt, kind="system",
                     tokens_estimate=sys_tokens),
+            Message(role="system", content=ctx.requirements_text, kind="requirements",
+                    tokens_estimate=req_tokens),
             Message(role="system", content=ctx.digest_text, kind="digest",
                     tokens_estimate=digest_tokens),
             Message(role="system", content=ctx.gate_report_text, kind="gate",
@@ -147,3 +157,23 @@ class ContextAssembler:
         if msgs:
             msgs[0].tokens_estimate = total_tokens
         return msgs
+
+
+def to_openai_messages(messages: list[Message]) -> list[dict]:
+    """Convert assembled :class:`Message` objects into the OpenAI wire shape.
+
+    Empty *context blocks* are dropped rather than sent as ``content: ""``: a
+    system message carrying nothing but whitespace costs a request slot and tells
+    the model nothing. The requirement contract is never empty (it always states
+    at least how many constraints exist), so dropping blanks cannot silently
+    remove the one block that says what the part is judged against.
+
+    ``kind`` is a loop-layer hint and is deliberately not put on the wire.
+    """
+    out: list[dict] = []
+    for m in messages:
+        content = m.content or ""
+        if m.role == "system" and not content.strip():
+            continue
+        out.append({"role": m.role, "content": content})
+    return out

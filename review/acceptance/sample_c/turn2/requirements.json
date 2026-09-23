@@ -1,0 +1,34 @@
+{
+  "sample": "C",
+  "schema_version": 1,
+  "version": 2,
+  "units": "mm",
+  "coordinate_system": "right-handed; plate occupies x∈[0,w], y∈[0,h], z∈[0,t]",
+  "raw_text": "把高度改为 50，其他保持不变。",
+  "user_stated_requirements": [
+    {
+      "kind": "tube",
+      "value": {
+        "outer_diameter": 30.0,
+        "height": 40.0,
+        "bore_diameter": 10.0,
+        "axis": "Z"
+      },
+      "evidence": "轴线沿 Z，外径 30、高度 40、同轴通孔直径 10 的圆筒",
+      "confirmed": true
+    }
+  ],
+  "system_inferred": [],
+  "later_modifications": [
+    {
+      "kind": "tube",
+      "field": "height",
+      "from": 40.0,
+      "to": 50.0,
+      "evidence": "把高度改为 50，其他保持不变。",
+      "preserved": "outer diameter, bore diameter, axis, solid count"
+    }
+  ],
+  "generated_from": null,
+  "attempt_id": "acc-20260923T144323Z-2585065a"
+}

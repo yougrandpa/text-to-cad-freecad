@@ -5,14 +5,18 @@ geo_measure   : measurements (volume/bbox/faces/edges/solids) from introspect
 asset_export  : export step/stl/brep/fcstd via the worker
 asset_import  : import an external asset (step/iges/stl/dxf) via the worker
 
-Token cost is the reason geo_view is gated: the engine supplies a per-step
-``services._visual_ok`` hint (True only at declared visual checkpoints, or for
+Token cost is the reason geo_view is gated: the engine sets a per-step
+``ToolContext.visual_ok`` (True only at declared visual checkpoints, or for
 inspect turns). The handler refuses otherwise so screenshots are never burned
-every step (design §4.3 / §4.6 cross-layer check C←E).
+every step (design §4.3 / §4.6 cross-layer check C←E). The ``services._visual_ok``
+spelling is still honoured as a fallback for embedders that drive the handler
+directly; it is no longer written by the engine, because a bundle shared by every
+turn is the wrong place for per-turn state.
 """
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import json
 import os
@@ -41,8 +45,30 @@ def _artifact_dir(ctx: ToolContext, version: int) -> str:
     return os.path.join(ctx.data_dir, "artifacts", ctx.model_id, f"v{version}")
 
 
+async def _ask_worker(services: "Any", method: str, params: dict, *, timeout_s: float) -> dict:
+    """Call the worker protocol without blocking the event loop.
+
+    ``Worker.request`` is synchronous by contract (``tcad/tools/base.py``), and
+    these four handlers are ``async def``. Calling it inline parked the entire
+    asyncio loop for the length of the call — a tessellation or a STEP import can
+    take seconds, and during that window *other* sessions' SSE streams stall,
+    health checks stop answering and a cancelled turn never reaches its next
+    checkpoint. The commit path was moved onto a thread for exactly this reason;
+    the geo tools had the same shape and were missed.
+    """
+    return await asyncio.to_thread(
+        functools.partial(services.worker.request, method, params, timeout_s=timeout_s)
+    )
+
+
 async def geo_view_handler(services: "Any", args: dict, ctx: ToolContext) -> ToolResult:
-    if not getattr(services, "_visual_ok", False):
+    # Per-turn first, shared bundle only as a fallback for embedders that drive
+    # the tool directly. Reading the bundle unconditionally is what let one
+    # request's commit open the visual checkpoint for another request's step.
+    allowed_now = bool(getattr(ctx, "visual_ok", False)) or bool(
+        getattr(services, "_visual_ok", False)
+    )
+    if not allowed_now:
         return _err(
             ToolErrorKind.RUNTIME,
             "geo_view is only permitted at declared visual checkpoints "
@@ -56,8 +82,8 @@ async def geo_view_handler(services: "Any", args: dict, ctx: ToolContext) -> Too
     out_dir = _artifact_dir(ctx, version)
     os.makedirs(out_dir, exist_ok=True)
 
-    mesh_res = services.worker.request(
-        M_TESSELLATE,
+    mesh_res = await _ask_worker(
+        services, M_TESSELLATE,
         {"ir": ir.model_dump(), "views": views, "out_dir": out_dir},
         timeout_s=60.0,
     )
@@ -80,8 +106,8 @@ async def geo_measure_handler(services: "Any", args: dict, ctx: ToolContext) -> 
     what = args.get("what") or ["volume", "bbox", "faces", "edges", "solids"]
     version = services.store.current_version(ctx.model_id)
     ir = services.store.load(ctx.model_id, version)
-    res = services.worker.request(
-        M_INTROSPECT,
+    res = await _ask_worker(
+        services, M_INTROSPECT,
         {"ir": ir.model_dump(), "out_dir": _artifact_dir(ctx, version), "what": list(what)},
         timeout_s=60.0,
     )
@@ -92,19 +118,63 @@ async def geo_measure_handler(services: "Any", args: dict, ctx: ToolContext) -> 
             e.get("message", "introspect failed"),
             feature_id=e.get("feature_id"),
         )
-    measurements = (res.get("result") or {}).get("measurements", {})
-    return _ok(json.dumps(measurements, indent=2))
+    # introspect_document returns a GeometryDigest-shaped dict — there is no
+    # "measurements" key. Map each requested item onto the digest's real
+    # fields; an unmeasured build must error, not report "{}".
+    digest = res.get("result") or {}
+    if not digest.get("measurements_available"):
+        return _err(
+            ToolErrorKind.RUNTIME,
+            "no solid to measure (build produced an empty shape)",
+            hint="Fix the build so a solid exists, then call geo_measure again.",
+        )
+    topology = digest.get("topology") or {}
+    bbox = digest.get("bbox") or {}
+    catalog = {
+        "volume": digest.get("volume"),
+        "area": digest.get("area"),
+        "bbox": {k: bbox.get(k) for k in ("x", "y", "z", "x_min", "y_min", "z_min")},
+        "faces": topology.get("faces"),
+        "edges": topology.get("edges"),
+        "solids": topology.get("solids"),
+        "vertexes": topology.get("vertexes"),
+        "shells": topology.get("shells"),
+        "is_valid": digest.get("is_valid"),
+        "shape_type": digest.get("shape_type"),
+        # The BRep-measured holes, not the IR's declared ones: without this the
+        # model can only ever see its own numbers echoed back and keeps asserting
+        # a diameter the kernel never cut.
+        "holes": digest.get("holes") or [],
+    }
+    unknown = [w for w in what if w not in catalog]
+    if unknown:
+        return _err(
+            ToolErrorKind.SEMANTIC,
+            f"unknown measurement(s): {', '.join(unknown)}",
+            hint="supported: " + ", ".join(sorted(catalog)),
+        )
+    return _ok(json.dumps({w: catalog[w] for w in what}, indent=2))
 
 
 async def asset_export_handler(services: "Any", args: dict, ctx: ToolContext) -> ToolResult:
+    from tcad.core.ids import InvalidIdentifier, ensure_safe_id
+
     fmt = args.get("fmt", "step")
     name = args.get("name", ctx.model_id)
+    # `name` is model-controlled and becomes a filename in the worker
+    # (`os.path.join(out_dir, f"{name}.{fmt}")`). An id-shaped name cannot name
+    # anything but a child of `out_dir`, so validate it here rather than trusting
+    # the model not to write "../../x.step".
+    try:
+        name = ensure_safe_id(name, kind="export name")
+    except InvalidIdentifier as exc:
+        return _err(ToolErrorKind.SCHEMA, str(exc))
     version = services.store.current_version(ctx.model_id)
     ir = services.store.load(ctx.model_id, version)
     out_dir = _artifact_dir(ctx, version)
     os.makedirs(out_dir, exist_ok=True)
-    res = services.worker.request(
-        M_EXPORT,
+    res = await _ask_worker(
+        services, M_EXPORT,
         {"ir": ir.model_dump(), "exports": [fmt], "name": name, "out_dir": out_dir},
         timeout_s=60.0,
     )
@@ -122,11 +192,37 @@ async def asset_export_handler(services: "Any", args: dict, ctx: ToolContext) ->
 
 
 async def asset_import_handler(services: "Any", args: dict, ctx: ToolContext) -> ToolResult:
+    from tcad.core.ids import InvalidIdentifier, ensure_contained
+
     path = args.get("path")
     fmt = args.get("fmt")
     if not path:
         return _err(ToolErrorKind.SCHEMA, "asset_import requires 'path'")
-    res = services.worker.request(M_IMPORT_ASSET, {"path": path, "fmt": fmt}, timeout_s=60.0)
+
+    # A model-supplied path is a read primitive. Confine it to the two roots this
+    # project legitimately exchanges files through — the working tree and the data
+    # directory — checked on the RESOLVED path so `..` and symlinks are collapsed
+    # first. Anything else is refused with the roots named.
+    roots = [r for r in (ctx.workdir, ctx.data_dir) if r]
+    resolved = None
+    tried: list[str] = []
+    for root in roots:
+        try:
+            resolved = ensure_contained(path, root, kind="import path")
+            break
+        except InvalidIdentifier as exc:
+            tried.append(str(exc))
+    if resolved is None:
+        return _err(
+            ToolErrorKind.DENIED,
+            f"import path {path!r} is outside the permitted roots "
+            f"({', '.join(str(r) for r in roots)}); refusing to read it. "
+            + (tried[0] if tried else ""),
+        )
+    path = str(resolved)
+    res = await _ask_worker(
+        services, M_IMPORT_ASSET, {"path": path, "fmt": fmt}, timeout_s=60.0
+    )
     if not res.get("ok"):
         e = res.get("error", {}) or {}
         return _err(
@@ -156,7 +252,7 @@ def build_geo_tools(services: "Any") -> dict[str, ToolSpec]:
         "geo_measure": ToolSpec(
             name="geo_measure",
             tier=ToolTier.READ,
-            description="Return geometric measurements (volume/bbox/faces/edges/solids) of the current model.",
+            description="Return geometric measurements (volume/bbox/faces/edges/solids/holes) of the current model. 'holes' are measured on the BRep (diameter, axis, centre, depth, through-or-blind) and are the only hole evidence that counts; they can disagree with the IR.",
             params_schema={
                 "type": "object",
                 "properties": {"what": {"type": "array", "items": {"type": "string"}}},

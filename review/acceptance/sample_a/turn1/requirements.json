@@ -1,0 +1,45 @@
+{
+  "sample": "A",
+  "schema_version": 1,
+  "version": 1,
+  "units": "mm",
+  "coordinate_system": "right-handed; plate occupies x∈[0,w], y∈[0,h], z∈[0,t]",
+  "raw_text": "80×50×8 的矩形板，中心有 40×20 的矩形贯穿开口",
+  "user_stated_requirements": [
+    {
+      "kind": "bbox",
+      "value": {
+        "x": 80.0,
+        "y": 50.0,
+        "z": 8.0
+      },
+      "evidence": "80×50×8 的矩形板",
+      "confirmed": true
+    },
+    {
+      "kind": "through_slot",
+      "value": {
+        "x_range": [
+          20.0,
+          60.0
+        ],
+        "y_range": [
+          15.0,
+          35.0
+        ]
+      },
+      "evidence": "中心有 40×20 的矩形贯穿开口",
+      "confirmed": true
+    }
+  ],
+  "system_inferred": [
+    {
+      "kind": "single_solid",
+      "value": 1,
+      "reason": "贯穿开口在单板内切除，不构成第二实体"
+    }
+  ],
+  "later_modifications": [],
+  "generated_from": null,
+  "attempt_id": "acc-20260923T144323Z-2585065a"
+}

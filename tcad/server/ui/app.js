@@ -40,6 +40,13 @@ const state = {
   // switched-away turn is invalidated by replacing this object, which is what
   // makes its already-scheduled callbacks no-ops.
   turn: null,
+  // Which session the screen currently belongs to. Every async loader captures
+  // this before its first await and refuses to write afterwards if it changed —
+  // otherwise a slow response for the session you just left lands in the panel of
+  // the one you just opened (and, worse, gets labelled with the new model's id).
+  sessionEpoch: 0,
+  // The backend's verdict for the current version: { verified, passed, reason, … }.
+  verdict: null,
 };
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -186,6 +193,16 @@ function clearLive() {
 // ══════════════════════════════════════════════════════════════════════════
 // http
 // ══════════════════════════════════════════════════════════════════════════
+
+// A snapshot of which session a request belongs to, taken before any await.
+function sessionToken() {
+  return { epoch: state.sessionEpoch, modelId: state.modelId, version: state.version };
+}
+
+// Has the user moved to another session since this request started?
+function stale(token) {
+  return token.epoch !== state.sessionEpoch;
+}
 
 async function api(path, options = {}) {
   const res = await fetch(path, {
@@ -683,6 +700,7 @@ function displayImage(url, view) {
 async function loadView(force) {
   const img = $("viewImage");
   const placeholder = $("viewPlaceholder");
+  const token = sessionToken();
 
   // Deliberately does NOT consult `state.version`. At boot the model may not
   // exist yet, so the cached version is null — and the old early-return on that
@@ -692,15 +710,16 @@ async function loadView(force) {
   placeholder.hidden = false;
   img.hidden = true;
 
-  if (!state.modelId) {
+  if (!token.modelId) {
     placeholder.textContent = "还没有会话 —— 左侧点「＋ 新建」，或直接在下面描述一个零件";
     return;
   }
 
-  const url = `/models/${encodeURIComponent(state.modelId)}/render` +
+  const url = `/models/${encodeURIComponent(token.modelId)}/render` +
     `?view=${state.view}&force=${force ? "true" : "false"}&t=${Date.now()}`;
   try {
     const res = await fetch(url);
+    if (stale(token)) return;
     if (res.status === 404) {
       placeholder.textContent = "还没有模型 —— 发送第一条消息后会自动创建";
       return;
@@ -720,6 +739,7 @@ async function loadView(force) {
       return;
     }
     const blob = await res.blob();
+    if (stale(token)) return;
     displayImage(URL.createObjectURL(blob));
   } catch (err) {
     placeholder.textContent = `无法渲染：${err.message}`;
@@ -728,32 +748,80 @@ async function loadView(force) {
 
 async function loadArtifacts() {
   const bar = $("fileBar");
+  const token = sessionToken();
   bar.replaceChildren();
-  if (!state.modelId) {
+  if (!token.modelId) {
     bar.append(el("span", { class: "muted small", text: "未选择会话" }));
     return;
   }
   try {
     const body = await api(
-      `/models/${encodeURIComponent(state.modelId)}/artifacts` +
-      (state.version != null ? `?version=${state.version}` : "")
+      `/models/${encodeURIComponent(token.modelId)}/artifacts` +
+      (token.version != null ? `?version=${token.version}` : "")
     );
+    if (stale(token)) return;   // the user moved on; this answer is not ours to show
     const files = (body.files || []).filter((f) => !f.endsWith(".png") && !f.endsWith(".json"));
     if (!files.length) {
       bar.append(el("span", { class: "muted small", text: "暂无导出产物（STEP / STL 在 Gate 通过后生成）" }));
       return;
     }
+    // Link with the identity the RESPONSE described, not with whatever the
+    // session variable holds now — those differ exactly when they must not.
     for (const name of files) {
       bar.append(el("a", {
-        href: `/models/${encodeURIComponent(state.modelId)}/artifacts/${name}` +
+        href: `/models/${encodeURIComponent(token.modelId)}/artifacts/${name}` +
               `?version=${body.version}`,
         text: name,
         download: "",
       }));
     }
   } catch (err) {
+    if (stale(token)) return;
     bar.append(el("span", { class: "muted small", text: `产物读取失败：${err.message}` }));
   }
+}
+
+// The backend's answer to "is this version verified?", shown verbatim.
+//
+// Artifacts on disk are not the same claim as "the Gate passed this version":
+// after a write, the previous version's report is still green but describes a
+// part the user has since changed. Only the backend can tell those apart, so the
+// panel shows its verdict and its reason rather than inferring one.
+async function renderVerdict(box, token) {
+  const sec = el("div", { class: "sec" }, el("h4", { text: "验证状态" }));
+  if (!token.modelId) {
+    sec.append(el("div", { class: "muted small", text: "—" }));
+    box.append(sec);
+    return;
+  }
+  let v = null;
+  try {
+    v = await api(`/models/${encodeURIComponent(token.modelId)}/verdict`);
+    if (stale(token)) return;
+    state.verdict = v;
+  } catch (err) {
+    if (stale(token)) return;
+    sec.append(el("div", { class: "muted small", text: `状态读取失败：${err.message}` }));
+    box.append(sec);
+    return;
+  }
+  sec.append(el("div", { class: "kv" }, [
+    el("span", { class: "k", text: "当前版本" }),
+    el("span", {
+      class: "v",
+      style: `color:${v.verified ? "var(--ok)" : "var(--bad)"}`,
+      text: v.verified ? "已验证" : "未验证",
+    }),
+  ]));
+  if (v.graded_version !== null && v.graded_version !== undefined) {
+    sec.append(kv("最近评级版本", `v${v.graded_version}`));
+  }
+  if (v.attempt_id) sec.append(kv("attempt", v.attempt_id));
+  if (v.blocking_failures?.length) {
+    sec.append(el("div", { class: "muted small", text: `阻断项：${v.blocking_failures.join(", ")}` }));
+  }
+  sec.append(el("div", { class: "muted small", text: v.reason || "" }));
+  box.append(sec);
 }
 
 function kv(key, value) {
@@ -765,15 +833,19 @@ function kv(key, value) {
 
 async function refreshInspector() {
   const box = $("inspector");
+  const token = sessionToken();
   box.replaceChildren();
 
   const model = el("div", { class: "sec" }, [
     el("h4", { text: "模型" }),
-    kv("model_id", state.modelId ?? "—"),
-    kv("IR 版本", state.version ?? "—"),
+    kv("model_id", token.modelId ?? "—"),
+    kv("IR 版本", token.version ?? "—"),
     state.threadId ? kv("thread", state.threadId) : null,
   ]);
   box.append(model);
+
+  await renderVerdict(box, token);
+  if (stale(token)) return;   // the verdict fetch is an await like any other
 
   // ── the last Gate verdict, verbatim ────────────────────────────────────
   if (state.lastGate) {
@@ -798,12 +870,15 @@ async function refreshInspector() {
   }
 
   // ── the IR feature chain ───────────────────────────────────────────────
-  if (!state.modelId) {
+  if (!token.modelId) {
     box.append(el("div", { class: "muted small", text: "未选择会话。" }));
     return;
   }
   try {
-    const ir = await api(`/models/${encodeURIComponent(state.modelId)}/ir`);
+    const ir = await api(`/models/${encodeURIComponent(token.modelId)}/ir`);
+    // The await is where the user can switch sessions. Writing afterwards would
+    // put this model's feature chain (and version) into the new session's panel.
+    if (stale(token)) return;
     state.version = ir.version;
 
     const chain = el("div", { class: "sec" }, el("h4", { text: "特征链（构建顺序）" }));
@@ -840,6 +915,7 @@ async function refreshInspector() {
       ]));
     }
   } catch (err) {
+    if (stale(token)) return;
     // "Model does not exist yet" is the normal state before the first message,
     // not a failure — reporting it as one trains people to ignore errors.
     const missing = String(err.message).startsWith("404");
@@ -857,15 +933,22 @@ async function refreshInspector() {
     if (pending.length) {
       const sec = el("div", { class: "sec" }, el("h4", { text: `待批 (${pending.length})` }));
       for (const p of pending) {
+        // The record's key is `id`. This used to read the `approval_id` spelling,
+        // which the API never returns, so both buttons posted to
+        // `/approvals/undefined` and no approval could be granted from the UI.
         sec.append(el("div", { class: "notice warn" }, [
           el("div", { text: `${p.tool_name}` }),
-          el("div", { class: "small", text: p.approval_id }),
+          el("div", { class: "small", text: p.id }),
+          // What is actually being authorised. An approval that shows only a tool
+          // name is a signature on a blank page.
+          el("div", { class: "small", text: p.args_summary || "(未记录参数)" }),
+          el("div", { class: "small", text: p.thread_id ? `会话 ${p.thread_id}` : "" }),
           el("div", { class: "row", style: "margin-top:8px;display:flex;gap:8px" }, [
             el("button", {
               class: "mini",
               text: "批准",
               onclick: async () => {
-                await api(`/approvals/${p.approval_id}`, {
+                await api(`/approvals/${p.id}`, {
                   method: "POST", body: JSON.stringify({ granted: true }),
                 });
                 refreshInspector();
@@ -875,7 +958,7 @@ async function refreshInspector() {
               class: "mini",
               text: "拒绝",
               onclick: async () => {
-                await api(`/approvals/${p.approval_id}`, {
+                await api(`/approvals/${p.id}`, {
                   method: "POST", body: JSON.stringify({ granted: false }),
                 });
                 refreshInspector();
@@ -1298,10 +1381,19 @@ function renderSessions() {
       el("span", { text: formatWhen(s.last_at) }),
       el("span", { text: `${s.messages} 条` }),
       // The one piece of session metadata that is about the *part* rather than
-      // the conversation: whether this session ever produced geometry.
+      // the conversation: whether this session ever produced geometry, and
+      // whether that latest version was actually verified. `v5` alone reads as
+      // progress; `v5 ✓` and `v5 ✗` are different states and must look different.
       el("span", {
         class: s.ir_version === null ? "" : "s-geom",
-        text: s.ir_version === null ? "无几何" : `v${s.ir_version}`,
+        text: s.ir_version === null
+          ? "无几何"
+          : `v${s.ir_version} ${s.verified === true ? "✓" : s.verified === false ? "✗" : "?"}`,
+        title: s.ir_version === null
+          ? "这个会话还没有产出几何"
+          : s.verified === true
+            ? "该版本通过了 Gate 且产物已发布"
+            : "该版本尚未验证 —— 不要把它当成已完成",
       }),
       running ? el("span", { class: "s-running", text: "进行中" }) : null,
     ]);
@@ -1378,6 +1470,10 @@ async function switchSession(threadId, { force = false } = {}) {
   }
 
   const session = state.sessions.find((s) => s.thread_id === threadId) || null;
+
+  // Bump first: in-flight loaders from the previous session must not write.
+  state.sessionEpoch += 1;
+  state.verdict = null;
 
   state.threadId = threadId;
   state.modelId = session ? session.model_id : null;

@@ -1,0 +1,185 @@
+{
+  "model_id": "accept_c_v2",
+  "ir_version": 0,
+  "feature_chain": [
+    {
+      "id": "ft_tube",
+      "name": "tube",
+      "op": "pad",
+      "params": {
+        "length": 50.0,
+        "type": "Length"
+      },
+      "suppressed": false
+    },
+    {
+      "id": "ft_bore",
+      "name": "bore",
+      "op": "pocket",
+      "params": {
+        "type": "ThroughAll",
+        "reversed": true
+      },
+      "suppressed": false
+    }
+  ],
+  "topology": {
+    "solids": 1,
+    "faces": 4,
+    "edges": 6,
+    "vertexes": 4,
+    "shells": 1
+  },
+  "bbox": {
+    "x": 30.0,
+    "y": 30.0,
+    "z": 50.0,
+    "x_min": -15.0,
+    "y_min": -15.0,
+    "z_min": 0.0
+  },
+  "volume": 31415.926535897932,
+  "area": 7539.822368615503,
+  "shape_type": "Compound",
+  "is_valid": true,
+  "key_dimensions": {
+    "x": 30.0,
+    "y": 30.0,
+    "z": 50.0,
+    "min_wall_thickness": 10.0,
+    "sk_tube__fully_constrained": 0.0,
+    "sk_tube__dof": 2.0,
+    "sk_bore__fully_constrained": 0.0,
+    "sk_bore__dof": 2.0
+  },
+  "holes": [
+    {
+      "radius": 5.0,
+      "diameter": 10.0,
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "depth": 50.0,
+      "through": true,
+      "faces": 1,
+      "index": 0
+    }
+  ],
+  "faces": [
+    {
+      "name": "Face2",
+      "area": 628.318531,
+      "normal": [
+        -0.0,
+        -0.0,
+        -1.0
+      ],
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "Face3",
+      "area": 628.318531,
+      "normal": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "center": [
+        0.0,
+        0.0,
+        50.0
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "name": "Edge1",
+      "kind": "Line",
+      "length": 50.0,
+      "mid": [
+        15.0,
+        0.0,
+        25.0
+      ],
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "name": "Edge2",
+      "kind": "Circle",
+      "length": 94.24778,
+      "mid": [
+        -15.0,
+        0.0,
+        0.0
+      ],
+      "direction": []
+    },
+    {
+      "name": "Edge3",
+      "kind": "Circle",
+      "length": 94.24778,
+      "mid": [
+        -15.0,
+        0.0,
+        50.0
+      ],
+      "direction": []
+    },
+    {
+      "name": "Edge4",
+      "kind": "Circle",
+      "length": 31.415927,
+      "mid": [
+        -5.0,
+        0.0,
+        0.0
+      ],
+      "direction": []
+    },
+    {
+      "name": "Edge5",
+      "kind": "Circle",
+      "length": 31.415927,
+      "mid": [
+        -5.0,
+        -0.0,
+        50.0
+      ],
+      "direction": []
+    },
+    {
+      "name": "Edge6",
+      "kind": "Line",
+      "length": 50.0,
+      "mid": [
+        5.0,
+        0.0,
+        25.0
+      ],
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    }
+  ],
+  "spec_deviation": {},
+  "measurements_available": true,
+  "text": "model: accept_c_v2 (v0)\nfeature chain (2):\n  1. tube [pad] length=50.0 type=Length\n  2. bore [pocket] type=ThroughAll reversed=True\ntopology: solids=1 faces=4 edges=6 vertexes=4 shells=1\nbbox: x=30.0000 y=30.0000 z=50.0000 (min x=-15.0000 y=-15.0000 z=0.0000)\nvolume: 31415.926536  area: 7539.822369\nshape_type: Compound  valid: True\nmin_wall_thickness: 10.0000 (closest opposed-face distance with material between)\nholes measured on the BRep (1):\n  #0 d=10.0000 axis=(+0.00,+0.00,+1.00) through (0.000,0.000,0.000) depth=50.0000 THROUGH\nsketches:\n  tube_profile: fully_constrained=no dof=2 solve_status=0\n  bore: fully_constrained=no dof=2 solve_status=0",
+  "elapsed_s": 0.0688
+}

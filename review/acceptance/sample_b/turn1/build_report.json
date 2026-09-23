@@ -1,0 +1,104 @@
+{
+  "compile_measurements": {
+    "solids": 1,
+    "faces": 10,
+    "edges": 24,
+    "vertexes": 16,
+    "shells": 1,
+    "volume": 31095.221315766128,
+    "area": 10456.991118430773,
+    "shape_type": "Compound",
+    "is_valid": true,
+    "bbox": {
+      "x": 80.0,
+      "y": 50.0,
+      "z": 8.0,
+      "x_min": 0.0,
+      "y_min": 0.0,
+      "z_min": 0.0
+    }
+  },
+  "step_readback_volume": 31095.221315766128,
+  "expected_volume": 31095.22131576614,
+  "measured_holes": [
+    {
+      "radius": 3.0,
+      "diameter": 6.0,
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "center": [
+        10.0,
+        10.0,
+        0.0
+      ],
+      "depth": 8.0,
+      "through": true,
+      "faces": 1,
+      "index": 0
+    },
+    {
+      "radius": 3.0,
+      "diameter": 6.0,
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "center": [
+        10.0,
+        40.0,
+        0.0
+      ],
+      "depth": 8.0,
+      "through": true,
+      "faces": 1,
+      "index": 1
+    },
+    {
+      "radius": 3.0,
+      "diameter": 6.0,
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "center": [
+        70.0,
+        10.0,
+        0.0
+      ],
+      "depth": 8.0,
+      "through": true,
+      "faces": 1,
+      "index": 2
+    },
+    {
+      "radius": 3.0,
+      "diameter": 6.0,
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "center": [
+        70.0,
+        40.0,
+        0.0
+      ],
+      "depth": 8.0,
+      "through": true,
+      "faces": 1,
+      "index": 3
+    }
+  ],
+  "previews": [
+    "preview_iso.png",
+    "preview_front.png",
+    "preview_top.png",
+    "preview_right.png"
+  ],
+  "verified": true
+}

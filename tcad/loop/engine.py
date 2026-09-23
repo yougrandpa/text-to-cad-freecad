@@ -33,6 +33,7 @@ from tcad.core.types import (
     GateReport,
     HookDecision,
     HookEvent,
+    HookResult,
     Thread,
     ToolContext,
     ToolError,
@@ -129,6 +130,46 @@ STOPPED_BY_USER = (
 #: no-ceiling budget, an endlessly narrating model would loop forever.
 MAX_IDLE_STEPS = 3
 
+#: How much of a suspended call's payload is stored for a human to read.
+#: Bounded so an approval file cannot grow with a runaway argument, and long
+#: enough for the code a `raw_python` request is asking to run.
+_APPROVAL_SUMMARY_CHARS = 4000
+
+
+def _unparsable_args_hint(tc: Any, finish_reason: str | None) -> str:
+    """What the model should do about arguments that did not parse.
+
+    Keyed to the *cause*, because a truncated call and a malformed call need
+    different next actions and telling the model the wrong one costs another
+    whole step.
+    """
+    if finish_reason == "length":
+        return (
+            f"Your output hit the per-step token ceiling and the JSON was cut off "
+            f"after {tc.args_raw_len} characters, so this call was discarded. Send a "
+            f"SMALLER patch and split the work across several {tc.name} calls — for "
+            f"example the sketches first, then the features, then the requirements — "
+            f"instead of repeating the same call at the same size."
+        )
+    return (
+        f"The provider reported finish_reason={finish_reason!r} and sent "
+        f"{tc.args_raw_len} characters of arguments that were not valid JSON. Re-send "
+        f"the call with well-formed JSON arguments."
+    )
+
+
+def _is_mutating(tool_name: str, spec: Any) -> bool:
+    """Whether a *successful* call to this tool changes what was verified.
+
+    ``ir_commit`` is excluded: it is the act of grading, not a change to the
+    graded IR. Everything else at write or privileged tier mutates the design,
+    so a pass that predates it no longer describes the current state.
+    """
+    if tool_name == "ir_commit":
+        return False
+    tier = getattr(spec, "tier", None)
+    return tier in (ToolTier.WRITE, ToolTier.PRIVILEGED)
+
 
 class LoopEngine:
     """Runs one Turn at a time.
@@ -171,6 +212,9 @@ class LoopEngine:
         config: LoopConfig | None = None,
         observer: Callable[[str, dict], None] | None = None,
         stop_requested: Callable[[], bool] | None = None,
+        context_assembler: Any = None,
+        history_provider: Callable[[str, str], list] | None = None,
+        hooks: Any = None,
     ):
         self.services = services
         self.registry = registry
@@ -185,6 +229,63 @@ class LoopEngine:
         self._idle_steps = 0
         self._observer = observer
         self._stop_requested = stop_requested
+        # Budgeted context build (design §4.3). When absent the engine keeps the
+        # minimal [system, user] shape, which is what the unit tests use.
+        self._context_assembler = context_assembler
+        # ``(thread_id, current_user_text) -> list[Message]``. The reader lives in
+        # tcad.context.history; injecting it as a callable keeps the engine from
+        # importing the session store and keeps it testable with a fake.
+        self._history_provider = history_provider
+        # A per-turn dispatcher (a front end's observer tap). When given, EVERY
+        # dispatch in this turn goes through it instead of ``services.hooks``, so
+        # one request can observe its own lifecycle without mutating a bundle
+        # other requests are using.
+        self._hooks = hooks
+
+    # ─── hook dispatch ────────────────────────────────────────────────────
+
+    def _dispatch(self, event: HookEvent, payload: dict) -> Any:
+        """Dispatch through the per-turn hooks when set, else the shared bundle."""
+        hooks = self._hooks if self._hooks is not None else getattr(self.services, "hooks", None)
+        if hooks is None:
+            return HookResult(decision=HookDecision.ALLOW, hook_name="none")
+        return hooks.dispatch(event, payload)
+
+    def _halt_on_hook(self, where: str, result: Any, turn: Turn) -> bool:
+        """Apply a turn/step-level hook decision. True means "stop the turn".
+
+        ``PRE_TURN`` and ``PRE_STEP`` are the two hook points the engine owns
+        directly rather than routing through a tool call, and both used to have
+        their return value thrown away — so a DENY from either was a no-op that
+        looked exactly like an allow. Objective §5-D names all four PRE_* points
+        and requires DENY *and* ASK to take effect; ASK especially, because ASK
+        means "a human must look at this first" and letting the turn continue
+        past it executes the very writes the ask was about.
+
+        Both decisions stop the turn. They differ in what the stop *means*, which
+        is the thing the user has to be able to read off the screen:
+
+          * DENY  -> FAILED. A policy refused; no further work is possible.
+          * ASK   -> AWAITING_APPROVAL. Nothing is wrong; a person has to decide.
+
+        Neither is allowed to be silently downgraded to "continue".
+        """
+        decision = getattr(result, "decision", HookDecision.ALLOW)
+        if decision == HookDecision.ALLOW:
+            return False
+        reason = getattr(result, "reason", "") or "no reason given"
+        hook_name = getattr(result, "hook_name", "?")
+        if decision == HookDecision.ASK:
+            turn.state = TurnState.AWAITING_APPROVAL
+            turn.error = (
+                f"{where} hook '{hook_name}' requires approval before this turn can "
+                f"continue: {reason}. Nothing further was executed — in particular no "
+                f"write of any kind."
+            )
+        else:
+            turn.state = TurnState.FAILED
+            turn.error = f"{where} hook '{hook_name}' denied the turn: {reason}"
+        return True
 
     # ─── interruption ─────────────────────────────────────────────────────
 
@@ -216,22 +317,60 @@ class LoopEngine:
 
     async def run_turn(self, thread: Thread, user_msg: UserMessage) -> TurnResult:
         turn = self._new_turn(thread, user_msg)
-        messages = self._init_messages(user_msg, turn)
+        messages = await self._build_messages(user_msg, turn)
         privileged = bool(user_msg.privileged_requested) and self.config.allow_privileged
         allowed = self._allowed_tiers(turn.kind, privileged)
 
         # Per-turn loop state. The engine may be reused across turns (the CLI
-        # REPL does), and a stall counter carried over would fail the next turn
-        # for no reason.
+        # REPL does), and state carried over would fail — or worse, silently
+        # pass — the next turn for no reason. In particular a commit that
+        # passed in turn N must not count as a pass in turn N+1, and candidate
+        # reports from turn N must not be promotable by a later turn's
+        # strategy.
         self._idle_steps = 0
         self._compile_failures = 0
         self._last_gate_report = None
+        self._last_commit_passed = False
+        self._candidate_reports = []
+
+        # The budget is per-TURN, and the engine is reused (the CLI REPL runs
+        # every turn through one engine). It was created once in ``__init__`` and
+        # never reset, so turn N+1 began with turn N's step and token counts
+        # already spent: under the bounded policy (``configs/policies/strict.yaml``)
+        # a perfectly ordinary second turn could be reported EXHAUSTED having
+        # never exceeded a limit of its own, and ``turn.steps`` reported the
+        # session total rather than the turn's. With no ceiling configured the
+        # numbers are only cosmetic, which is why nothing caught it.
+        self.budget = Budget(self.budget_limits)
 
         # pre_turn hook (quota / content-safety pre-check).
-        self.services.hooks.dispatch(
+        #
+        # The decision is ACTED ON, not merely dispatched. It used to be
+        # discarded — `self._dispatch(...)` with no receiver — so a policy that
+        # returned DENY at the turn boundary was, in effect, not installed: the
+        # turn ran to completion exactly as if the hook had allowed it. Objective
+        # §5-D requires every PRE_* DENY/ASK to take effect.
+        if self._halt_on_hook("pre_turn", self._dispatch(
             HookEvent.PRE_TURN,
-            {"thread_id": thread.thread_id, "turn_id": turn.turn_id, "model_id": thread.model_id},
-        )
+            {"thread_id": thread.thread_id, "turn_id": turn.turn_id,
+             "model_id": thread.model_id},
+        ), turn):
+            # `_drive` only enters its loop while the state is RUNNING, so a
+            # terminal state here means the model is never called and no tool
+            # ever runs — the halt is structural, not a request to the strategy.
+            result = self._finalize(turn, messages, self._last_gate_report)
+            self._dispatch(
+                HookEvent.POST_TURN,
+                {"thread_id": thread.thread_id, "turn_id": turn.turn_id,
+                 "state": turn.state.value, "steps": self.budget.steps},
+            )
+            self._observe("turn_end", {
+                "turn_id": turn.turn_id, "state": result.state.value,
+                "steps": self.budget.steps,
+                "tokens_in": self.budget.tokens_in, "tokens_out": self.budget.tokens_out,
+                "error": result.error, "gate": None,
+            })
+            return result
 
         try:
             try:
@@ -266,7 +405,7 @@ class LoopEngine:
             )
         finally:
             # post_turn ALWAYS fires — including when the LLM raised (design §4.5).
-            self.services.hooks.dispatch(
+            self._dispatch(
                 HookEvent.POST_TURN,
                 {
                     "thread_id": thread.thread_id,
@@ -315,11 +454,15 @@ class LoopEngine:
             turn.error = STOPPED_BY_USER
             return StepYield()
 
-        # pre_step hook (context placement / cost ceiling).
-        self.services.hooks.dispatch(
+        # pre_step hook (context placement / cost ceiling). Same rule as
+        # pre_turn: the decision is acted on. A non-RUNNING state ends `_drive`'s
+        # loop, so a denied step means no LLM call and no tool call at all.
+        if self._halt_on_hook("pre_step", self._dispatch(
             HookEvent.PRE_STEP,
-            {"thread_id": turn.thread_id, "turn_id": turn.turn_id, "state": turn.state.value},
-        )
+            {"thread_id": turn.thread_id, "turn_id": turn.turn_id,
+             "state": turn.state.value},
+        ), turn):
+            return StepYield()
         # budget: step + wall clock.
         self.budget.check_step()
         step_start = time.monotonic()
@@ -407,7 +550,8 @@ class LoopEngine:
         self._idle_steps = 0
 
         ctx = self._make_tool_context(turn)
-        for tc in reply.tool_calls:
+        halt_after_this = False
+        for idx, tc in enumerate(reply.tool_calls):
             spec = self.registry.get(tc.name)
             if spec is None:
                 outcome = ToolOutcome(
@@ -416,17 +560,46 @@ class LoopEngine:
                         error=ToolError(kind=ToolErrorKind.NOT_FOUND, message=f"unknown tool: {tc.name}"),
                     )
                 )
+            elif tc.args_error:
+                # The arguments never parsed, so there is nothing to dispatch.
+                # Passing the empty dict through to `execute_tool` — which is
+                # what used to happen — produced "missing required property
+                # 'base_version'; missing required property 'ops'": a statement
+                # about keys the model had in fact been *in the middle of
+                # writing* when its output was cut off at the per-step token
+                # ceiling. The model's only rational response to that is to send
+                # the same too-large patch again.
+                #
+                # So the outcome is built from what the client actually observed
+                # (the parse error, the raw length) plus what the provider said
+                # about why it stopped (`finish_reason`), and it prescribes the
+                # fix that matches the cause.
+                outcome = ToolOutcome(
+                    result=ToolResult(
+                        ok=False,
+                        error=ToolError(
+                            kind=ToolErrorKind.SCHEMA,
+                            message=(
+                                f"{tc.name}: the tool-call arguments were not usable, so "
+                                f"NOTHING was applied — {tc.args_error}."
+                            ),
+                            hint=_unparsable_args_hint(tc, reply.finish_reason),
+                        ),
+                    )
+                )
             else:
-                # engine-managed visual-checkpoint hint consumed by geo_view.
-                services_any: Any = self.services
-                services_any._visual_ok = (
+                # Engine-managed visual-checkpoint hint consumed by geo_view.
+                # Set on THIS step's context, never on the shared services bundle:
+                # two concurrent turns share that bundle, so a commit in one
+                # session would open the visual checkpoint for another's step.
+                ctx.visual_ok = (
                     True if turn.kind == TurnKind.INSPECT else self._last_commit_passed
                 )
                 if spec.tier == ToolTier.PRIVILEGED:
                     # privileged owns its own hook dispatch (triple gate).
                     outcome = await execute_tool(spec, tc.args, ctx, allowed_tiers=allowed)
                 else:
-                    hook_res = self.services.hooks.dispatch(
+                    hook_res = self._dispatch(
                         HookEvent.PRE_TOOL_USE,
                         {
                             "tool_name": tc.name,
@@ -455,7 +628,10 @@ class LoopEngine:
                         # an approval that no component ever created, so the call
                         # could never be let through. The id is surfaced in the
                         # message so a client knows what to POST /approvals.
-                        approval_id = self._request_approval(tc.name, tc.args)
+                        approval_id = self._request_approval(
+                            tc.name, tc.args,
+                            thread_id=turn.thread_id, turn_id=turn.turn_id,
+                        )
                         extra = (
                             f" approval_id={approval_id}." if approval_id else
                             " (no approval store configured — this turn cannot be resumed)."
@@ -469,6 +645,12 @@ class LoopEngine:
                                 ),
                             )
                         )
+                        # Everything AFTER this call in the same batch is skipped:
+                        # a model that asks for six edits in one step and trips an
+                        # ASK on the third must not have the fourth through sixth
+                        # applied while a human is being asked about the third.
+                        # Objective §5-D: "ASK 不能继续执行后续写操作".
+                        halt_after_this = True
                     else:
                         args = hook_res.mutated_args if hook_res.mutated_args is not None else tc.args
                         outcome = await execute_tool(spec, args, ctx, allowed_tiers=allowed)
@@ -480,7 +662,7 @@ class LoopEngine:
             # failed, and spun until the budget tripped. post_tool_use is
             # documented as firing for every tool — so it is dedented to the loop
             # body deliberately. Do not re-indent it into a branch.
-            self.services.hooks.dispatch(
+            self._dispatch(
                 HookEvent.POST_TOOL_USE,
                 {
                     "tool_name": tc.name,
@@ -528,6 +710,53 @@ class LoopEngine:
                     ),
                 },
             )
+
+            # A successful write after a passed commit invalidates that pass:
+            # the IR the Gate graded is no longer the current IR, so "passed"
+            # no longer describes the model's state. A denied/failed write
+            # changed nothing and must not invalidate.
+            #
+            # The rule is STRUCTURAL (any write-tier tool except ir_commit), not a
+            # hardcoded name list: a name list silently stops covering the first
+            # write tool added after it was written, and "a pass survives a write"
+            # is exactly the failure this exists to prevent.
+            if (
+                self._last_commit_passed
+                and outcome.result.ok
+                and _is_mutating(tc.name, spec)
+            ):
+                self._last_commit_passed = False
+
+            if halt_after_this:
+                # The turn is suspended pending approval, so the remaining calls
+                # in this batch must NOT execute. They still get a `tool` message
+                # each: the OpenAI wire format requires an answer for every
+                # tool_call id, and a resumed transcript built without them would
+                # be rejected by the provider — the suspension would look like a
+                # protocol error instead of a pending decision.
+                for skipped in reply.tool_calls[idx + 1:]:
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": skipped.id,
+                        "name": skipped.name,
+                        "content": (
+                            f"NOT executed: this turn was suspended for approval on "
+                            f"{tc.name}, and no tool call after it was run. "
+                            f"Re-issue this call once the approval is granted."
+                        ),
+                    })
+                    self._observe("tool", {
+                        "step": self.budget.steps,
+                        "name": skipped.name,
+                        "ok": False,
+                        "content": "skipped: turn suspended for approval",
+                        "error": {"kind": "denied",
+                                  "message": "not executed: turn suspended pending approval",
+                                  "feature_id": None},
+                        "images": [],
+                        "gate": None,
+                    })
+                break
 
             # ir_commit: the engine — not the tool — decides success.
             if tc.name == "ir_commit":
@@ -607,6 +836,103 @@ class LoopEngine:
             {"role": "user", "content": user_msg.text},
         ]
 
+    async def _build_messages(self, user_msg: UserMessage, turn: Turn) -> list[dict]:
+        """Assemble the request context, budgeted (task book §5-D).
+
+        Before this existed the model received ``[system, user]`` and nothing
+        else: the conversation was written to SQLite but never read back, so a
+        request like "change those four holes to diameter 8, leave the rest
+        alone" had no "those four holes" to resolve against. The blocks added
+        here are exactly the ones that make such a request answerable — prior
+        turns, the requirement contract, the current IR (with stable ids), the
+        current version and the previous Gate verdict.
+
+        Degradation is deliberate and total: with no assembler, or if assembly
+        raises, the turn falls back to the original two-message shape. Context is
+        an optimisation for the model, never a precondition for running a turn.
+        """
+        if self._context_assembler is None:
+            return self._init_messages(user_msg, turn)
+
+        try:
+            from tcad.context.assembler import (
+                AssembleContext,
+                to_openai_messages,
+            )
+
+            blocks = self._context_blocks(turn)
+            history = self._load_history(turn.thread_id, user_msg.text)
+            ctx = AssembleContext(
+                system_prompt=self.config.system_prompt,
+                requirements_text=blocks["requirements_text"],
+                digest_text=blocks["digest_text"],
+                gate_report_text=blocks["gate_report_text"],
+                history=history,
+            )
+            assembled = await self._context_assembler.build(ctx, [])
+            messages = to_openai_messages(assembled)
+        except Exception:  # noqa: BLE001 — see the degradation note above
+            return self._init_messages(user_msg, turn)
+
+        # The current request always goes last, verbatim, exactly once.
+        messages.append({"role": "user", "content": user_msg.text})
+        return messages
+
+    def _context_blocks(self, turn: Turn) -> dict[str, str]:
+        """The three generated context blocks, each independently best-effort."""
+        from tcad.context.requirements import render_requirements_text
+        from tcad.context.verdict import render_verdict_text
+
+        blocks = {"requirements_text": "", "digest_text": "", "gate_report_text": ""}
+        store = getattr(self.services, "store", None)
+
+        version: int | None = None
+        try:
+            version = int(store.current_version(turn.model_id))
+        except Exception:  # noqa: BLE001
+            version = None
+
+        try:
+            ir = store.load(turn.model_id, version) if version is not None else store.load(turn.model_id)
+            blocks["requirements_text"] = render_requirements_text(ir)
+        except Exception:  # noqa: BLE001 — no IR means no contract to show
+            pass
+
+        try:
+            context = getattr(self.services, "context", None)
+            if context is not None and version is not None:
+                digest = context.digest(turn.model_id, version)
+                blocks["digest_text"] = getattr(digest, "text", "") or ""
+        except Exception:  # noqa: BLE001
+            pass
+
+        blocks["gate_report_text"] = self._previous_verdict_text(turn, version)
+        return blocks
+
+    def _previous_verdict_text(self, turn: Turn, version: int | None) -> str:
+        """Last verdict: this turn's, else the one persisted by the last turn."""
+        from tcad.context.verdict import render_verdict_text
+
+        if self._last_gate_report is not None:
+            return render_verdict_text(self._last_gate_report)
+
+        store = getattr(self.services, "store", None)
+        reader = getattr(store, "read_gate_report", None)
+        if not callable(reader) or version is None:
+            return ""
+        try:
+            return render_verdict_text(reader(turn.model_id, version))
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _load_history(self, thread_id: str, current_text: str) -> list:
+        if self._history_provider is None:
+            return []
+        try:
+            return list(self._history_provider(thread_id, current_text) or [])
+        except Exception:  # noqa: BLE001 — history is a convenience, not a guarantee
+            return []
+
     def _allowed_tiers(self, kind: TurnKind, privileged: bool) -> set:
         from tcad.tools.base import _ALLOWED_TIERS
 
@@ -623,11 +949,19 @@ class LoopEngine:
             workdir=self.config.workdir,
             data_dir=self.config.data_dir,
             worker=getattr(self.services, "worker", None),
+            hooks=self._hooks,
+            visual_ok=False,
         )
 
-    def _request_approval(self, tool_name: str, args: dict) -> str | None:
+    def _request_approval(
+        self, tool_name: str, args: dict, *, thread_id: str | None = None, turn_id: str | None = None
+    ) -> str | None:
         """Create an approval record for a suspended call, if a store is wired.
 
+        The record is bound to the *exact* arguments via the one shared
+        fingerprint helper (so the gate that later checks it computes the same
+        string), to the session/turn that asked, and it carries a human-readable
+        rendering of the payload so a person can see what they are approving.
         Returns the record id, or None when no approval store is available (the
         turn still suspends — it just cannot be resumed, and says so).
         """
@@ -635,13 +969,21 @@ class LoopEngine:
         if store is None:
             return None
         try:
-            import hashlib
             import json as _json
 
-            digest = hashlib.sha256(
-                _json.dumps(args, sort_keys=True, default=str).encode("utf-8")
-            ).hexdigest()[:16]
-            return store.request(tool_name, args_hash=digest).id
+            from tcad.hooks.approval import args_fingerprint
+
+            summary = _json.dumps(args if args is not None else {}, ensure_ascii=False,
+                                  sort_keys=True, default=str)
+            if len(summary) > _APPROVAL_SUMMARY_CHARS:
+                summary = summary[:_APPROVAL_SUMMARY_CHARS] + "…"
+            return store.request(
+                tool_name,
+                args_hash=args_fingerprint(args),
+                thread_id=thread_id,
+                turn_id=turn_id,
+                args_summary=summary,
+            ).id
         except Exception:  # noqa: BLE001 — never let bookkeeping break the loop
             return None
 

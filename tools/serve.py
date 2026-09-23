@@ -81,9 +81,17 @@ def main() -> int:
     print(f"model    ->  {model['provider_label']} / {model['model']} @ {model['base_url']}")
     print(f"worker   ->  {'running' if services.worker.is_alive() else 'not started'}")
 
-    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
-    return 0
-
+    try:
+        uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+        return 0
+    finally:
+        # Ctrl-C is the normal way this server ends. Tear the geometry backend
+        # down with it rather than leaving a FreeCADCmd child behind: it exits on
+        # its own once its stdin closes, but "on its own, eventually" is not the
+        # same statement as "cleaned up".
+        handle = getattr(services, "_worker_handle", None)
+        if handle is not None:
+            handle.close()
 
 if __name__ == "__main__":
     raise SystemExit(main())

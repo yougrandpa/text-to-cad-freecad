@@ -7,10 +7,13 @@ depends on (design §4.6 / §9 "V → S").
 
 from __future__ import annotations
 
+import hashlib
+import time
 from pathlib import Path
 
-from tcad.core.types import BBox, GeometryDigest, Topology
+from tcad.core.types import BBox, BuildStamp, GeometryDigest, Topology
 from tcad.core.types import FeatureDigest
+from tcad.store.artifacts import write_build_stamp
 from tcad.ir.schema import (
     BodySpec,
     ConstraintExpr,
@@ -46,7 +49,10 @@ def make_digest(model_id: str = "m1", version: int = 1, *,
                 volume: float = 24000.0,
                 solids: int = 1, faces: int = 6, edges: int = 12, vertexes: int = 8,
                 min_wall: float = 2.0,
-                sketch_id: str = "sk_base") -> GeometryDigest:
+                sketch_id: str = "sk_base",
+                holes: list[dict] | None = None) -> GeometryDigest:
+    """``holes`` are the worker's BRep hole measurements. Left empty by design:
+    a digest that measured nothing must not let a hole requirement pass."""
     return GeometryDigest(
         model_id=model_id, ir_version=version,
         feature_chain=[FeatureDigest(id="ft_pad", name="pad", op="pad",
@@ -60,6 +66,7 @@ def make_digest(model_id: str = "m1", version: int = 1, *,
             f"{sketch_id}__dof": 0.0,
             "min_wall_thickness": min_wall,
         },
+        holes=holes or [],
         measurements_available=measurements_available,
     )
 
@@ -84,12 +91,29 @@ class FakeWorkerWrong:
 def write_artefacts(tmp_path: Path, *,
                     ir: IrDocument | None = None,
                     digest: GeometryDigest | None = None,
-                    with_exports: bool = True) -> tuple[Path, Path]:
-    """Write ir.json + digest.json (+ dummy exports) and return (ir_path, artifact_dir)."""
+                    with_exports: bool = True,
+                    with_stamp: bool = True,
+                    stamp_started_at: float | None = None,
+                    attempt_id: str = "fixture-attempt") -> tuple[Path, Path]:
+    """Write ir.json + digest.json (+ dummy exports) and return (ir_path, artifact_dir).
+
+    Stamps the directory first, exactly like ``run_commit`` does, so the fixtures
+    exercise the same provenance path production takes. Pass ``with_stamp=False``
+    to grade a directory that was never stamped.
+    """
     ir = ir or make_ir()
     digest = digest or make_digest()
     artifact_dir = tmp_path / "artifacts"
     artifact_dir.mkdir(parents=True, exist_ok=True)
+
+    if with_stamp:
+        write_build_stamp(artifact_dir, BuildStamp(
+            attempt_id=attempt_id,
+            model_id=ir.model_id,
+            ir_version=ir.version,
+            started_at=(time.time() if stamp_started_at is None else stamp_started_at),
+            ir_sha256=hashlib.sha256(ir.model_dump_json().encode("utf-8")).hexdigest(),
+        ))
 
     ir_path = tmp_path / "ir.json"
     ir_path.write_text(ir.model_dump_json(), encoding="utf-8")

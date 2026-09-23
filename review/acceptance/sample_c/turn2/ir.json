@@ -1,0 +1,105 @@
+{
+  "model_id": "accept_c_v2",
+  "version": 0,
+  "bodies": [
+    {
+      "id": "body_1",
+      "name": "body_1",
+      "sketches": [
+        {
+          "id": "sk_tube",
+          "name": "tube_profile",
+          "plane": {
+            "kind": "origin_plane",
+            "plane": "XY"
+          },
+          "geometry": [
+            {
+              "id": "g0",
+              "kind": "circle",
+              "points": [
+                {
+                  "x": 0.0,
+                  "y": 0.0,
+                  "z": 0
+                }
+              ],
+              "radius": 15.0
+            }
+          ],
+          "constraints": [
+            {
+              "type": "Radius",
+              "refs": [
+                0
+              ],
+              "value": 15.0
+            }
+          ]
+        },
+        {
+          "id": "sk_bore",
+          "name": "bore",
+          "plane": {
+            "kind": "origin_plane",
+            "plane": "XY"
+          },
+          "geometry": [
+            {
+              "id": "g0",
+              "kind": "circle",
+              "points": [
+                {
+                  "x": 0.0,
+                  "y": 0.0,
+                  "z": 0
+                }
+              ],
+              "radius": 5.0
+            }
+          ],
+          "constraints": [
+            {
+              "type": "Radius",
+              "refs": [
+                0
+              ],
+              "value": 5.0
+            }
+          ]
+        }
+      ],
+      "features": [
+        {
+          "id": "ft_tube",
+          "name": "tube",
+          "op": "pad",
+          "profile_sketch": "sk_tube",
+          "refs": [],
+          "params": {
+            "length": 50.0,
+            "type": "Length"
+          }
+        },
+        {
+          "id": "ft_bore",
+          "name": "bore",
+          "op": "pocket",
+          "profile_sketch": "sk_bore",
+          "refs": [
+            "ft_tube"
+          ],
+          "params": {
+            "type": "ThroughAll",
+            "reversed": true
+          }
+        }
+      ]
+    }
+  ],
+  "requirements": {
+    "raw_text": "把高度改为 50，其他保持不变。",
+    "constraints": []
+  },
+  "notes": []
+}

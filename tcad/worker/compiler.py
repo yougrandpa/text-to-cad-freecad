@@ -62,7 +62,461 @@ FEATURE_TYPE_MAP = {
 }
 
 # Ops whose result accumulates into a body tip and that reference a profile sketch.
-_PROFILE_OPS = {"pad", "pocket", "revolution", "groove", "hole"}
+# Params the compiler consumes structurally rather than by `setattr`. They are
+# skipped by `_assign_props` because there is no property of that name, and a
+# plain assignment would either fail ("unsupported property") or set something
+# that is not what was meant.
+_STRUCTURAL_PARAM_KEYS = frozenset({"Originals", "axis"})
+
+#: Allowed values for a revolution/groove ``axis`` param, mapped to the reference
+#: they resolve to. A scalar enum is the only axis spelling the IR can carry: the
+#: real FreeCAD property (`ReferenceAxis`) is an ``App::PropertyLinkSub``, which no
+#: JSON scalar can express. Translating a name into that LinkSub here is what makes
+#: the feature usable at all.
+_AXIS_NAMES = {
+    "x": ("origin", 0), "y": ("origin", 1), "z": ("origin", 2),
+    "h_axis": ("sketch", "H_Axis"),
+    "v_axis": ("sketch", "V_Axis"),
+    "n_axis": ("sketch", "N_Axis"),
+}
+_AXIS_DEFAULT = "v_axis"
+
+#: Ops whose FreeCAD object takes its axis/direction from a LinkSub the IR cannot
+#: spell as a scalar, and the property that carries it. ``ReferenceAxis``
+#: (revolution/groove) and ``Direction``/``Axis`` (patterns) are the same kind of
+#: reference under different names, so one resolver serves all four.
+#:
+#: Not setting the pattern reference is the dangerous case: FreeCAD answers a
+#: LinearPattern with no ``Direction`` by producing **one** occurrence — a clean,
+#: valid, wrong solid — so a missing axis is refused here rather than defaulted.
+_AXIS_LINK_OPS: dict[str, str] = {
+    "revolution": "ReferenceAxis",
+    "groove": "ReferenceAxis",
+    "linear_pattern": "Direction",
+    "polar_pattern": "Axis",
+}
+_AXIS_OPS = frozenset(_AXIS_LINK_OPS)
+
+#: Ops that default to the *profile sketch's* vertical axis. A pattern has no
+#: profile, so it has no such default and must name the axis it repeats along.
+_PROFILE_AXIS_OPS = frozenset({"revolution", "groove"})
+
+#: Axis names a pattern accepts. The sketch-local names are meaningful only where
+#: there is a profile sketch; a pattern repeats features, so the body's own axes
+#: are the only thing the IR can name for it.
+_PATTERN_AXIS_NAMES = frozenset({"x", "y", "z"})
+
+#: Ops that select sub-elements (edges) of another feature via a LinkSub ``Base``.
+_SUB_ELEMENT_OPS = frozenset({"fillet", "chamfer", "draft", "thickness"})
+
+#: The sub-element ops whose ``Base`` is a FACE list, not an edge list. The two
+#: kinds get different listings in their error messages, so a wrong name says
+#: what was available in the vocabulary the caller actually used.
+_FACE_SUB_OPS = frozenset({"draft", "thickness"})
+
+#: Ops that read a plane from the typed ``plane`` field, and the FreeCAD property
+#: that carries it. Both are ``App::PropertyLinkSub`` and both return a null shape
+#: rather than an error when unset (measured: §33 in the review report).
+_PLANE_OPS = {"mirrored": "MirrorPlane", "draft": "NeutralPlane"}
+
+
+def _set_base_reference(obj, f: dict, ref_objects: dict, *,
+                        op: str, kind: str = "edges") -> list[dict]:
+    """Point a feature with a ``Base`` link at the edges/faces it works on.
+
+    ``Base`` is an ``App::PropertyLinkSub`` — the same shape a scalar param cannot
+    carry — so the IR gives it typed fields (``base_feature`` + ``sub_elements``)
+    and the compiler builds the pair here. ``fillet``/``chamfer`` name *edges*;
+    ``draft`` re-shapes and ``thickness`` opens *faces* — same field, different
+    vocabulary, which is why the message lists the names this op can take.
+
+    Each name is checked against the real shape first: a bad name else fails
+    *later* with a confusing message, or in the worst case silently rounds
+    nothing.
+    """
+    if "Base" not in obj.PropertiesList:
+        return []
+
+    singular = kind[:-1]
+    base_id = f.get("base_feature")
+    subs = list(f.get("sub_elements") or [])
+    if not base_id:
+        return [{
+            "kind": "schema", "feature_id": f.get("id"),
+            "message": (f"{op} needs 'base_feature' (the feature whose {kind} "
+                        f"to use) and 'sub_elements' (its {singular} names, from "
+                        "ir_digest)"),
+        }]
+    target = ref_objects.get(base_id)
+    if target is None:
+        return [{
+            "kind": "not_found", "feature_id": f.get("id"),
+            "message": (f"base_feature {base_id!r} is not a feature built before this one"),
+        }]
+    if not subs:
+        listing = _edge_names(target) if kind == "edges" else _face_names(target)
+        return [{
+            "kind": "schema", "feature_id": f.get("id"),
+            "message": (f"base_feature {base_id!r} was given no 'sub_elements'; pass at "
+                        f"least one {singular} name from ir_digest "
+                        f"(available {kind}: {listing})"),
+        }]
+    # A feature has no Shape until the document computes, and this reference has
+    # to be resolved *now* — the fillet object is created in this same pass, and
+    # the final recompute happens only after every feature is in the Body. Same
+    # reason ``_add_sketch`` recomputes before adding geometry: without it, a
+    # perfectly good Pad reports "produced no shape to take edges from".
+    doc = getattr(target, "Document", None)
+    if doc is not None:
+        try:
+            doc.recompute()
+        except Exception as exc:  # noqa: BLE001
+            return [{"kind": "compile", "feature_id": f.get("id"),
+                     "message": (f"recompute before resolving {base_id!r}'s edges "
+                                 f"failed: {type(exc).__name__}: {exc}")}]
+    try:
+        shape = target.Shape
+    except Exception as exc:  # noqa: BLE001
+        return [{"kind": "compile", "feature_id": f.get("id"),
+                 "message": f"cannot read {base_id!r}'s shape: {type(exc).__name__}: {exc}"}]
+    if shape is None or shape.isNull():
+        return [{"kind": "compile", "feature_id": f.get("id"),
+                 "message": f"base_feature {base_id!r} produced no shape to take edges from"}]
+
+    for sub in subs:
+        try:
+            shape.getElement(sub)
+        except Exception as exc:  # noqa: BLE001
+            listing = _edge_names(target) if kind == "edges" else _face_names(target)
+            where = ("each edge's length and direction" if kind == "edges"
+                     else "each face's normal and centre")
+            return [{
+                "kind": "semantic", "feature_id": f.get("id"),
+                "message": (f"sub-element {sub!r} does not exist on feature {base_id!r} "
+                            f"({type(exc).__name__}: {exc}). Available {kind}: "
+                            f"{listing}. Call ir_digest to see {where} and pick by "
+                            "intent."),
+            }]
+    try:
+        obj.Base = (target, subs)
+    except Exception as exc:  # noqa: BLE001
+        return [{"kind": "compile", "feature_id": f.get("id"),
+                 "message": f"set Base={base_id!r}{subs} failed: {type(exc).__name__}: {exc}"}]
+    return []
+
+
+def _edge_names(obj, limit: int = 16) -> str:
+    """The edge names this object actually has, for an error message."""
+    try:
+        shape = obj.Shape
+    except Exception:  # noqa: BLE001
+        return "(shape unavailable)"
+    names = []
+    for i, edge in enumerate(shape.Edges):
+        names.append(f"Edge{i + 1}({edge.Length:.4g}mm)")
+        if len(names) >= limit:
+            names.append("…")
+            break
+    return ", ".join(names) or "(none)"
+
+
+def _face_names(obj, limit: int = 12) -> str:
+    """The planar face names this object actually has, for an error message."""
+    try:
+        shape = obj.Shape
+    except Exception:  # noqa: BLE001
+        return "(shape unavailable)"
+    names = []
+    for i, face in enumerate(shape.Faces):
+        try:
+            if face.Surface.__class__.__name__ != "Plane":
+                continue
+        except Exception:  # noqa: BLE001
+            continue
+        names.append(f"Face{i + 1}")
+        if len(names) >= limit:
+            names.append("…")
+            break
+    return ", ".join(names) or "(none)"
+
+
+def _set_axis_reference(obj, body, f: dict, ref_objects: dict) -> list[dict]:
+    """Point a revolution/groove (or pattern) at its axis/direction.
+
+    ``params.axis`` is one of ``X``/``Y``/``Z`` (the body's origin axis) or
+    ``H_Axis``/``V_Axis``/``N_Axis`` (the profile sketch's own axes; sketches
+    only). Revolution/groove default to ``V_Axis``: a profile drawn to one side of
+    the sketch's vertical axis is the ordinary way to revolve, and the sketch's
+    local frame follows any attachment or offset, which a fixed global axis would
+    not. A pattern has no profile, so it must name its axis — FreeCAD answers a
+    missing ``Direction`` with a single occurrence rather than an error, and a
+    valid-looking solid of the wrong size is exactly what this refuses to build.
+
+    An unrecognised name is a structured error rather than a silent fallback —
+    revolving, or repeating, about the wrong axis produces a plausible-looking
+    solid of the wrong size, which is far worse than a build that refuses.
+    """
+    op = f.get("op")
+    prop = _AXIS_LINK_OPS.get(op)
+    if prop is None or prop not in obj.PropertiesList:
+        return []
+
+    params = f.get("params") or {}
+    raw = params.get("axis")
+    if raw is None:
+        if op not in _PROFILE_AXIS_OPS:
+            return [{
+                "kind": "schema", "feature_id": f.get("id"),
+                "message": (
+                    f"{op} needs params.axis — 'X'/'Y'/'Z', the body axis to "
+                    "repeat along/about. Without it FreeCAD produces a single "
+                    "occurrence instead of the pattern, with no error."
+                ),
+            }]
+        raw = _AXIS_DEFAULT
+    key = str(raw).strip().lower().replace("-", "_").replace(" ", "_")
+    if op not in _PROFILE_AXIS_OPS and key not in _PATTERN_AXIS_NAMES:
+        return [{
+            "kind": "semantic", "feature_id": f.get("id"),
+            "message": (
+                f"axis={raw!r} is not a supported {op} axis; use one of "
+                f"{sorted(_PATTERN_AXIS_NAMES)} (the body's origin axes). "
+                "Sketch-local axes (H_Axis/V_Axis/N_Axis) belong to ops with a "
+                "profile sketch — a pattern repeats whole features, not a profile."
+            ),
+        }]
+    resolved = _AXIS_NAMES.get(key)
+    if resolved is None:
+        return [{
+            "kind": "semantic", "feature_id": f.get("id"),
+            "message": (
+                f"axis={raw!r} is not a supported revolution axis; use one of "
+                f"{sorted(_AXIS_NAMES)} (X/Y/Z = body origin axis, "
+                "H_Axis/V_Axis/N_Axis = the profile sketch's own axes)"
+            ),
+        }]
+
+    kind, ref = resolved
+    try:
+        if kind == "origin":
+            origin = getattr(body, "Origin", None)
+            if origin is None or not origin.OriginFeatures:
+                return [{"kind": "compile", "feature_id": f.get("id"),
+                         "message": "body has no Origin to take an axis from"}]
+            setattr(obj, prop, (origin.OriginFeatures[ref], [""]))
+        else:
+            profile_id = f.get("profile_sketch")
+            profile = ref_objects.get(profile_id) if profile_id else None
+            if profile is None:
+                return [{"kind": "compile", "feature_id": f.get("id"),
+                         "message": (
+                             f"axis={raw!r} needs the profile sketch, but "
+                             f"profile_sketch={profile_id!r} is not set")}]
+            setattr(obj, prop, (profile, [ref]))
+    except Exception as exc:  # noqa: BLE001
+        return [{
+            "kind": "compile", "feature_id": f.get("id"),
+            "message": f"set {prop}={raw!r} failed: {type(exc).__name__}: {exc}",
+        }]
+    return []
+
+
+def _set_plane_reference(obj, prop: str, f: dict, ref_objects: dict, *,
+                         op: str) -> list[dict]:
+    """Point a feature at the plane it reads (``MirrorPlane`` / ``NeutralPlane``).
+
+    Both are ``App::PropertyLinkSub``, like the edge references, so the IR carries
+    them in the typed ``plane`` field — the same shape a sketch uses for its
+    attachment (origin plane / datum plane / a face of a feature), which means one
+    mental model covers every place a plane is needed.
+
+    Not setting it is not an option in either case: FreeCAD does not raise, it
+    returns a NULL shape, and the body Tip then silently falls back to whatever
+    was there before. Measured on the real kernel — a ``mirrored`` with no
+    ``MirrorPlane`` and a ``draft`` with no ``NeutralPlane`` both produce a null
+    Tip with a clean recompute.
+    """
+    if prop not in obj.PropertiesList:
+        return []
+
+    plane = f.get("plane") or {}
+    kind = plane.get("kind")
+    if not kind:
+        return [{
+            "kind": "schema", "feature_id": f.get("id"),
+            "message": (f'{op} needs a "plane" ({prop} is a reference, and without '
+                        'one FreeCAD returns a null shape): '
+                        '{"kind":"origin_plane","plane":"XY"} | '
+                        '{"kind":"face","feature_id":…,"sub":"Face6"} | '
+                        '{"kind":"datum_plane","feature_id":…}'),
+        }]
+
+    doc = getattr(obj, "Document", None)
+    try:
+        if kind == "origin_plane":
+            name = str(plane.get("plane") or "").upper()
+            target = getattr(doc, f"{name}_Plane", None) if doc is not None else None
+            if target is None:
+                return [{
+                    "kind": "semantic", "feature_id": f.get("id"),
+                    "message": (f"plane {plane.get('plane')!r} is not one of the "
+                                "origin planes XY / XZ / YZ"),
+                }]
+            setattr(obj, prop, (target, [""]))
+        elif kind == "datum_plane":
+            target = ref_objects.get(plane.get("feature_id"))
+            if target is None:
+                return [{
+                    "kind": "not_found", "feature_id": f.get("id"),
+                    "message": (f"plane target {plane.get('feature_id')!r} is not a "
+                                "feature built before this one"),
+                }]
+            setattr(obj, prop, (target, [""]))
+        elif kind == "face":
+            target = ref_objects.get(plane.get("feature_id"))
+            if target is None:
+                return [{
+                    "kind": "not_found", "feature_id": f.get("id"),
+                    "message": (f"plane target {plane.get('feature_id')!r} is not a "
+                                "feature built before this one"),
+                }]
+            sub = plane.get("sub") or ""
+            if not sub:
+                return [{"kind": "schema", "feature_id": f.get("id"),
+                         "message": (f"plane target {plane.get('feature_id')!r} was "
+                                     "given no 'sub' face name (from ir_digest)")}]
+            # Same reason as ``_set_base_reference``: the face is looked up in a
+            # shape that only exists after a recompute, and a wrong name would
+            # otherwise become a silently wrong plane.
+            if doc is not None:
+                try:
+                    doc.recompute()
+                except Exception as exc:  # noqa: BLE001
+                    return [{"kind": "compile", "feature_id": f.get("id"),
+                             "message": (f"recompute before resolving "
+                                         f"{plane.get('feature_id')!r}'s faces failed: "
+                                         f"{type(exc).__name__}: {exc}")}]
+            try:
+                shape = target.Shape
+            except Exception as exc:  # noqa: BLE001
+                return [{"kind": "compile", "feature_id": f.get("id"),
+                         "message": f"cannot read the plane target's shape: {exc}"}]
+            if shape is None or shape.isNull():
+                return [{"kind": "compile", "feature_id": f.get("id"),
+                         "message": "the plane target produced no shape to take faces from"}]
+            try:
+                shape.getElement(sub)
+            except Exception as exc:  # noqa: BLE001
+                return [{
+                    "kind": "semantic", "feature_id": f.get("id"),
+                    "message": (f"plane face {sub!r} does not exist on "
+                                f"{plane.get('feature_id')!r} "
+                                f"({type(exc).__name__}). Available faces: "
+                                f"{_face_names(target)}. Call ir_digest to see each "
+                                "face's normal and centre and pick by intent."),
+                }]
+            setattr(obj, prop, (target, [sub]))
+        else:
+            return [{"kind": "semantic", "feature_id": f.get("id"),
+                     "message": (f"plane kind {kind!r} is not supported for {op}; "
+                                 "use origin_plane / face / datum_plane")}]
+    except Exception as exc:  # noqa: BLE001
+        return [{"kind": "compile", "feature_id": f.get("id"),
+                 "message": f"set {prop} failed: {type(exc).__name__}: {exc}"}]
+    return []
+
+
+#: The documented WORLD COORDINATES convention: the direction each origin plane
+#: is normal to (the draft's pull direction for that neutral plane).
+_ORIGIN_PLANE_AXIS = {
+    "XY": (0.0, 0.0, 1.0),
+    "XZ": (0.0, 1.0, 0.0),
+    "YZ": (1.0, 0.0, 0.0),
+}
+
+
+def _face_axis_in(shape, sub: str):
+    """World normal of a named planar face, or ``None`` (curved face / bad name)."""
+    try:
+        face = shape.getElement(sub)
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        surface = face.Surface
+        if surface.__class__.__name__ != "Plane":
+            return None
+        axis = surface.Axis
+        return (float(axis.x), float(axis.y), float(axis.z))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _draft_degenerate_errors(obj, f: dict) -> list[dict]:
+    """Faces parallel to the neutral plane cannot be drafted — refuse by name.
+
+    Measured on this kernel: FreeCAD tapers a face by rotating it about the line
+    where the face meets the neutral plane. A face *parallel* to that plane has no
+    such line, so the whole feature comes back Invalid — with a message that names
+    the feature but not the cause (probes: the four side faces about XZ, the +Y
+    face alone about XZ, the top face about XY, the bottom face about XY). The
+    references just set are checked here so the model is told which name is the
+    problem instead of being sent to guess — the same reason the face/edge names
+    are validated where they are resolved.
+
+    Only exactly-parallel planar faces are refused; anything else (curved faces, a
+    plane whose axis cannot be derived) is left to the kernel, whose failure for
+    those is loud as well.
+    """
+    try:
+        base_link = obj.Base or ()
+        base = base_link[0] if len(base_link) > 0 else None
+        base_subs = [s for s in (base_link[1] or []) if s] if len(base_link) > 1 else []
+        if base is None or not base_subs:
+            return []
+
+        plane = f.get("plane") or {}
+        kind = plane.get("kind")
+        if kind == "origin_plane":
+            axis = _ORIGIN_PLANE_AXIS.get(str(plane.get("plane") or "").upper())
+        elif kind == "face":
+            plane_link = obj.NeutralPlane or ()
+            plane_target = plane_link[0] if len(plane_link) > 0 else None
+            plane_sub = (plane_link[1] or [""])[0] if len(plane_link) > 1 else ""
+            axis = _face_axis_in(plane_target.Shape, plane_sub) if plane_target else None
+        else:
+            axis = None  # datum plane: no axis derived, the kernel reports it
+        if axis is None:
+            return []
+
+        doc = getattr(obj, "Document", None)
+        if doc is not None:
+            doc.recompute()
+        shape = base.Shape
+        if shape is None or shape.isNull():
+            return []
+        bad = []
+        for sub in base_subs:
+            face_axis = _face_axis_in(shape, sub)
+            if face_axis is None:
+                continue
+            if abs(sum(a * b for a, b in zip(face_axis, axis))) > 1.0 - 1e-12:
+                bad.append(sub)
+    except Exception:  # noqa: BLE001
+        return []
+    if not bad:
+        return []
+    return [{
+        "kind": "semantic", "feature_id": f.get("id"),
+        "message": (
+            f"draft cannot taper {'/'.join(bad)}: "
+            f"{'those faces are' if len(bad) > 1 else 'that face is'} parallel to the "
+            "neutral plane, so there is no line where they meet for FreeCAD to rotate "
+            "about (measured: the feature comes back Invalid and the Body Tip keeps "
+            "the un-drafted shape). Draft the faces that meet the neutral plane — "
+            "e.g. the four side faces about the XY plane — or choose a plane they cross."
+        ),
+    }]
+
 # Ops that pattern/transform other features (Originals = list of feature objects).
 _PATTERN_OPS = {
     "linear_pattern", "circular_pattern", "polar_pattern",
@@ -369,11 +823,32 @@ def _add_sketch(doc, body, s: dict, ref_objects: dict) -> dict:
             if tgt is None:
                 raise ValueError(f"face target not found: {plane.get('feature_id')!r}")
             sub = plane.get("sub") or ""
+            # A bad sub-element does NOT fail the attach: FreeCAD leaves the sketch
+            # unattached, the profile then collapses in its own frame, and the
+            # build fails with "does not form a closed wire ... all N profile
+            # points are at the same place ... check your world coordinates" —
+            # which sends the model to fix the coordinates instead of the name.
+            # Check the name against the real shape and say what is available.
+            if sub:
+                try:
+                    doc.recompute()
+                    shape = getattr(tgt, "Shape", None)
+                    if shape is not None and not shape.isNull():
+                        tgt.Shape.getElement(sub)
+                except Exception as exc:  # noqa: BLE001
+                    raise ValueError(
+                        f"sub-element {sub!r} does not exist on feature "
+                        f"{plane.get('feature_id')!r} ({type(exc).__name__}: {exc}). "
+                        f"Available faces: {_face_names(tgt)}. Call ir_digest to see "
+                        "each face's normal and centre and pick by intent."
+                    ) from exc
             sk.AttachmentSupport = (tgt, [sub])
         else:
             raise ValueError(f"unknown plane kind: {kind!r}")
         sk.MapMode = s.get("map_mode") or "FlatFace"
-        if plane.get("reversed"):
+        # SketchSpec.reversed lives on the SKETCH (schema field), not on the
+        # plane ref; a sketch-level flag was silently dropped here.
+        if plane.get("reversed") or s.get("reversed"):
             sk.MapReversed = True
         off = s.get("offset")
         if off:
@@ -499,7 +974,7 @@ def _assign_props(obj, params: dict) -> list[dict]:
     """
     errors = []
     for k, v in (params or {}).items():
-        if k in ("Originals",):
+        if k in _STRUCTURAL_PARAM_KEYS:
             continue
         pname = _prop_name(obj, k)
         if pname is None:
@@ -528,6 +1003,42 @@ def _assign_props(obj, params: dict) -> list[dict]:
                 "message": f"set {k}={v!r} failed: {type(exc).__name__}: {exc}",
             })
     return errors
+
+
+def _apply_placement(obj, f: dict) -> list[dict]:
+    """Put an origin-placed feature where the IR says, in world coordinates.
+
+    Measured: ``AttachmentOffset`` does nothing to a PartDesign primitive while
+    ``MapMode`` is Deactivated (the built shape stayed at x=[0,80] after setting
+    it), while ``Placement`` moves the solid — so the typed IR placement lands on
+    ``Placement`` and nowhere else. Rotation is about ``axis`` through
+    ``position``, counter-clockwise, in degrees.
+    """
+    spec = f.get("placement") or {}
+    pos = spec.get("position") or {}
+    axis = spec.get("axis")
+    angle = float(spec.get("angle") or 0.0)
+    fid = f.get("id")
+    if "Placement" not in obj.PropertiesList:
+        return [{
+            "kind": "semantic", "feature_id": fid,
+            "message": (f"{f.get('op')!r} has a placement but {obj.TypeId} carries no "
+                        "Placement property, so it cannot be positioned this way"),
+        }]
+    try:
+        rotation = (App.Rotation(App.Vector(float(axis["x"]), float(axis["y"]),
+                                            float(axis["z"])), angle)
+                    if axis else App.Rotation())
+        obj.Placement = App.Placement(
+            App.Vector(float(pos.get("x", 0.0)), float(pos.get("y", 0.0)),
+                       float(pos.get("z", 0.0))),
+            rotation)
+    except Exception as exc:  # noqa: BLE001
+        return [{
+            "kind": "compile", "feature_id": fid,
+            "message": f"set placement failed: {type(exc).__name__}: {exc}",
+        }]
+    return []
 
 
 def _apply_feature(doc, body, f: dict, ref_objects: dict) -> dict:
@@ -570,7 +1081,15 @@ def _apply_feature(doc, body, f: dict, ref_objects: dict) -> dict:
     # pattern / mirror -> Originals (list of referenced feature objects)
     if op in _PATTERN_OPS and "Originals" in obj.PropertiesList:
         originals = [ref_objects[r] for r in (f.get("refs") or []) if r in ref_objects]
-        if originals:
+        if not originals:
+            # A pattern with nothing to repeat builds an empty feature, and the
+            # body Tip then falls back to the previous shape — a silent no-op.
+            state["errors"].append({
+                "kind": "semantic", "feature_id": f.get("id"),
+                "message": (f"{op} needs at least one feature in 'refs' to repeat; "
+                            "list the feature ids it should copy"),
+            })
+        else:
             try:
                 obj.Originals = originals
             except Exception as exc:  # noqa: BLE001
@@ -578,6 +1097,32 @@ def _apply_feature(doc, body, f: dict, ref_objects: dict) -> dict:
                     "kind": "compile", "feature_id": f.get("id"),
                     "message": f"set Originals failed: {type(exc).__name__}: {exc}",
                 })
+
+    # revolution / groove / patterns -> the axis or direction LinkSub
+    if op in _AXIS_OPS:
+        state["errors"].extend(_set_axis_reference(obj, body, f, ref_objects))
+
+    # mirrored -> MirrorPlane; draft -> NeutralPlane: one typed "plane" field,
+    # two features that read it (both silently null without it).
+    if op in _PLANE_OPS:
+        state["errors"].extend(_set_plane_reference(
+            obj, _PLANE_OPS[op], f, ref_objects, op=op))
+
+    # fillet / chamfer -> Base = (feature, [edge names]);
+    # draft re-shapes and thickness opens -> Base = (feature, [face names])
+    if op in _SUB_ELEMENT_OPS:
+        state["errors"].extend(_set_base_reference(
+            obj, f, ref_objects, op=op,
+            kind="faces" if op in _FACE_SUB_OPS else "edges"))
+
+    # draft keeps records of faces it cannot taper at all (no intersection line
+    # with the neutral plane) — the kernel only says "Invalid" for those.
+    if op == "draft":
+        state["errors"].extend(_draft_degenerate_errors(obj, f))
+
+    # primitives -> Placement (there is no sketch to carry the position)
+    if f.get("placement"):
+        state["errors"].extend(_apply_placement(obj, f))
 
     state["errors"].extend(_assign_props(obj, params))
     body.addObject(obj)
@@ -637,7 +1182,11 @@ def _build(ir: dict, out_dir: str):
                 "suppressed": bool(f.get("suppress")),
             })
 
-    doc.recompute()
+    try:
+        doc.recompute()
+    except Exception as exc:  # noqa: BLE001 — per-feature Invalid state below
+        errors.append({"kind": "compile", "feature_id": None,
+                       "message": f"recompute raised: {type(exc).__name__}: {exc}"})
 
     # ── why is there no solid? ────────────────────────────────────────────────
     #
@@ -647,7 +1196,30 @@ def _build(ir: dict, out_dir: str):
     # "handler reported failure". Observed live: a phone stand whose side profile
     # was silently dropped by the (then missing) world → sketch-frame transform.
     # The model had nothing to repair and the user nothing to read.
+    #
+    # This runs FIRST among the post-recompute checks on purpose: the supervisor
+    # forwards only the first error, and the reason geometry is missing (an
+    # unclosed profile wire, a collapsed sketch) is the root cause — a generic
+    # "feature is Invalid" line for the pad that consumed such a sketch would
+    # bury it. A body whose solid genuinely built produces nothing here, so the
+    # checks below still surface as the first error in their own cases.
     errors.extend(_no_geometry_errors(ir, doc, ref_objects))
+
+    # A feature can fail to compute while EARLIER features still hold. The
+    # Body's Tip then keeps the last good shape, the solid measures fine, and
+    # the build looks like a success with a subtly wrong part — the "partial
+    # Tip" failure mode. FreeCAD marks such features "Invalid" in obj.State
+    # after the recompute; surface that as a compile error so the Gate never
+    # grades a stale Tip. Suppressed features are intentionally absent.
+    errors.extend(_invalid_feature_errors(ir, ref_objects))
+
+    # FreeCAD treats a cut of nothing as SUCCESS: a Pocket whose profile misses
+    # the material (or a Pad extruded into empty space) computes "fine", the Tip
+    # keeps the previous solid, and the build would report ok with a valid
+    # shape that is not the IR's declared result — a hole that never happened,
+    # reported as built. A solid feature that leaves the tip unchanged changed
+    # nothing, so it is a compile error naming the feature.
+    errors.extend(_noop_feature_errors(ir, ref_objects))
 
     # Collect resulting solids from every body.
     body_shapes = []
@@ -741,6 +1313,113 @@ def _profile_hint(sk, s: dict) -> str:
             f"own frame, so the profile encloses no area." + framing
         )
     return ""
+
+
+def _invalid_feature_errors(ir: dict, ref_objects: dict) -> list[dict]:
+    """Features FreeCAD left in "Invalid" state after the final recompute.
+
+    A failed feature does not clear the Body — the Tip keeps the last shape
+    that DID compute — so without this check a build where the final feature
+    silently failed still measures and exports the earlier solid as if the
+    whole IR had built. Suppressed features are skipped on purpose: they are
+    declared absent, and their state is not evidence of anything.
+    """
+    out: list[dict] = []
+    for b in ir.get("bodies") or []:
+        for f in b.get("features") or []:
+            if f.get("suppress"):
+                continue
+            fid = f.get("id")
+            obj = ref_objects.get(fid)
+            if obj is None:
+                continue
+            try:
+                state = obj.State
+            except Exception:  # noqa: BLE001
+                continue
+            if "Invalid" in state:
+                out.append({
+                    "kind": "compile", "feature_id": fid,
+                    "message": (
+                        f"feature {fid!r} (op={f.get('op')!r}) is Invalid after"
+                        " recompute: it did not compute. The Body Tip still"
+                        " holds an earlier shape, so the exported solid is"
+                        " NOT the IR's declared result — repair this feature."
+                    ),
+                })
+    return out
+
+
+def _same_solid(a, b) -> bool:
+    """True if two tip shapes are the same solid (a feature changed nothing).
+
+    ``isSame``/``isEqual`` catch OCC returning the input shape unchanged from a
+    boolean. The volume/area fallback catches the observed live behaviour of a
+    *disjoint* boolean: OCC still rebuilds the solid, so identity fails, but the
+    rebuild only perturbs the last digits (measured: |dV| ~ 3e-10 on a 4e5 mm3
+    part) — orders of magnitude below any cut that removes real material, while
+    a genuine no-op stays within a tight absolute epsilon.
+    """
+    try:
+        if a.isSame(b) or a.isEqual(b):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        vol_eps = max(1e-6, 1e-12 * max(abs(a.Volume), abs(b.Volume)))
+        area_eps = max(1e-6, 1e-12 * max(abs(a.Area), abs(b.Area)))
+        return (abs(a.Volume - b.Volume) <= vol_eps
+                and abs(a.Area - b.Area) <= area_eps)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _noop_feature_errors(ir: dict, ref_objects: dict) -> list[dict]:
+    """Solid features that left the body's tip identical to the previous tip.
+
+    FreeCAD reports a pocket whose profile misses the material (and a pad
+    extruded away from the body) as a *successful* no-op: the feature is not
+    Invalid, the previous solid still measures valid, and the build would say
+    ok — while the declared hole/boss simply does not exist in the result.
+    Whatever the IR declared, a feature that changed nothing did not implement
+    it, so it is surfaced as an attributable compile error. Datum planes carry
+    no solid and are excluded; suppressed/Invalid features are handled above.
+    """
+    out: list[dict] = []
+    for b in ir.get("bodies") or []:
+        prev_shape = None
+        for f in b.get("features") or []:
+            if f.get("suppress") or f.get("op") == "datum_plane":
+                continue
+            obj = ref_objects.get(f.get("id"))
+            if obj is None:
+                continue
+            try:
+                if "Invalid" in obj.State:
+                    # Already reported by _invalid_feature_errors; its stale
+                    # shape must not become the baseline for the next feature.
+                    prev_shape = None
+                    continue
+                shape = obj.Shape
+            except Exception:  # noqa: BLE001
+                continue
+            if shape is None or shape.isNull():
+                continue
+            if prev_shape is not None and _same_solid(shape, prev_shape):
+                out.append({
+                    "kind": "compile", "feature_id": f.get("id"),
+                    "message": (
+                        f"feature {f.get('id')!r} (op={f.get('op')!r}) did not "
+                        "change the solid: the result is identical to the "
+                        "previous feature. A pocket/groove whose profile does "
+                        "not intersect the material, or a pad/revolution "
+                        "extruded into empty space, produces this. Check the "
+                        "sketch plane, attachment and direction against the "
+                        "WORLD COORDINATES contract."
+                    ),
+                })
+            prev_shape = shape
+    return out
 
 
 def _no_geometry_errors(ir: dict, doc, ref_objects: dict) -> list[dict]:

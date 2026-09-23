@@ -1,37 +1,183 @@
 [
-  {"name": "ir_patch", "args": {
-    "base_version": "current",
-    "summary": "rebuild the slot profile around its own origin and position it with the sketch offset",
-    "ops": [
-      {"op": "update_sketch",
-       "target_id": "sk_slot",
-       "reason": "the previous constraint set was over-determined: dimensioning both a line's start point and a line's end point in absolute coordinates conflicted with the rectangle's horizontal/vertical constraints. Rebuilt with the proven recipe — model the 40x20 profile around the sketch's OWN origin (bind one line's start to the sketch origin, then dimension the opposite endpoints), and place it in the plate with the sketch offset instead of absolute dimensions.",
-       "payload": {
-         "geometry": [
-           {"id": "g0", "kind": "line", "points": [{"x": 0, "y": 0, "z": 0}, {"x": 40, "y": 0, "z": 0}]},
-           {"id": "g1", "kind": "line", "points": [{"x": 40, "y": 0, "z": 0}, {"x": 40, "y": 20, "z": 0}]},
-           {"id": "g2", "kind": "line", "points": [{"x": 40, "y": 20, "z": 0}, {"x": 0, "y": 20, "z": 0}]},
-           {"id": "g3", "kind": "line", "points": [{"x": 0, "y": 20, "z": 0}, {"x": 0, "y": 0, "z": 0}]}
-         ],
-         "constraints": [
-           {"type": "Coincident", "refs": [0, 1, -1, 1]},
-           {"type": "Coincident", "refs": [0, 2, 1, 1]},
-           {"type": "Coincident", "refs": [1, 2, 2, 1]},
-           {"type": "Coincident", "refs": [2, 2, 3, 1]},
-           {"type": "Coincident", "refs": [3, 2, 0, 1]},
-           {"type": "Horizontal", "refs": [0]},
-           {"type": "Horizontal", "refs": [2]},
-           {"type": "Vertical", "refs": [1]},
-           {"type": "Vertical", "refs": [3]},
-           {"type": "DistanceX", "refs": [0, 2], "value": 40.0},
-           {"type": "DistanceY", "refs": [1, 2], "value": 20.0}
-         ],
-         "offset": {"x": 20.0, "y": 15.0, "z": 0.0}
-       }}
-    ]
-  }},
-
-  {"name": "ir_commit", "args": {"message": "slot profile rebuilt around its own origin"}},
-  {"name": "ir_digest", "args": {}},
-  {"name": "geo_view", "args": {"views": ["iso", "top"], "style": "flat_edges"}}
+ {
+  "name": "ir_patch",
+  "args": {
+   "base_version": "current",
+   "summary": "rebuild the slot profile around its own origin and position it with the sketch offset",
+   "ops": [
+    {
+     "op": "update_sketch",
+     "target_id": "sk_slot",
+     "reason": "the previous constraint set was over-determined: dimensioning both a line's start point and a line's end point in absolute coordinates conflicted with the rectangle's horizontal/vertical constraints. Rebuilt with the proven recipe — model the 40x20 profile around the sketch's OWN origin (bind one line's start to the sketch origin, then dimension the opposite endpoints), and place it in the plate with the sketch offset instead of absolute dimensions. [updated: the sketch `offset` it used does not position a profile and deforms an origin-bound one, so it is now refused. Coordinates are world coordinates; the profile is placed by its points and the origin bind removed.]",
+     "payload": {
+      "geometry": [
+       {
+        "id": "g0",
+        "kind": "line",
+        "points": [
+         {
+          "x": 20.0,
+          "y": 15.0,
+          "z": 0
+         },
+         {
+          "x": 60.0,
+          "y": 15.0,
+          "z": 0
+         }
+        ]
+       },
+       {
+        "id": "g1",
+        "kind": "line",
+        "points": [
+         {
+          "x": 60.0,
+          "y": 15.0,
+          "z": 0
+         },
+         {
+          "x": 60.0,
+          "y": 35.0,
+          "z": 0
+         }
+        ]
+       },
+       {
+        "id": "g2",
+        "kind": "line",
+        "points": [
+         {
+          "x": 60.0,
+          "y": 35.0,
+          "z": 0
+         },
+         {
+          "x": 20.0,
+          "y": 35.0,
+          "z": 0
+         }
+        ]
+       },
+       {
+        "id": "g3",
+        "kind": "line",
+        "points": [
+         {
+          "x": 20.0,
+          "y": 35.0,
+          "z": 0
+         },
+         {
+          "x": 20.0,
+          "y": 15.0,
+          "z": 0
+         }
+        ]
+       }
+      ],
+      "constraints": [
+       {
+        "type": "Coincident",
+        "refs": [
+         0,
+         2,
+         1,
+         1
+        ]
+       },
+       {
+        "type": "Coincident",
+        "refs": [
+         1,
+         2,
+         2,
+         1
+        ]
+       },
+       {
+        "type": "Coincident",
+        "refs": [
+         2,
+         2,
+         3,
+         1
+        ]
+       },
+       {
+        "type": "Coincident",
+        "refs": [
+         3,
+         2,
+         0,
+         1
+        ]
+       },
+       {
+        "type": "Horizontal",
+        "refs": [
+         0
+        ]
+       },
+       {
+        "type": "Horizontal",
+        "refs": [
+         2
+        ]
+       },
+       {
+        "type": "Vertical",
+        "refs": [
+         1
+        ]
+       },
+       {
+        "type": "Vertical",
+        "refs": [
+         3
+        ]
+       },
+       {
+        "type": "DistanceX",
+        "refs": [
+         0,
+         2
+        ],
+        "value": 40.0
+       },
+       {
+        "type": "DistanceY",
+        "refs": [
+         1,
+         2
+        ],
+        "value": 20.0
+       }
+      ],
+      "require_fully_constrained": false
+     }
+    }
+   ]
+  }
+ },
+ {
+  "name": "ir_commit",
+  "args": {
+   "message": "slot profile rebuilt around its own origin"
+  }
+ },
+ {
+  "name": "ir_digest",
+  "args": {}
+ },
+ {
+  "name": "geo_view",
+  "args": {
+   "views": [
+    "iso",
+    "top"
+   ],
+   "style": "flat_edges"
+  }
+ }
 ]

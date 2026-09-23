@@ -44,6 +44,15 @@ def _fmt_params(params: dict) -> str:
     return " " + " ".join(parts)
 
 
+def _face_fields(f: Any) -> tuple[str, float, list, list]:
+    """Read a face entry whether it arrived as a ``FaceInfo`` or a raw dict."""
+    if isinstance(f, dict):
+        return (str(f.get("name", "?")), float(f.get("area") or 0.0),
+                list(f.get("normal") or []), list(f.get("center") or []))
+    return (str(getattr(f, "name", "?")), float(getattr(f, "area", 0.0) or 0.0),
+            list(getattr(f, "normal", None) or []), list(getattr(f, "center", None) or []))
+
+
 def _sketch_state_line(digest: GeometryDigest, ir: IrDocument) -> list[str]:
     lines: list[str] = []
     for sk in ir.all_sketches():
@@ -73,17 +82,21 @@ def render_digest_text(digest: GeometryDigest, ir: IrDocument) -> str:
     out.append(f"# Geometry digest — model {digest.model_id} v{digest.ir_version}")
     out.append(f"shape_type: {digest.shape_type or 'n/a'}  valid={digest.is_valid}")
 
-    # feature chain in build order (name, op, key params)
-    out.append("feature_chain (build order):")
+    # Feature chain in build order (name, stable id, op, key params).
+    #
+    # The stable ``id`` is printed, not just the human name: a later turn edits
+    # the model by referencing these ids ("the four holes the user just made"),
+    # and a model that only ever saw names has to guess at ids it was never told.
+    out.append("feature_chain (build order; id is the stable reference for ir_patch):")
     if digest.feature_chain:
         for fd in digest.feature_chain:
             mark = " [SUPPRESSED]" if fd.suppressed else ""
-            out.append(f"  - {fd.name} ({fd.op}){_fmt_params(fd.params)}{mark}")
+            out.append(f"  - {fd.name} [{fd.id}] ({fd.op}){_fmt_params(fd.params)}{mark}")
     else:
         # fall back to the IR feature order if the worker left feature_chain empty
         for b in ir.bodies:
             for f in b.features:
-                out.append(f"  - {f.name} ({f.op}){_fmt_params(f.params)}")
+                out.append(f"  - {f.name} [{f.id}] ({f.op}){_fmt_params(f.params)}")
 
     # per-sketch constraint state
     out.append("sketches:")
@@ -111,6 +124,46 @@ def render_digest_text(digest: GeometryDigest, ir: IrDocument) -> str:
           if not k.endswith("__fully_constrained") and not k.endswith("__dof")}
     if kd:
         out.append("key_dimensions: " + " ".join(f"{k}={v:g}" for k, v in kd.items()))
+
+    # Planar faces, with the name a `plane: {"kind": "face"}` sketch attaches to.
+    # Printed because the tool description tells the model to look the name up
+    # here rather than guess it — an instruction that was unfollowable while this
+    # block did not exist.
+    faces = getattr(digest, "faces", None) or []
+    if faces:
+        out.append(
+            f"planar faces ({len(faces)}; attach a sketch with "
+            'plane={"kind":"face","feature_id":<feature>,"sub":"<name>"}):'
+        )
+        for f in faces:
+            name, area, normal, center = _face_fields(f)
+            line = f"  - {name}: area={area:g}"
+            if normal and center:
+                line += (f" normal=({normal[0]:g}, {normal[1]:g}, {normal[2]:g})"
+                         f" center=({center[0]:g}, {center[1]:g}, {center[2]:g})")
+            out.append(line)
+
+    # Edges, with the name a fillet/chamfer selects. Same reasoning as the faces:
+    # the description points the model here, so here is where the names must be.
+    edges = getattr(digest, "edges", None) or []
+    if edges:
+        out.append(
+            f"edges ({len(edges)}; select with base_feature=<feature> + "
+            'sub_elements=["EdgeN", …]):'
+        )
+        for e in edges:
+            name = e.get("name") if isinstance(e, dict) else getattr(e, "name", "?")
+            kind = e.get("kind") if isinstance(e, dict) else getattr(e, "kind", "")
+            length = e.get("length") if isinstance(e, dict) else getattr(e, "length", 0.0)
+            mid = (e.get("mid") if isinstance(e, dict) else getattr(e, "mid", None)) or []
+            direction = ((e.get("direction") if isinstance(e, dict)
+                          else getattr(e, "direction", None)) or [])
+            line = f"  - {name}: {kind} length={length:g}"
+            if mid:
+                line += f" mid=({mid[0]:g}, {mid[1]:g}, {mid[2]:g})"
+            if direction:
+                line += f" dir=({direction[0]:g}, {direction[1]:g}, {direction[2]:g})"
+            out.append(line)
 
     # spec deviation
     if digest.spec_deviation:

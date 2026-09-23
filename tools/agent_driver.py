@@ -112,11 +112,12 @@ async def run_calls(svc, model_id: str, calls: list[dict], *, kind: TurnKind) ->
         hook_ctx=HookContext(
             thread_id=f"hand-{model_id}", turn_id="hand-turn-1", model_id=model_id
         ),
+        # `geo_view` is gated on declared visual checkpoints; when the operator is
+        # driving by hand every step is treated as a checkpoint (the engine
+        # normally sets this per step from the turn kind). Set on THIS context —
+        # the shared services bundle is not ours to mutate.
+        visual_ok=True,
     )
-    # `geo_view` is gated on declared visual checkpoints; when the operator is
-    # driving by hand every step is treated as a checkpoint (the engine normally
-    # sets this from the turn kind).
-    svc._visual_ok = True
 
     failures = 0
     for i, call in enumerate(calls, 1):

@@ -1,0 +1,140 @@
+"""Server-side enforcement of the tool argument schemas (task book §5-A).
+
+The ``params_schema`` on every ``ToolSpec`` was sent to the model as part of the
+function declaration and then **never checked**. So ``geo_view {"views": "iso"}``
+— a string where an array belongs — reached the handler, where ``views`` is truthy
+and got passed to the worker as-is. The declaration was documentation, not a
+contract.
+
+This module turns it into a contract using only the standard library. The
+supported keyword set is deliberately small and closed: :data:`SUPPORTED`
+lists it, and a unit test walks every registered tool's schema asserting that no
+keyword outside that set appears. A schema can therefore not start using a
+constraint that nothing enforces.
+
+What it does *not* do: full JSON Schema. ``$ref`` resolves against ``$defs``;
+``anyOf``/``oneOf`` pass when at least one branch passes. Deep, op-specific
+validation stays where it already lives (``IrPatch.model_validate`` inside
+``ir_patch``), because that is a typed model and this is a shape check.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+#: Keywords this checker understands.
+SUPPORTED: frozenset[str] = frozenset({
+    "type", "required", "properties", "items", "enum",
+    "anyOf", "oneOf", "$ref", "$defs", "additionalProperties",
+    # annotations: carried in the schema, no constraint to enforce
+    "title", "description", "default",
+})
+
+#: Annotations only — present in the schemas, deliberately not enforced.
+ANNOTATIONS: frozenset[str] = frozenset({"title", "description", "default"})
+
+_TYPE_NAMES = ("object", "array", "string", "integer", "number", "boolean", "null")
+
+
+def _type_ok(value: Any, expected: str) -> bool:
+    if expected == "object":
+        return isinstance(value, dict)
+    if expected == "array":
+        return isinstance(value, list)
+    if expected == "string":
+        return isinstance(value, str)
+    if expected == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected == "boolean":
+        return isinstance(value, bool)
+    if expected == "null":
+        return value is None
+    # An unknown type name is a schema we cannot enforce; refusing to guess is
+    # safer than passing everything (or nothing) silently.
+    return False
+
+
+def _describe(value: Any, limit: int = 60) -> str:
+    text = repr(value)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _resolve_ref(ref: str, root: dict) -> dict | None:
+    if not isinstance(ref, str) or not ref.startswith("#/"):
+        return None
+    node: Any = root
+    for part in ref[2:].split("/"):
+        if not isinstance(node, dict) or part not in node:
+            return None
+        node = node[part]
+    return node if isinstance(node, dict) else None
+
+
+def check(args: Any, schema: dict, *, path: str = "arguments", root: dict | None = None) -> list[str]:
+    """Return a list of human-readable problems; empty means the args conform."""
+    if not isinstance(schema, dict):
+        return []
+    root = root if root is not None else schema
+    problems: list[str] = []
+
+    ref = schema.get("$ref")
+    if ref is not None:
+        target = _resolve_ref(ref, root)
+        if target is None:
+            return [f"{path}: schema references {ref!r}, which is not in $defs"]
+        return check(args, target, path=path, root=root)
+
+    for branch_key in ("anyOf", "oneOf"):
+        branches = schema.get(branch_key)
+        if isinstance(branches, list) and branches:
+            attempt = [check(args, b, path=path, root=root) for b in branches]
+            if not any(not a for a in attempt):
+                # Report the branch that got furthest (fewest problems) — that is
+                # the one the caller most likely meant.
+                best = min(attempt, key=len)
+                problems.append(
+                    f"{path}: matches none of the {branch_key} alternatives "
+                    f"(closest: {'; '.join(best)})"
+                )
+            return problems
+
+    expected = schema.get("type")
+    if expected is not None:
+        names = [expected] if isinstance(expected, str) else list(expected)
+        if not any(_type_ok(args, n) for n in names):
+            return [f"{path}: expected {'/'.join(names)}, got {type(args).__name__} "
+                    f"({_describe(args)})"]
+
+    enum = schema.get("enum")
+    if isinstance(enum, list) and args not in enum:
+        return [f"{path}: {_describe(args)} is not one of {enum}"]
+
+    if isinstance(args, dict):
+        for name in schema.get("required") or []:
+            if name not in args:
+                problems.append(f"{path}: missing required property {name!r}")
+        props = schema.get("properties") or {}
+        extra = schema.get("additionalProperties")
+        for key, value in args.items():
+            if key in props:
+                problems.extend(check(value, props[key], path=f"{path}.{key}", root=root))
+            elif extra is False:
+                problems.append(
+                    f"{path}: unknown property {key!r} "
+                    f"(allowed: {sorted(props) or 'none'})")
+
+    if isinstance(args, list):
+        items = schema.get("items")
+        if isinstance(items, dict):
+            for i, value in enumerate(args):
+                problems.extend(check(value, items, path=f"{path}[{i}]", root=root))
+
+    return problems
+
+
+def validate_tool_args(args: Any, spec: Any) -> list[str]:
+    """Problems with ``args`` against a ``ToolSpec``'s declared schema."""
+    schema = getattr(spec, "params_schema", None) or {}
+    return check(args if args is not None else {}, schema)

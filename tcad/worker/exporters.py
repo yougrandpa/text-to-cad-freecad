@@ -8,10 +8,32 @@ TopoShape; fcstd uses doc.saveAs.
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 
 from tcad.worker.compiler import _build, _close_doc
 from tcad.worker.protocol import EXPORT_FORMATS
+
+# Mirrors ``tcad/core/ids.py``: the worker runs under an import ban (stdlib +
+# FreeCAD only, see compiler.py), so the rule is duplicated here rather than
+# imported. ``tests/unit/test_ids.py`` asserts the two agree, so they cannot
+# drift into "the API validated one thing and the writer wrote another".
+_SAFE_COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def _safe_component(value: object, *, kind: str) -> str:
+    """The name must be a single path component, or the export is refused.
+
+    This is the last line before bytes hit the disk: even if a caller skipped the
+    supervisor-side check, ``name = "../../x"`` must not be able to write outside
+    ``out_dir``.
+    """
+    if not isinstance(value, str) or not _SAFE_COMPONENT_RE.match(value):
+        raise ValueError(
+            f"unsafe {kind}: {value!r}; expected letters/digits/'.'/'_'/'-', "
+            "1-64 chars, no path separators"
+        )
+    return value
 
 
 def export_artifacts(ir: dict | None = None, out_dir: str = "", exports=None,
@@ -31,12 +53,22 @@ def export_artifacts(ir: dict | None = None, out_dir: str = "", exports=None,
     exports = [e for e in exports if e in EXPORT_FORMATS]
 
     built = _build(ir, out_dir)
+    # Never export a shape the build itself failed to produce: a stale or
+    # partial Tip must not be delivered as a valid artefact.
+    if built["errors"]:
+        _close_doc(built["doc"])
+        return {"ok": False, "files": {}, "errors": built["errors"]}
     doc = built["doc"]
     shape = built["result_shape"]
 
     files: dict = {}
     errors: list = []
-    model_id = ir.get("model_id") or "model"
+    try:
+        model_id = _safe_component(ir.get("model_id") or "model", kind="model_id")
+    except ValueError as exc:
+        _close_doc(built["doc"])
+        return {"ok": False, "files": {},
+                "errors": [{"kind": "schema", "feature_id": None, "message": str(exc)}]}
 
     for fmt in exports:
         try:

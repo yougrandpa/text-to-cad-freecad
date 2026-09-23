@@ -1,0 +1,31 @@
+{
+  "sample": "E",
+  "schema_version": 1,
+  "version": 1,
+  "units": "mm",
+  "coordinate_system": "right-handed; plate occupies x∈[0,w], y∈[0,h], z∈[0,t]",
+  "raw_text": "轴线沿 Z、外径 30、高 40 的圆柱，在外壁 z=18..22 处开一圈深 5 的周向环槽",
+  "user_stated_requirements": [
+    {
+      "kind": "cylinder_with_groove",
+      "value": {
+        "axis": "Z",
+        "diameter": 30.0,
+        "height": 40.0,
+        "groove_inner_radius": 10.0,
+        "groove_z": [
+          18.0,
+          22.0
+        ],
+        "groove_depth": 5.0,
+        "feature": "groove"
+      },
+      "evidence": "外径 30、高 40；在外壁 z=18..22 处开一圈深 5 的周向环槽",
+      "confirmed": true
+    }
+  ],
+  "system_inferred": [],
+  "later_modifications": [],
+  "generated_from": null,
+  "attempt_id": "acc-20260923T144323Z-2585065a"
+}

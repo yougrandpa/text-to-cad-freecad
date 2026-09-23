@@ -1,0 +1,31 @@
+{
+  "expected_volume": 31415.926535897932,
+  "step_readback_volume": 31415.926535897932,
+  "measured_holes": [
+    {
+      "radius": 5.0,
+      "diameter": 10.0,
+      "axis": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "depth": 50.0,
+      "through": true,
+      "faces": 1,
+      "index": 0
+    }
+  ],
+  "previews": [
+    "preview_iso.png",
+    "preview_front.png",
+    "preview_top.png",
+    "preview_right.png"
+  ],
+  "verified": true
+}

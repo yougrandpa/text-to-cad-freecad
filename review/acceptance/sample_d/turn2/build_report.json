@@ -1,0 +1,12 @@
+{
+  "expected_volume": 4272.566008882119,
+  "step_readback_volume": 4272.566008882118,
+  "measured_holes": [],
+  "previews": [
+    "preview_iso.png",
+    "preview_front.png",
+    "preview_top.png",
+    "preview_right.png"
+  ],
+  "verified": true
+}

@@ -1,0 +1,232 @@
+{
+  "model_id": "accept_e",
+  "ir_version": 0,
+  "feature_chain": [
+    {
+      "id": "ft_cyl",
+      "name": "cylinder",
+      "op": "pad",
+      "params": {
+        "length": 40.0,
+        "type": "Length"
+      },
+      "suppressed": false
+    },
+    {
+      "id": "ft_groove",
+      "name": "groove",
+      "op": "groove",
+      "params": {
+        "angle": 360.0,
+        "type": "Angle",
+        "axis": "V_Axis"
+      },
+      "suppressed": false
+    }
+  ],
+  "topology": {
+    "solids": 1,
+    "faces": 7,
+    "edges": 9,
+    "vertexes": 6,
+    "shells": 1
+  },
+  "bbox": {
+    "x": 30.0,
+    "y": 30.000000000000007,
+    "z": 40.0,
+    "x_min": -15.0,
+    "y_min": -15.0,
+    "z_min": 0.0
+  },
+  "volume": 26703.53755551324,
+  "area": 5843.362335677017,
+  "shape_type": "Compound",
+  "is_valid": true,
+  "key_dimensions": {
+    "x": 30.0,
+    "y": 30.000000000000007,
+    "z": 40.0,
+    "min_wall_thickness": 4.0,
+    "sk_outer__fully_constrained": 0.0,
+    "sk_outer__dof": 2.0,
+    "sk_groove__fully_constrained": 0.0,
+    "sk_groove__dof": 8.0
+  },
+  "holes": [],
+  "faces": [
+    {
+      "name": "Face2",
+      "area": 706.858347,
+      "normal": [
+        -0.0,
+        -0.0,
+        -1.0
+      ],
+      "center": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "Face3",
+      "area": 392.699082,
+      "normal": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "center": [
+        0.0,
+        -0.0,
+        18.0
+      ]
+    },
+    {
+      "name": "Face5",
+      "area": 392.699082,
+      "normal": [
+        0.0,
+        -0.0,
+        -1.0
+      ],
+      "center": [
+        0.0,
+        0.0,
+        22.0
+      ]
+    },
+    {
+      "name": "Face7",
+      "area": 706.858347,
+      "normal": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "center": [
+        0.0,
+        0.0,
+        40.0
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "name": "Edge1",
+      "kind": "Circle",
+      "length": 94.24778,
+      "mid": [
+        -15.0,
+        0.0,
+        0.0
+      ],
+      "direction": []
+    },
+    {
+      "name": "Edge2",
+      "kind": "Line",
+      "length": 18.0,
+      "mid": [
+        15.0,
+        0.0,
+        9.0
+      ],
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "name": "Edge3",
+      "kind": "Circle",
+      "length": 94.24778,
+      "mid": [
+        -15.0,
+        0.0,
+        18.0
+      ],
+      "direction": []
+    },
+    {
+      "name": "Edge4",
+      "kind": "Circle",
+      "length": 62.831853,
+      "mid": [
+        -10.0,
+        0.0,
+        18.0
+      ],
+      "direction": []
+    },
+    {
+      "name": "Edge5",
+      "kind": "Circle",
+      "length": 62.831853,
+      "mid": [
+        -10.0,
+        0.0,
+        22.0
+      ],
+      "direction": []
+    },
+    {
+      "name": "Edge6",
+      "kind": "Line",
+      "length": 4.0,
+      "mid": [
+        10.0,
+        0.0,
+        20.0
+      ],
+      "direction": [
+        0.0,
+        -0.0,
+        -1.0
+      ]
+    },
+    {
+      "name": "Edge7",
+      "kind": "Circle",
+      "length": 94.24778,
+      "mid": [
+        -15.0,
+        0.0,
+        22.0
+      ],
+      "direction": []
+    },
+    {
+      "name": "Edge8",
+      "kind": "Line",
+      "length": 18.0,
+      "mid": [
+        15.0,
+        0.0,
+        31.0
+      ],
+      "direction": [
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    {
+      "name": "Edge9",
+      "kind": "Circle",
+      "length": 94.24778,
+      "mid": [
+        -15.0,
+        0.0,
+        40.0
+      ],
+      "direction": []
+    }
+  ],
+  "spec_deviation": {},
+  "measurements_available": true,
+  "text": "model: accept_e (v0)\nfeature chain (2):\n  1. cylinder [pad] length=40.0 type=Length\n  2. groove [groove] angle=360.0 type=Angle axis=V_Axis\ntopology: solids=1 faces=7 edges=9 vertexes=6 shells=1\nbbox: x=30.0000 y=30.0000 z=40.0000 (min x=-15.0000 y=-15.0000 z=0.0000)\nvolume: 26703.537556  area: 5843.362336\nshape_type: Compound  valid: True\nmin_wall_thickness: 4.0000 (closest opposed-face distance with material between)\nholes measured on the BRep: none (no concave cylindrical face)\nsketches:\n  outer: fully_constrained=no dof=2 solve_status=0\n  groove_profile: fully_constrained=no dof=8 solve_status=0",
+  "elapsed_s": 0.292
+}

@@ -1,0 +1,36 @@
+{
+  "sample": "D",
+  "schema_version": 1,
+  "version": 2,
+  "units": "mm",
+  "coordinate_system": "right-handed; plate occupies x∈[0,w], y∈[0,h], z∈[0,t]",
+  "raw_text": "把回转角从整圈改成半圈（180°），其余不变。",
+  "user_stated_requirements": [
+    {
+      "kind": "stepped_shaft",
+      "value": {
+        "axis": "Z",
+        "coarse_diameter": 20.0,
+        "coarse_height": 20.0,
+        "fine_diameter": 12.0,
+        "fine_height": 20.0,
+        "feature": "revolution"
+      },
+      "evidence": "粗段 Ø20、高 20；细段 Ø12、高 20",
+      "confirmed": true
+    }
+  ],
+  "system_inferred": [],
+  "later_modifications": [
+    {
+      "kind": "revolution",
+      "field": "angle",
+      "from": 360.0,
+      "to": 180.0,
+      "evidence": "把回转角从整圈改成半圈（180°），其余不变。",
+      "preserved": "profile dimensions, axis, solid count, feature tree"
+    }
+  ],
+  "generated_from": null,
+  "attempt_id": "acc-20260923T144323Z-2585065a"
+}

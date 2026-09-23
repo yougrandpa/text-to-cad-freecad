@@ -1,0 +1,156 @@
+{
+  "ok": true,
+  "measurements": {
+    "solids": 1,
+    "faces": 10,
+    "edges": 24,
+    "vertexes": 16,
+    "shells": 1,
+    "volume": 30391.50456136202,
+    "area": 10482.12385965949,
+    "shape_type": "Compound",
+    "is_valid": true,
+    "bbox": {
+      "x": 80.0,
+      "y": 50.0,
+      "z": 8.0,
+      "x_min": 0.0,
+      "y_min": 0.0,
+      "z_min": 0.0
+    }
+  },
+  "feature_states": {
+    "body_1": {
+      "type_id": "PartDesign::Body",
+      "state": [
+        "Up-to-date"
+      ]
+    },
+    "Origin": {
+      "type_id": "App::Origin",
+      "state": [
+        "Up-to-date"
+      ]
+    },
+    "X_Axis": {
+      "type_id": "App::Line",
+      "state": [
+        "Up-to-date"
+      ]
+    },
+    "Y_Axis": {
+      "type_id": "App::Line",
+      "state": [
+        "Up-to-date"
+      ]
+    },
+    "Z_Axis": {
+      "type_id": "App::Line",
+      "state": [
+        "Up-to-date"
+      ]
+    },
+    "XY_Plane": {
+      "type_id": "App::Plane",
+      "state": [
+        "Up-to-date"
+      ]
+    },
+    "XZ_Plane": {
+      "type_id": "App::Plane",
+      "state": [
+        "Up-to-date"
+      ]
+    },
+    "YZ_Plane": {
+      "type_id": "App::Plane",
+      "state": [
+        "Up-to-date"
+      ]
+    },
+    "Origin001": {
+      "type_id": "App::Point",
+      "state": [
+        "Up-to-date"
+      ]
+    },
+    "sk_plate": {
+      "type_id": "Sketcher::SketchObject",
+      "state": [
+        "Up-to-date"
+      ]
+    },
+    "sk_holes": {
+      "type_id": "Sketcher::SketchObject",
+      "state": [
+        "Up-to-date"
+      ]
+    },
+    "ft_plate": {
+      "type_id": "PartDesign::Pad",
+      "state": [
+        "Up-to-date"
+      ]
+    },
+    "ft_holes": {
+      "type_id": "PartDesign::Pocket",
+      "state": [
+        "Up-to-date"
+      ]
+    }
+  },
+  "errors": [],
+  "sketches": {
+    "sk_plate": {
+      "circles": [],
+      "constraints": []
+    },
+    "sk_holes": {
+      "circles": [
+        {
+          "x": 10.0,
+          "y": 10.0,
+          "z": 0.0,
+          "radius": 4.0
+        },
+        {
+          "x": 70.0,
+          "y": 10.0,
+          "z": 0.0,
+          "radius": 4.0
+        },
+        {
+          "x": 10.0,
+          "y": 40.0,
+          "z": 0.0,
+          "radius": 4.0
+        },
+        {
+          "x": 70.0,
+          "y": 40.0,
+          "z": 0.0,
+          "radius": 4.0
+        }
+      ],
+      "constraints": [
+        {
+          "type": "Radius",
+          "value": 4.0
+        },
+        {
+          "type": "Radius",
+          "value": 4.0
+        },
+        {
+          "type": "Radius",
+          "value": 4.0
+        },
+        {
+          "type": "Radius",
+          "value": 4.0
+        }
+      ]
+    }
+  },
+  "elapsed_s": 0.2759
+}

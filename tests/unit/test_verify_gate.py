@@ -103,3 +103,14 @@ def test_gateway_cannot_verify_is_not_success(tmp_path):
     rep = _gate(ctx).evaluate("m1", 1)
     assert rep.passed is False
     assert rep.skipped_checks  # proves it could not verify anything
+
+
+def test_cannot_attest_is_reported_beside_a_failing_check(tmp_path):
+    """A build can fail a check *and* be one the Gate cannot measure. Reporting
+    only the first hid the more serious fact that nothing was attested at all."""
+    ctx = _ctx(tmp_path, digest=make_digest(measurements_available=False))
+    rep = Gate(lambda m, v: ctx, VerifyConfig(required_exports=("step", "stl", "fcstd"))
+                ).evaluate("m1", 1)
+    assert rep.passed is False
+    assert "exportability" in rep.blocking_failures, "the FCStd was never written"
+    assert "gate:cannot_attest_no_measurements" in rep.blocking_failures

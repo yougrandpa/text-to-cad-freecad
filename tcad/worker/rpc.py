@@ -20,6 +20,7 @@ from tcad.worker.compiler import compile_ir
 from tcad.worker.introspect import introspect_document
 from tcad.worker.mesh import tessellate
 from tcad.worker.exporters import export_artifacts
+from tcad.worker.reopen import reopen_edit_measure
 from tcad.worker.selftest import api_selftest
 
 
@@ -30,6 +31,7 @@ _HANDLERS = {
     "introspect_document": introspect_document,
     "tessellate": tessellate,
     "export_artifacts": export_artifacts,
+    "reopen_edit_measure": reopen_edit_measure,
     "import_asset": None,  # assigned below
 }
 

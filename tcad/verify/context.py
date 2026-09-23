@@ -20,7 +20,6 @@ If ``digest.json`` is missing we raise a typed error and fabricate nothing.
 
 from __future__ import annotations
 
-import glob
 import inspect
 import json
 import os
@@ -28,7 +27,8 @@ from typing import Any, Callable
 
 from pydantic import BaseModel, ConfigDict
 
-from tcad.core.types import CheckContext, GeometryDigest, IrDocument
+from tcad.core.types import BuildStamp, CheckContext, GeometryDigest, IrDocument
+from tcad.store.artifacts import read_build_stamp
 from tcad.worker.protocol import M_IMPORT_ASSET
 
 
@@ -69,18 +69,55 @@ def _load_digest(artifact_dir: str) -> GeometryDigest:
         raise CheckContextError(f"failed to parse digest.json {digest_path}: {exc}") from exc
 
 
-def _discover_exports(artifact_dir: str) -> dict[str, str]:
-    """Find exported geometry on disk by extension.
+# Files the compiler writes to diagnose its own build. They are real geometry,
+# but they are not what was asked to be delivered: `roundtrip.step` exists even
+# when the exporter never ran, so letting it answer for the STEP deliverable
+# grades a diagnostic as an artifact.
+_DIAGNOSTIC_STEMS = frozenset({"roundtrip"})
 
-    The worker writes e.g. ``<model_id>.step`` under the artefact directory.
-    We key by format and take the first match — never trusting an in-memory map.
+
+def _discover_exports(artifact_dir: str, model_id: str = "") -> dict[str, str]:
+    """Deliverable geometry on disk, keyed by format.
+
+    Three rules the old ``glob``-first-match version got wrong:
+      * extensions are matched case-insensitively, because FreeCAD writes
+        ``<model_id>.FCStd`` — a ``*.fcstd`` pattern matches nothing on a
+        case-sensitive filesystem, so the reopenable document silently went
+        unchecked on Linux while passing on macOS.
+      * diagnostics are never candidates.
+      * when several files share an extension, the one named after this model
+        wins, since that is the file the exporter produced for this build.
     """
     exports: dict[str, str] = {}
+    try:
+        names = sorted(os.listdir(artifact_dir))
+    except OSError:
+        return exports
     for fmt in ("step", "stl", "brep", "fcstd"):
-        matches = sorted(glob.glob(os.path.join(artifact_dir, f"*.{fmt}")))
-        if matches:
-            exports[fmt] = os.path.abspath(matches[0])
+        candidates = [
+            n for n in names
+            if os.path.splitext(n)[1].lower() == f".{fmt}"
+            and os.path.splitext(n)[0] not in _DIAGNOSTIC_STEMS
+        ]
+        preferred = [n for n in candidates if n.lower() == f"{model_id}.{fmt}".lower()]
+        chosen = (preferred or candidates)[:1]
+        if chosen:
+            exports[fmt] = os.path.abspath(os.path.join(artifact_dir, chosen[0]))
     return exports
+
+
+def _load_stamp(artifact_dir: str) -> BuildStamp | None:
+    """Which attempt wrote this directory — or None if it predates stamping.
+
+    A corrupt stamp is an error rather than a mystery: the alternative is to
+    grade the directory as though nothing was known about its provenance.
+    """
+    try:
+        return read_build_stamp(artifact_dir)
+    except Exception as exc:
+        raise CheckContextError(
+            f"build stamp in {artifact_dir} is unreadable: {type(exc).__name__}: {exc}"
+        ) from exc
 
 
 def build_check_context(
@@ -107,7 +144,7 @@ def build_check_context(
 
     ir = _load_ir(ir_path)
     digest = _load_digest(artifact_dir)
-    exports = _discover_exports(artifact_dir)
+    exports = _discover_exports(artifact_dir, model_id)
 
     return CheckContext(
         model_id=model_id,
@@ -116,6 +153,7 @@ def build_check_context(
         artifact_dir=os.path.abspath(artifact_dir),
         exports=exports,
         digest=digest,
+        build_stamp=_load_stamp(artifact_dir),
         worker=worker,
     )
 

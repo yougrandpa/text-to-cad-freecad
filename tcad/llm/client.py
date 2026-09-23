@@ -31,6 +31,28 @@ class ToolCall(BaseModel):
     name: str
     args: dict[str, Any] = Field(default_factory=dict)
 
+    #: Why ``args`` could not be parsed, when they could not. ``None`` means the
+    #: provider sent valid JSON.
+    #:
+    #: This field exists because ``args`` alone cannot tell the two failure modes
+    #: apart, and they have opposite fixes:
+    #:
+    #:  * **empty arguments** (``{}``) — the model emitted a bare tool call. Its
+    #:    own mistake; re-sending with the required keys is the fix.
+    #:  * **unparsable arguments** — the model was *writing* the arguments and
+    #:    the JSON was cut off. Observed live: ``finish_reason="length"`` with a
+    #:    1359-character ``arguments`` string ending mid-array
+    #:    (``"direction": [0.0``). The fix is a smaller call, not a retry of the
+    #:    same size.
+    #:
+    #: Both used to arrive downstream as ``{}`` — so a truncation was reported to
+    #: the model as "you forgot to pass base_version and ops", which is false and
+    #: sends it into a loop repeating the same too-large patch.
+    args_error: str | None = None
+    #: How many characters of arguments the provider actually sent. Distinguishes
+    #: "sent nothing" from "sent a lot and it was truncated".
+    args_raw_len: int = 0
+
 
 class LlmReply(BaseModel):
     """Normalised model response the engine consumes."""
@@ -157,11 +179,32 @@ class OpenAIClient:
         tool_calls: list[ToolCall] = []
         if getattr(msg, "tool_calls", None):
             for tc in msg.tool_calls:
+                raw = getattr(tc.function, "arguments", None) or ""
+                args: dict[str, Any] = {}
+                args_error: str | None = None
                 try:
-                    args = json.loads(tc.function.arguments or "{}")
-                except json.JSONDecodeError:
-                    args = {}
-                tool_calls.append(ToolCall(id=tc.id, name=tc.function.name, args=args))
+                    parsed = json.loads(raw or "{}")
+                except json.JSONDecodeError as exc:
+                    # Survive it (a raise here would kill the turn) but *record*
+                    # it, so the engine can name the real cause. An empty string
+                    # is NOT an error: a tool with no required parameters
+                    # legitimately takes `{}`, and calling that "unparsable"
+                    # would send the model chasing a truncation that never
+                    # happened.
+                    args_error = f"{exc.msg} at character {exc.pos}"
+                    if raw:
+                        args_error += f" of {len(raw)} characters of arguments"
+                else:
+                    if isinstance(parsed, dict):
+                        args = parsed
+                    else:
+                        # Valid JSON, wrong shape — a list or scalar where an
+                        # object belongs. Same reasoning: record it rather than
+                        # letting the schema check blame a missing key.
+                        args_error = (f"arguments were valid JSON but a "
+                                      f"{type(parsed).__name__}, not an object")
+                tool_calls.append(ToolCall(id=tc.id, name=tc.function.name, args=args,
+                                           args_error=args_error, args_raw_len=len(raw)))
         usage = resp.usage
         pu = getattr(usage, "prompt_tokens", 0) if usage else 0
         co = getattr(usage, "completion_tokens", 0) if usage else 0

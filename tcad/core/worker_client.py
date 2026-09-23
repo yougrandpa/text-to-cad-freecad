@@ -3,7 +3,9 @@
 This is the linchpin between the two processes. It owns:
   * spawning ``FreeCADCmd --console -P <root> tcad/worker/bootstrap.py``
   * a JSONL request/response client over the worker's stdin/stdout
-  * per-request timeouts, crash detection and restart
+  * per-request timeouts, crash detection, restart
+  * ``abort_inflight``: ending a call that is already running, for a stop that
+    has to reach the build rather than just the caller waiting for it
 
 Why a background reader thread instead of asyncio streams: the worker can emit
 its own banner/log noise on stdout at any moment (FreeCAD prints one on start-up),
@@ -83,6 +85,20 @@ class WorkerCallFailed(WorkerError):
         self.rpc_error = error
         self.feature_id = error.feature_id
         self.traceback = error.traceback
+
+
+class WorkerAborted(WorkerError):
+    """The call was ended from this side because someone stopped the work.
+
+    Kept apart from ``WorkerCrashed`` on purpose: a crash is a fault to report,
+    an abort is an instruction that was carried out. A caller that conflates them
+    tells the user "the geometry backend died" every time they press stop — or,
+    worse, treats a deliberate stop as a transient error worth retrying.
+    """
+
+    def __init__(self, message: str, *, reason: str = ""):
+        super().__init__(message, ToolErrorKind.CANCELLED)
+        self.reason = reason
 
 
 def build_worker_command(
@@ -169,6 +185,8 @@ class WorkerHandle:
         self._stdout_lines: list[str] = []  # non-JSON noise, kept for diagnostics
         self._stderr_lines: list[str] = []
         self._closed = False
+        self._abort_epoch = 0
+        self._abort_reason = ""
 
     # ── lifecycle ─────────────────────────────────────────────────────────
 
@@ -287,6 +305,51 @@ class WorkerHandle:
         if self._reader is not None and self._reader.is_alive():
             self._reader.join(timeout=1.0)
 
+    def abort_inflight(self, reason: str = "stopped") -> bool:
+        """End the call that is in flight right now, by killing the process.
+
+        This is the difference between stopping the *waiting* and stopping the
+        *work*. A caller blocked in ``_request_raw`` cannot be interrupted from
+        outside — and the thread inside it is usually parked in an OCCT operation
+        where nothing short of process death ends the call, which is exactly why
+        the worker has to go. Killing it closes stdout, the reader thread sees
+        EOF and fails every pending box, so the blocked caller wakes immediately
+        with :class:`WorkerAborted` instead of sitting out its timeout.
+
+        Deliberately not ``close()``: the handle stays open and usable, and the
+        next call restarts the worker lazily (``_request_raw`` recovers a dead
+        process). So a stop costs the rest of the cancelled call, nothing more.
+        Returns whether a running process was actually killed.
+
+        Safe from any thread; a no-op when nothing is running or after close().
+        """
+        with self._lock:
+            # Bumped even when there is nothing to kill: a call that is one
+            # instruction away from writing its request must be able to tell
+            # that the answer it then waits for belongs to an aborted world.
+            self._abort_epoch += 1
+            self._abort_reason = reason
+        proc = self._proc
+        if proc is None or proc.poll() is not None or self._closed:
+            return False
+        log.warning("worker %s: aborting the in-flight call (%s)", self.worker_id, reason)
+        try:
+            proc.kill()
+        except OSError as exc:  # pragma: no cover - the process died underneath us
+            log.debug("worker %s: kill failed: %s", self.worker_id, exc)
+            return False
+        try:
+            # Reap it here, so "the build is stopped" is true when this returns —
+            # not merely "a signal was sent" — and the caller (or the next build)
+            # cannot leave a zombie behind.
+            proc.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:  # pragma: no cover - SIGKILL is not ignorable
+            log.warning("worker %s survived SIGKILL", self.worker_id)
+        # Do not wait for the reader thread to notice the pipe closing: wake the
+        # caller now, so a stop is bounded by the kill and not by EOF timing.
+        self._fail_all_pending(f"worker call aborted: {reason}")
+        return True
+
     def __enter__(self) -> WorkerHandle:
         self.start()
         return self
@@ -342,7 +405,14 @@ class WorkerHandle:
         if box is None:
             log.debug("worker %s answered unknown request id %s", self.worker_id, resp.id)
             return
-        box.put(resp)
+        try:
+            # Never block the reader thread on a caller that already walked away
+            # (timed out, or was aborted a microsecond before this frame landed).
+            # A blocked reader would stop delivering *every* later response, which
+            # turns one lost frame into a permanently wedged worker.
+            box.put_nowait(resp)
+        except queue.Full:  # pragma: no cover - caller gone in a race window
+            log.debug("worker %s: no one waiting for id %s", self.worker_id, resp.id)
 
     def _drain_stderr(self) -> None:
         proc = self._proc
@@ -435,6 +505,9 @@ class WorkerHandle:
             self._next_id += 1
             req_id = self._next_id + 100_000 * (hash(self.worker_id) % 97)
             self._responses[req_id] = box
+            # Sampled under the same lock as the abort bump, so "an abort landed
+            # while this call was in flight" is decided, not guessed.
+            abort_epoch = self._abort_epoch
         try:
             self._write(RpcRequest(id=req_id, method=method, params=params or {}))
             try:
@@ -456,6 +529,15 @@ class WorkerHandle:
 
         if resp.id == -1:  # synthetic frame from _fail_all_pending
             message = resp.error.message if resp.error else "worker died"
+            if abort_epoch != self._abort_epoch:
+                # Someone stopped this call: the worker was killed on purpose, so
+                # this is not a crash to recover from. Restarting here would make
+                # a stop cost a worker start-up inside the stop itself; the next
+                # call recovers lazily instead.
+                raise WorkerAborted(
+                    f"worker call {method!r} was aborted ({self._abort_reason or 'stopped'})",
+                    reason=self._abort_reason,
+                )
             returncode = self._proc.returncode if self._proc else None
             stderr = self.stderr_text()
             restarted = self.recover(f"worker crashed (rc={returncode})")

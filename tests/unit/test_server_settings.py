@@ -476,6 +476,46 @@ def test_render_rejects_an_unknown_view(client):
     assert client.get("/models/m1/render?view=sideways").status_code == 400
 
 
+def test_render_rejects_a_traversal_shaped_style(client):
+    """``view`` had an allowlist; ``style`` had nothing.
+
+    ``style`` is the one interpolated into the cache filename, so a value like
+    ``../../../../escaped`` resolved *outside* the version directory — both as
+    the file the endpoint serves on a cache hit and as the target
+    ``produced.replace()`` moves the render onto. Asserting the 400 alone would
+    not prove the boundary held, so this also checks nothing appeared outside.
+    """
+    _seed_model(client)
+    d = client.services.store.artifact_dir("m1", 0)
+    r = client.get("/models/m1/render?view=iso&style=../../../../escaped")
+    assert r.status_code == 400, r.text
+    assert not list(d.parent.glob("escaped*")), (
+        "the traversal wrote outside the version directory: "
+        f"{[p.name for p in d.parent.glob('escaped*')]}"
+    )
+
+
+def test_render_rejects_an_unknown_style(client):
+    _seed_model(client)
+    assert client.get("/models/m1/render?view=iso&style=wireframe").status_code == 400
+
+
+def test_render_accepts_every_declared_style(client):
+    """The allowlist must be the set the rasteriser can actually draw — a style
+    that renders must not be refused, and it must come from ``RenderStyle`` so
+    the two cannot drift."""
+    from typing import get_args
+
+    from tcad.core.types import RenderStyle
+
+    _seed_model(client)
+    styles = sorted(get_args(RenderStyle))
+    assert styles, "RenderStyle is empty — the allowlist would reject everything"
+    for style in styles:
+        r = client.get(f"/models/m1/render?view=iso&style={style}")
+        assert r.status_code == 200, (style, r.text)
+
+
 def test_render_rejects_absurd_dimensions(client):
     _seed_model(client)
     assert client.get("/models/m1/render?view=iso&width=99999").status_code == 400

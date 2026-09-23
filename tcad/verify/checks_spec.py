@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from tcad.core.types import CheckContext, CheckResult, CheckStatus, Confidence, Severity
 from tcad.ir.schema import ConstraintExpr, ConstraintKind
-from tcad.verify.checks_solid import VerifyConfig
+from tcad.verify.checks_solid import VerifyConfig, _as_dict
 from tcad.verify.specexpr import evaluate
 
 # Kinds the first tier already owns — never re-checked here (avoid double FAIL).
@@ -58,53 +58,77 @@ class SpecCheck:
                 Confidence.APPROXIMATE if expr.kind in APPROXIMATE_KINDS else Confidence.DETERMINISTIC
             )
 
+    def _result(self, status, message: str, info: dict, feature_id) -> CheckResult:
+        """Build the result **through the same coercion the first tier uses**.
+
+        ``specexpr.evaluate`` returns ``measured``/``expected`` as whatever shape
+        is natural for the kind — a bare scalar for ``count``/``feature_count``/
+        ``wall_thickness``, a ``{holeName: [x, y, z]}`` map for
+        ``hole_position``, a ``{counterpart: <id>}`` map for ``symmetric``.
+        ``CheckResult.measurements`` is ``dict[str, float | str | bool]``, so
+        those raw shapes are not constructible: the ones that happened to be
+        dicts were stringified into the report, and the scalars *raised* — which
+        the Gate records as an ERROR carrying a pydantic traceback, losing the
+        verdict entirely.
+
+        The four kinds that raised were ``count``, ``feature_count``,
+        ``symmetric`` and ``wall_thickness`` — i.e. recording the user's "there
+        should be one solid" or "the wall is 3 mm" as a confirmed requirement
+        made the build unpassable and the reason unreadable. ``_as_dict`` is the
+        one place that knows how to fit a measurement into the field type; using
+        it here is what keeps "a confirmed requirement can always produce a
+        verdict" true in the second tier as well.
+        """
+        return CheckResult(
+            check_id=self.id, status=status,
+            severity=self.severity, confidence=self.confidence,
+            message=message,
+            measurements=_as_dict(info.get("measured")) or {},
+            expected=_as_dict(info.get("expected"), floats_only=True),
+            feature_id=feature_id,
+        )
+
     def run(self, ctx: CheckContext) -> CheckResult:
         ok, info = evaluate(self.expr, ctx.digest, ctx.ir)
         feature_id = self.expr.target if self.expr.target else None
         src = self.expr.source_text or self.expr.kind
 
         if ok is None:
-            return CheckResult(
-                check_id=self.id, status="skip",
-                severity=self.severity, confidence=self.confidence,
-                message=f"requirement '{src}' could not be measured",
-                feature_id=feature_id,
+            reason = info.get("reason")
+            detail = f" ({reason})" if reason else ""
+            if self.expr.confirmed and self.severity is Severity.BLOCKING:
+                # A confirmed requirement the harness cannot verify is NOT a
+                # ignorable SKIP: the build cannot be called accepted while the
+                # thing the user asked for sits unmeasured.
+                return self._result(
+                    "error",
+                    f"required_but_unverified: confirmed requirement "
+                    f"'{src}' has no measurement to judge it by{detail}",
+                    info, feature_id,
+                )
+            return self._result(
+                "skip", f"requirement '{src}' could not be measured{detail}",
+                info, feature_id,
             )
 
         if not self.expr.confirmed:
             # Advisory only — never blocks the build.
             if ok:
-                return CheckResult(
-                    check_id=self.id, status="pass",
-                    severity=Severity.ADVISORY, confidence=self.confidence,
-                    message=f"unconfirmed requirement '{src}' satisfied (advisory)",
-                    measurements=info.get("measured", {}), expected=info.get("expected"),
-                    feature_id=feature_id,
+                return self._result(
+                    "pass",
+                    f"unconfirmed requirement '{src}' satisfied (advisory)",
+                    info, feature_id,
                 )
-            return CheckResult(
-                check_id=self.id, status="fail",
-                severity=Severity.ADVISORY, confidence=self.confidence,
-                message=f"unconfirmed requirement '{src}' NOT met — advisory only, "
-                        f"does not block the build",
-                measurements=info.get("measured", {}), expected=info.get("expected"),
-                feature_id=feature_id,
+            return self._result(
+                "fail",
+                f"unconfirmed requirement '{src}' NOT met — advisory only, "
+                f"does not block the build",
+                info, feature_id,
             )
 
         if ok:
-            return CheckResult(
-                check_id=self.id, status="pass",
-                severity=self.severity, confidence=self.confidence,
-                message=f"requirement '{src}' satisfied",
-                measurements=info.get("measured", {}), expected=info.get("expected"),
-                feature_id=feature_id,
-            )
-        return CheckResult(
-            check_id=self.id, status="fail",
-            severity=self.severity, confidence=self.confidence,
-            message=f"requirement '{src}' NOT met",
-            measurements=info.get("measured", {}), expected=info.get("expected"),
-            feature_id=feature_id,
-        )
+            return self._result("pass", f"requirement '{src}' satisfied", info, feature_id)
+        return self._result("fail", f"requirement '{src}' NOT met", info, feature_id)
 
 
 class RequirementCoverageCheck:

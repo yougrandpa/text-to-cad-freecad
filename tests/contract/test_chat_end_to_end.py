@@ -307,10 +307,23 @@ def test_the_run_recovers_and_the_gate_ends_green(session):
 
 
 def test_skipped_checks_are_reported_rather_than_hidden(session):
-    """`wall_thickness` is advisory and cannot run without a measurement. The
-    requirement is that skipping is *visible*, never silent."""
+    """Skipping must be *visible*, never silent.
+
+    This used to assert ``skipped_checks == ["wall_thickness"]``: the worker had
+    no wall measurement, so the advisory check could only skip. The worker now
+    measures the minimum wall off the BRep (opposed-face distance), so the
+    honest expectation changed — the check RUNS, and it appears in ``results``
+    rather than in ``skipped_checks``. Both facts are asserted, because "it no
+    longer skips" and "it really produced a verdict" are different claims and
+    only the second one means the capability arrived.
+    """
     report = session.result["gate_report"]
-    assert report["skipped_checks"] == ["wall_thickness"]
+    by_id = {r["check_id"]: r for r in report["results"]}
+    assert "wall_thickness" in by_id, (
+        "the wall check neither ran nor was reported — the only unacceptable outcome"
+    )
+    assert by_id["wall_thickness"]["status"] in ("pass", "fail"), by_id["wall_thickness"]
+    assert "wall_thickness" not in report["skipped_checks"]
     assert report["passed"] is True, "advisory 级的跳过不得影响通过"
 
 

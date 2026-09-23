@@ -31,7 +31,7 @@ def test_build_full_keeps_all_history():
     ctx = AssembleContext(system_prompt="sys", digest_text="dig",
                           gate_report_text="gate", history=history)
     out = asyncio.run(ContextAssembler(budget).build(ctx, []))
-    assert len(out) == 3 + 3  # 3 fixed + 3 history
+    assert len(out) == 4 + 3  # 4 fixed (system/requirements/digest/gate) + 3 history
     assert sum(1 for m in out if m.kind == "history") == 3
 
 
@@ -42,8 +42,8 @@ def test_build_summarized_keeps_last_and_summary():
     ctx = AssembleContext(system_prompt="", digest_text="", gate_report_text="",
                           history=history)
     out = asyncio.run(ContextAssembler(budget, summarize=_fake_summarize).build(ctx, []))
-    # 3 fixed + 1 summary + 2 recent == 6
-    assert len(out) == 6
+    # 4 fixed + 1 summary + 2 recent == 7
+    assert len(out) == 7
     assert any(m.kind == "summary" for m in out)
     assert sum(1 for m in out if m.kind == "history") == 2
 
@@ -56,11 +56,44 @@ def test_build_minimal_drops_history_and_images():
     ctx = AssembleContext(system_prompt="", digest_text="", gate_report_text="",
                           history=history)
     out = asyncio.run(ContextAssembler(budget, summarize=_fake_summarize).build(ctx, images))
-    # 3 fixed + 1 current turn == 4; no summary, no image
-    assert len(out) == 4
+    # 4 fixed + 1 current turn == 5; no summary, no image
+    assert len(out) == 5
     assert not any(m.kind == "summary" for m in out)
     assert not any(m.kind == "image" for m in out)
     assert sum(1 for m in out if m.kind == "history") == 1
+
+
+def test_requirement_contract_survives_every_degradation_level():
+    """The block that says what the part is judged against is never dropped.
+
+    MINIMAL exists to shed conversation when the window is tight — exactly when
+    the model is most likely to lose the ask. Dropping the contract there would
+    trade "the model forgot the conversation" for "the model forgot the
+    requirement", which is strictly worse.
+    """
+    for window in (100_000, 1300, 500):
+        budget = ContextBudget(window_tokens=window, summarize_keep_last_turns=2)
+        history = [Message(role="user", content=f"turn {i}", tokens_estimate=100)
+                   for i in range(10)]
+        ctx = AssembleContext(system_prompt="sys", requirements_text="REQUIREMENTS",
+                              digest_text="dig", gate_report_text="gate", history=history)
+        out = asyncio.run(ContextAssembler(budget, summarize=_fake_summarize).build(ctx, []))
+        assert any(m.kind == "requirements" and m.content == "REQUIREMENTS" for m in out), window
+
+
+def test_to_openai_drops_blank_blocks_but_keeps_requirements():
+    from tcad.context.assembler import to_openai_messages
+
+    msgs = [
+        Message(role="system", content="   ", kind="system"),
+        Message(role="system", content="REQS", kind="requirements"),
+        Message(role="user", content="hi", kind="history"),
+    ]
+    out = to_openai_messages(msgs)
+    assert [m["role"] for m in out] == ["system", "user"]
+    assert out[0]["content"] == "REQS"
+    # `kind` is a loop-layer hint; it must not leak onto the wire.
+    assert all("kind" not in m for m in out)
 
 
 def test_build_includes_images_at_full():

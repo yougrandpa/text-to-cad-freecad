@@ -88,6 +88,7 @@ class ToolErrorKind(str, Enum):
     DENIED = "denied"
     TIMEOUT = "timeout"
     NOT_FOUND = "not_found"
+    CANCELLED = "cancelled"
 
 
 class ContextLevel(str, Enum):
@@ -210,6 +211,19 @@ class ToolContext(BaseModel):
     worker: Any = None  # WorkerHandle; typed loosely to avoid a circular import
     hook_ctx: HookContext | None = None
 
+    #: The dispatcher this turn's tool calls must go through. Set by the engine
+    #: from the per-turn override, and preferred by handlers over
+    #: ``services.hooks``. Without it a front end had to *replace*
+    #: ``services.hooks`` for the duration of a request, which is shared mutable
+    #: state: two concurrent requests clobber each other's tap, and whichever
+    #: finishes first restores the dispatcher out from under the other.
+    hooks: Any = None
+
+    #: Whether ``geo_view`` is permitted *for this step*. Also per-turn state: it
+    #: used to live on the shared services bundle, so one session's commit could
+    #: open the visual checkpoint for another session's inspect step.
+    visual_ok: bool = False
+
 
 ToolHandler = Any  # Callable[[dict, ToolContext], Awaitable[ToolResult]]
 
@@ -281,7 +295,29 @@ class GateReport(BaseModel):
     blocking_failures: list[str] = Field(default_factory=list)
     advisory_findings: list[str] = Field(default_factory=list)
     skipped_checks: list[str] = Field(default_factory=list)
+    # Which build attempt the graded files came from. Filled from the artefact
+    # directory's build stamp, so a "passed" report can be traced to the writes
+    # it actually measured rather than to whatever sat in the directory.
+    attempt_id: str = ""
+    ir_sha256: str = ""
     generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class BuildStamp(BaseModel):
+    """Which build attempt the files in an artefact directory came from.
+
+    Written by the commit pipeline *before* it touches the worker, so anything
+    already in the directory when it lands belongs to an older attempt. Without
+    it, a retry into the same ``v<N>`` directory could be graded against the
+    exports of the attempt that failed — the STEP would be real, just not real
+    *for this build*.
+    """
+
+    attempt_id: str
+    model_id: str
+    ir_version: int
+    started_at: float  # unix seconds, taken before any of this attempt's writes
+    ir_sha256: str = ""  # hash of the IR document handed to the compiler
 
 
 class CheckContext(BaseModel):
@@ -296,6 +332,7 @@ class CheckContext(BaseModel):
     artifact_dir: str
     exports: dict[str, str] = Field(default_factory=dict)  # fmt -> abs path
     digest: "GeometryDigest | None" = None
+    build_stamp: BuildStamp | None = None
     worker: Any = None
 
 
@@ -345,6 +382,62 @@ class FeatureDigest(BaseModel):
     suppressed: bool = False
 
 
+class MeasuredHole(BaseModel):
+    """A hole read off the real BRep, never from the IR that asked for it.
+
+    The Gate must not grade the generator's own paper: a diameter taken from
+    ``FeatureSpec.params`` proves only that the model *wrote* a number. Each
+    entry here comes from one concave cylindrical face group of the built
+    shape, so it survives a compiler that silently cut nothing, cut the wrong
+    depth, or moved the hole.
+    """
+
+    index: int
+    diameter: float
+    radius: float
+    axis: list[float] = Field(default_factory=list)      # unit direction
+    center: list[float] = Field(default_factory=list)    # a point on the axis
+    depth: float = 0.0                                   # measured axial extent
+    through: bool = False                                # depth spans the solid
+    faces: int = 1                                       # faces merged into this hole
+
+
+class FaceInfo(BaseModel):
+    """One planar face of the built shape, with the name a sketch attaches to.
+
+    This exists because the tool description tells the model to attach a sketch to
+    a face by name ("look the face number up with ir_digest — do not guess it")
+    while ``ir_digest`` listed only a *count*. The model had no way to learn that
+    ``Face6`` is the top one, so the instruction was unfollowable.
+
+    Measured off the BRep, like the holes: the name is FreeCAD's ``Face<N>`` index
+    (1-based, matching ``shape.Faces[N-1]``), and ``normal``/``center``/``area``
+    are what let a reader pick the face by *intent* ("the top face") instead of by
+    a number that shifts when the model changes.
+    """
+
+    name: str
+    area: float = 0.0
+    normal: list[float] = Field(default_factory=list)
+    center: list[float] = Field(default_factory=list)
+
+
+class EdgeInfo(BaseModel):
+    """One edge of the built shape, with the name an edge-based feature uses.
+
+    Same reason as :class:`FaceInfo`: ``fillet``/``chamfer`` select edges by name
+    (``Edge<N>``), and a count of edges is not something a model can act on.
+    ``kind``/``length``/``mid`` are what let a reader pick "the 8 mm vertical
+    edge" instead of a number that moves when the part changes.
+    """
+
+    name: str
+    kind: str = ""                                  # "Line", "Circle", …
+    length: float = 0.0
+    mid: list[float] = Field(default_factory=list)  # midpoint
+    direction: list[float] = Field(default_factory=list)  # tangent at mid (lines)
+
+
 class GeometryDigest(BaseModel):
     model_id: str
     ir_version: int
@@ -357,6 +450,13 @@ class GeometryDigest(BaseModel):
     is_valid: bool = False
     key_dimensions: dict[str, float] = Field(default_factory=dict)
     spec_deviation: dict[str, float] = Field(default_factory=dict)
+    holes: list[MeasuredHole] = Field(default_factory=list)
+    #: Planar faces, so a model can name one for a ``plane: {"kind": "face"}``
+    #: sketch attachment. Bounded by the worker; additive, so an older digest.json
+    #: without it still parses.
+    faces: list[FaceInfo] = Field(default_factory=list)
+    #: Edges, so a model can name one for ``base_feature`` + ``sub_elements``.
+    edges: list[EdgeInfo] = Field(default_factory=list)
     measurements_available: bool = True  # False -> digest is structure-only
     text: str = ""  # rendered, <= ~2000 tokens
 

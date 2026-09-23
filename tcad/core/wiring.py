@@ -105,6 +105,14 @@ class SyncWorkerClient:
     def is_alive(self) -> bool:
         return self._handle.is_alive()
 
+    def abort_inflight(self, reason: str = "stopped") -> bool:
+        """End the worker call that is running right now. See ``WorkerHandle``.
+
+        Exposed through the shim so a cancelled turn can stop the *build* and not
+        just its own waiting: the pipeline holds this object, not the raw handle.
+        """
+        return self._handle.abort_inflight(reason)
+
     def close(self) -> None:
         self._handle.close()
 
@@ -137,6 +145,24 @@ class StoreAdapter:
 
     def artifact_dir(self, model_id: str, version: int) -> Path:
         return self.artifacts.dir_for(model_id, version)
+
+    # ── isolated staging + verified-only publish (task book §5-C) ──
+
+    def staging_dir(self, model_id: str, version: int, attempt_id: str) -> Path:
+        """Private build directory for one attempt (see ``ArtifactStore``)."""
+        return self.artifacts.staging_dir(model_id, version, attempt_id)
+
+    def discard_staging(self, staging_dir: str | os.PathLike[str]) -> None:
+        self.artifacts.discard_staging(staging_dir)
+
+    def write_manifest(self, staging_dir: str | os.PathLike[str], **kw) -> Path:
+        return self.artifacts.write_manifest(staging_dir, **kw)
+
+    def publish(self, model_id: str, version: int, staging_dir: str | os.PathLike[str]) -> Path:
+        return self.artifacts.publish(model_id, version, staging_dir)
+
+    def recover_publish(self, model_id: str, version: int) -> None:
+        self.artifacts.recover_publish(model_id, version)
 
     # ── delegation ──
 
@@ -226,9 +252,46 @@ class StoreAdapter:
         return self.validate_document(candidate)
 
     def persist_digest(
-        self, model_id: str, ir_version: int, digest: GeometryDigest
+        self, model_id: str, ir_version: int, digest: GeometryDigest,
+        *, artifact_dir: str | os.PathLike[str] | None = None,
     ) -> None:
-        self.artifacts.write_digest(model_id, ir_version, digest)
+        """Write the digest, optionally into the directory being graded.
+
+        A staged build passes its private attempt directory: the digest is part
+        of that attempt's evidence and must live beside the files it describes.
+        """
+        if artifact_dir is None:
+            self.artifacts.write_digest(model_id, ir_version, digest)
+        else:
+            self.artifacts.write_digest_at(artifact_dir, digest)
+
+    # ── the previous turn's verdict (read by the next turn's context) ──
+
+    def write_gate_report(self, model_id: str, ir_version: int, report: Any) -> None:
+        from tcad.store.artifacts import write_gate_report
+
+        write_gate_report(self.data_dir, model_id, ir_version, report)
+
+    def read_gate_report(self, model_id: str, version: int) -> dict | None:
+        from tcad.store.artifacts import read_gate_report
+
+        return read_gate_report(self.data_dir, model_id, version)
+
+    def verdict(self, model_id: str, version: int | None = None) -> dict:
+        """Is the *current* version verified on disk, and why (or why not)?
+
+        One entry point so the API, the front end and the next turn's context
+        cannot each invent their own reading of "the last report". A stale pass —
+        a report for an older version — can never come back as ``verified=True``.
+        """
+        from tcad.store.artifacts import build_verdict
+
+        if version is None:
+            latest = self.latest_version(model_id)
+            if latest is None:
+                raise FileNotFoundError(model_id)
+            version = latest
+        return build_verdict(self.data_dir, model_id, int(version))
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -304,11 +367,25 @@ class ContextServiceAdapter:
     def __init__(self, store: StoreAdapter) -> None:
         self._store = store
 
-    def digest(self, model_id: str, ir_version: int) -> GeometryDigest:
+    def digest(
+        self, model_id: str, ir_version: int, artifact_dir: str | None = None
+    ) -> GeometryDigest:
+        """The digest for a version — or a structure-only one when there is none.
+
+        ``artifact_dir`` reads the digest from a specific directory instead of
+        the version's published one. That matters during a staged build: if the
+        attempt produced no digest, falling back to the *published* one would
+        hand the Gate a previous build's measurements for an IR that was just
+        rewritten — a stale verdict attesting a fresh build. Grading a directory
+        means grading that directory's evidence, or admitting there is none.
+        """
         from tcad.context.digest import render_digest_text
 
         ir = self._store.load(model_id, ir_version)
-        digest = self._store.artifacts.read_digest(model_id, ir_version)
+        if artifact_dir is not None:
+            digest = _read_digest_from(artifact_dir)
+        else:
+            digest = self._store.artifacts.read_digest(model_id, ir_version)
         if digest is None:
             digest = GeometryDigest(
                 model_id=model_id,
@@ -322,6 +399,25 @@ class ContextServiceAdapter:
             )
         digest.text = render_digest_text(digest, ir)
         return digest
+
+
+def _read_digest_from(artifact_dir: str) -> GeometryDigest | None:
+    """``<artifact_dir>/digest.json`` as a GeometryDigest, or ``None``.
+
+    A corrupt file reads as absent on purpose: this is the "cannot attest"
+    fallback path, and the honest outcome there is "no measurements", never a
+    half-parsed verdict.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    path = _Path(artifact_dir) / "digest.json"
+    if not path.is_file():
+        return None
+    try:
+        return GeometryDigest.model_validate(_json.loads(path.read_text(encoding="utf-8")))
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _feature_digest_entry(f: FeatureSpec):
@@ -339,11 +435,18 @@ def _feature_digest_entry(f: FeatureSpec):
 
 def build_context_loader(
     store: StoreAdapter, worker: WorkerHandle | None
-) -> Callable[[str, int], CheckContext]:
-    """Return ``(model_id, ir_version) -> CheckContext`` reading only from disk.
+) -> Callable[..., CheckContext]:
+    """Return ``(model_id, ir_version, artifact_dir=None) -> CheckContext`` reading
+    only from disk.
 
     This is the structural half of "the generator must not grade its own paper"
     (design §4.6). The loader hands the Gate file paths, never live objects.
+
+    ``artifact_dir`` lets a build be graded in its private staging directory
+    before it is published (task book §5-C). It only ever *redirects* the read;
+    it never relaxes what is read, and the IR snapshot still comes from the
+    store, so the staged files are judged against the same specification as the
+    published ones.
 
     It deliberately does **not** propagate a missing-digest error: the Gate
     already knows how to report "cannot attest", and turning that into a raised
@@ -352,10 +455,13 @@ def build_context_loader(
     nothing to grade at all.
     """
 
-    def _load(model_id: str, ir_version: int) -> CheckContext:
+    def _load(
+        model_id: str, ir_version: int, artifact_dir: str | None = None
+    ) -> CheckContext:
         from tcad.verify.context import CheckContextError, build_check_context
 
-        artifact_dir = store.artifact_dir(model_id, ir_version)
+        if artifact_dir is None:
+            artifact_dir = str(store.artifact_dir(model_id, ir_version))
         ir_path = store.snapshot_path(model_id, ir_version)
         try:
             return build_check_context(
@@ -376,7 +482,9 @@ def build_context_loader(
             # A missing IR *snapshot* still propagates: `store.load` below raises,
             # and at that point there is genuinely nothing to grade.
             ir = store.load(model_id, ir_version)
-            digest = ContextServiceAdapter(store).digest(model_id, ir_version)
+            digest = ContextServiceAdapter(store).digest(
+                model_id, ir_version, artifact_dir=str(artifact_dir)
+            )
             return CheckContext(
                 model_id=model_id,
                 ir_version=ir_version,
@@ -442,7 +550,9 @@ def build_hooks(cfg: Config, data_dir: str | os.PathLike[str]):
         "network_guard": NetworkGuard(False),
         "privileged_triple_gate": PrivilegedTripleGate(
             allow_privileged=bool(cfg.policy.allow_privileged),
-            approval_lookup=lambda tool_name: approvals.lookup_valid(tool_name),
+            approval_lookup=lambda tool_name, args_hash=None, thread_id=None: approvals.lookup_valid(
+                tool_name, args_hash, thread_id
+            ),
             sandbox_ok=sandbox_ok,
         ),
     }
@@ -452,6 +562,48 @@ def build_hooks(cfg: Config, data_dir: str | os.PathLike[str]):
 # ══════════════════════════════════════════════════════════════════════════
 # 7. the entry point
 # ══════════════════════════════════════════════════════════════════════════
+
+
+def required_export_formats(artifact_exports) -> tuple[str, ...]:
+    """What one build must leave on disk to count as delivered.
+
+    Whatever config asked the exporter for, plus the reopenable document. FCStd
+    is written by ``compile_ir``'s ``saveAs`` rather than by ``artifact_exports``,
+    so it has to be added here — a build that produced no editable document has
+    failed even when STEP and STL came out fine. Case is normalised because
+    FreeCAD writes ``.FCStd`` and the Gate keys its discovery on ``fcstd``.
+    """
+    formats = [str(f).strip().lower() for f in (artifact_exports or []) if str(f).strip()]
+    return tuple(dict.fromkeys(formats + ["fcstd"]))
+
+
+def build_context_assembler(cfg: Config):
+    """Build the budgeted context assembler from configuration.
+
+    Every number comes from ``context.*`` so the shipped YAML is what actually
+    governs the window — the assembler's own defaults are only a fallback for
+    callers that construct it directly.
+
+    No LLM summariser is injected: summarising history would spend a model call
+    from inside context construction, which is both surprising and a new way for
+    a turn to fail. ``tcad.context.compactor`` handles ``summarize=None``
+    explicitly (a marker message rather than silently dropped history), and FULL
+    is the normal level at the default 128k window.
+    """
+    from tcad.context.assembler import ContextAssembler, ContextBudget
+
+    return ContextAssembler(
+        ContextBudget(
+            window_tokens=int(cfg.context.window_tokens),
+            system_prefix=int(cfg.context.budget.system_prefix),
+            digest=int(cfg.context.budget.digest),
+            gate_report=int(cfg.context.budget.gate_report),
+            images=int(cfg.context.budget.images),
+            summarize_keep_last_turns=int(cfg.context.summarize_keep_last_turns),
+            degrade_summarized=float(cfg.context.degrade_thresholds.summarized),
+            degrade_minimal=float(cfg.context.degrade_thresholds.minimal),
+        )
+    )
 
 
 def build_services(cfg: Config, *, start_worker: bool = True):
@@ -497,6 +649,11 @@ def build_services(cfg: Config, *, start_worker: bool = True):
         value = getattr(entry, attr, None) if entry is not None else None
         return default if value is None else value
 
+    # The delivery contract for one build: what config asked the exporter for,
+    # plus the reopenable document. Kept in one function so the Gate's demand
+    # and the exporter's behaviour can be compared in a test.
+    required_exports = required_export_formats(cfg.storage.artifact_exports)
+
     gate = Gate(
         build_context_loader(store, handle),
         VerifyConfig(
@@ -505,6 +662,7 @@ def build_services(cfg: Config, *, start_worker: bool = True):
             solid_count_expect=int(_threshold("solid_count", "expect", 1)),
             round_trip_tol_ratio=_threshold("round_trip", "tol_ratio", 1e-6),
             wall_thickness_min_mm=_threshold("wall_thickness", "min_mm", 1.0),
+            required_exports=required_exports,
         ),
     )
     # Hot-swappable: the engine holds this object forever and reads `.chat` at
@@ -536,6 +694,7 @@ def build_services(cfg: Config, *, start_worker: bool = True):
         renderer=renderer,
         hooks=hooks,
         context=context,
+        context_assembler=build_context_assembler(cfg),
         llm=llm,
         approvals=approvals,
         config=cfg,

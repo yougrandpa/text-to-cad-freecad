@@ -29,6 +29,7 @@ from tcad.config.loader import load_default_config, resolve_paths
 from tcad.core.wiring import SyncWorkerClient, build_services
 from tcad.core.worker_client import WorkerHandle
 from tcad.loop.commit import run_commit
+from tcad.store.artifacts import read_build_stamp
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FREECAD_CMD = os.environ.get(
@@ -461,3 +462,228 @@ def test_upstream_failures_are_named_when_the_gate_cannot_attest(services):
     assert "geometry measurement failed" in result.content
     assert "export_artifacts refused" in result.content
     assert "introspect_document refused" in result.content
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 5. provenance — the Gate may only grade files this attempt wrote
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def _commit(services, model_id: str, *, message: str = "build", version: int | None = None):
+    """Create (or reuse) a model and run one real commit attempt."""
+    if version is None:
+        created = services.store.create(model_id, rect_pad_ir(model_id))
+        version = int(created.version)
+    result, report = asyncio.run(
+        run_commit(
+            services, model_id=model_id, ir_version=version, message=message,
+            workdir=str(REPO_ROOT), data_dir=str(services.store.data_dir),
+        )
+    )
+    return version, result, report
+
+
+def _provenance(report):
+    return next(r for r in report.results if r.check_id == "provenance")
+
+
+def test_live_build_stamps_the_artefacts_it_is_graded_on(services):
+    """The stamp must exist, name this build, and predate this build's files."""
+    model_id = "wired_provenance"
+    version, result, report = _commit(services, model_id)
+    assert report is not None, f"never reached the Gate: {result.content[:300]}"
+    assert report.passed is True, report.blocking_failures
+
+    artifact_dir = services.store.artifact_dir(model_id, version)
+    stamp = read_build_stamp(artifact_dir)
+    assert stamp is not None, "run_commit must stamp before it compiles"
+    assert (stamp.model_id, stamp.ir_version) == (model_id, version)
+    assert len(stamp.ir_sha256) == 64, "the IR handed to the compiler must be hashed"
+
+    prov = _provenance(report)
+    assert prov.status.value == "pass", prov.message
+    assert report.attempt_id == stamp.attempt_id
+
+    step = artifact_dir / f"{model_id}.step"
+    assert step.stat().st_mtime >= stamp.started_at, (
+        "the graded STEP predates this attempt — it is a leftover")
+
+
+def test_retry_of_the_same_version_gets_its_own_attempt(services):
+    """Two commits into v<N> must not share a verdict's evidence.
+
+    The artefact directory is keyed by version, so a retry overwrites the files
+    but is a different build. Each attempt has to be identifiable on disk.
+    """
+    model_id = "wired_retry"
+    version, _, first = _commit(services, model_id, message="first")
+    _, _, second = _commit(services, model_id, message="retry", version=version)
+    assert first is not None and second is not None
+    assert first.passed is True and second.passed is True
+    assert first.attempt_id != second.attempt_id
+    assert _provenance(second).status.value == "pass"
+    assert read_build_stamp(
+        services.store.artifact_dir(model_id, version)).attempt_id == second.attempt_id
+
+
+def test_leftover_export_cannot_satisfy_a_later_grading(services):
+    """An old file with the right name must not read as a delivered artefact."""
+    model_id = "wired_leftover"
+    version, _, report = _commit(services, model_id)
+    assert report is not None and report.passed is True
+
+    artifact_dir = services.store.artifact_dir(model_id, version)
+    step = artifact_dir / f"{model_id}.step"
+    stamp = read_build_stamp(artifact_dir)
+    back = stamp.started_at - 3600.0
+    os.utime(step, (back, back))
+
+    regraded = services.gate.evaluate(model_id, version)
+    prov = _provenance(regraded)
+    assert prov.status.value == "fail", prov.message
+    assert "step" in prov.message
+    assert regraded.passed is False
+    assert "provenance" in regraded.blocking_failures
+
+
+def test_unstamped_directory_is_not_a_free_pass(services):
+    """A directory nobody stamped cannot certify its own provenance."""
+    model_id = "wired_unstamped"
+    version, _, report = _commit(services, model_id)
+    assert report is not None and report.passed is True
+
+    stamp_path = services.store.artifact_dir(model_id, version) / "build_stamp.json"
+    stamp_path.unlink()
+    regraded = services.gate.evaluate(model_id, version)
+    prov = _provenance(regraded)
+    assert prov.status.value == "fail", prov.message
+    assert "build stamp" in prov.message
+    assert prov.status.value != "skip", (
+        "'cannot verify' must not degrade into an ignorable SKIP")
+    assert regraded.passed is False
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 6. staging — a build is graded in private, published only if it passed
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def test_the_gate_grades_an_isolated_staging_directory(services):
+    """The Gate must never grade the directory a failed attempt can pollute."""
+    model_id = "wired_staging_target"
+    created = services.store.create(model_id, rect_pad_ir(model_id))
+    version = int(created.version)
+
+    seen: dict = {}
+    real_evaluate = services.gate.evaluate
+
+    def remember(mid, ver, *, artifact_dir=None):
+        seen["artifact_dir"] = artifact_dir
+        return real_evaluate(mid, ver, artifact_dir=artifact_dir)
+
+    services.gate.evaluate = remember
+    try:
+        _, report = asyncio.run(run_commit(
+            services, model_id=model_id, ir_version=version, message="staged",
+            workdir=str(REPO_ROOT), data_dir=str(services.store.data_dir),
+        ))
+    finally:
+        services.gate.evaluate = real_evaluate
+
+    assert report is not None and report.passed is True, report.blocking_failures
+    graded = seen["artifact_dir"]
+    assert graded, "the Gate was not told which directory to grade"
+    assert ".staging-" in graded, graded
+    canonical = services.store.artifact_dir(model_id, version)
+    assert Path(graded) != canonical
+    # ...and the verified attempt did become the version's artifacts.
+    assert canonical.is_dir() and (canonical / f"{model_id}.step").is_file()
+
+
+def test_a_failed_build_is_never_published(services):
+    """No export, no digest -> the version directory must stay empty."""
+    model_id = "wired_staging_fail"
+    created = services.store.create(model_id, rect_pad_ir(model_id))
+    version = int(created.version)
+    canonical = services.store.artifact_dir(model_id, version)
+
+    real_request = services.worker.request
+
+    def picky(method, params=None, *, timeout_s=30.0):
+        if method in ("export_artifacts", "introspect_document"):
+            return {"ok": False, "error": {"kind": "compile", "message": f"{method} refused"}}
+        return real_request(method, params, timeout_s=timeout_s)
+
+    services.worker.request = picky
+    try:
+        _, report = asyncio.run(run_commit(
+            services, model_id=model_id, ir_version=version, message="degraded",
+            workdir=str(REPO_ROOT), data_dir=str(services.store.data_dir),
+        ))
+    finally:
+        services.worker.request = real_request
+
+    assert report is not None and report.passed is False
+    assert not canonical.exists() or not any(
+        p.suffix.lower() in (".step", ".stl", ".fcstd") for p in canonical.rglob("*")
+    ), f"a failed build leaked artifacts: {sorted(p.name for p in canonical.rglob('*')) if canonical.exists() else []}"
+
+    parent = canonical.parent
+    leftovers = [p.name for p in parent.iterdir() if ".staging-" in p.name] if parent.exists() else []
+    assert leftovers == [], f"failed attempts left staging directories behind: {leftovers}"
+
+
+def test_a_published_build_carries_a_manifest(services):
+    """The version directory lists its own files, hashed, bound to the attempt."""
+    import hashlib as _hashlib
+
+    model_id = "wired_manifest"
+    version, _, report = _commit(services, model_id)
+    assert report is not None and report.passed is True, report.blocking_failures
+
+    canonical = services.store.artifact_dir(model_id, version)
+    manifest_path = canonical / "manifest.json"
+    assert manifest_path.is_file(), "a published build must carry its artifact list"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert manifest["model_id"] == model_id
+    assert manifest["ir_version"] == version
+    assert manifest["attempt_id"] == report.attempt_id
+    for name, meta in manifest["files"].items():
+        data = (canonical / name).read_bytes()
+        assert meta["bytes"] == len(data), name
+        assert meta["sha256"] == _hashlib.sha256(data).hexdigest(), name
+
+
+def test_a_failed_retry_leaves_the_verified_build_in_place(services):
+    """Recovery is "do nothing": the last green build is never damaged."""
+    model_id = "wired_failed_retry"
+    version, _, first = _commit(services, model_id, message="first")
+    assert first is not None and first.passed is True
+
+    canonical = services.store.artifact_dir(model_id, version)
+    manifest_before = json.loads((canonical / "manifest.json").read_text(encoding="utf-8"))
+    step_before = (canonical / f"{model_id}.step").read_bytes()
+    assert manifest_before["attempt_id"] == first.attempt_id
+
+    real_request = services.worker.request
+
+    def picky(method, params=None, *, timeout_s=30.0):
+        if method in ("export_artifacts", "introspect_document"):
+            return {"ok": False, "error": {"kind": "compile", "message": f"{method} refused"}}
+        return real_request(method, params, timeout_s=timeout_s)
+
+    services.worker.request = picky
+    try:
+        _, second = asyncio.run(run_commit(
+            services, model_id=model_id, ir_version=version, message="retry",
+            workdir=str(REPO_ROOT), data_dir=str(services.store.data_dir),
+        ))
+    finally:
+        services.worker.request = real_request
+
+    assert second is not None and second.passed is False
+    # The failed retry must not have overwritten the verified evidence.
+    assert (canonical / f"{model_id}.step").read_bytes() == step_before
+    manifest_after = json.loads((canonical / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest_after["attempt_id"] == first.attempt_id

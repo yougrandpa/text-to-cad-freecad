@@ -18,6 +18,8 @@ results under explicit, fail-closed rules:
 
 from __future__ import annotations
 
+import inspect
+
 from tcad.core.types import (
     CheckContext,
     CheckResult,
@@ -30,6 +32,23 @@ from tcad.verify.checks_spec import build_spec_checks
 from tcad.verify.context import ContextLoader
 
 
+def _loader_accepts_artifact_dir(loader) -> bool:
+    """Whether ``loader`` can be asked to grade a specific directory.
+
+    A build grades its private staging directory, not the version's published
+    artifacts (see ``tcad/store/artifacts.py``). Loaders written against the
+    original two-argument contract must keep working, so the extra argument is
+    passed only when the callable actually declares it.
+    """
+    try:
+        params = inspect.signature(loader).parameters
+    except (TypeError, ValueError):
+        return False
+    if "artifact_dir" in params:
+        return True
+    return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
 class Gate:
     def __init__(
         self,
@@ -37,15 +56,29 @@ class Gate:
         config: VerifyConfig | None = None,
         solid_checks: list | None = None,
     ):
-        """``context_loader`` is ``(model_id, ir_version) -> CheckContext`` and is
-        the ONLY way the Gate obtains inputs — it must read from disk (see
+        """``context_loader`` is ``(model_id, ir_version[, artifact_dir]) -> CheckContext``
+        and is the ONLY way the Gate obtains inputs — it must read from disk (see
         ``tcad.verify.context.build_check_context``)."""
         self._load = context_loader
         self.config = config or VerifyConfig()
         self._solid_checks = solid_checks
+        self._loader_takes_dir = _loader_accepts_artifact_dir(context_loader)
 
-    def evaluate(self, model_id: str, ir_version: int) -> GateReport:
-        ctx = self._load(model_id, ir_version)
+    def evaluate(
+        self, model_id: str, ir_version: int, *, artifact_dir: str | None = None
+    ) -> GateReport:
+        """Grade a version.
+
+        ``artifact_dir`` grades a specific directory instead of the version's
+        published one — how a build is judged *before* it is allowed to become
+        the version's artifacts. When the injected loader cannot take it, the
+        request is ignored rather than crashed on: an embedder with a simpler
+        loader still gets a verdict.
+        """
+        if artifact_dir is not None and self._loader_takes_dir:
+            ctx = self._load(model_id, ir_version, artifact_dir=artifact_dir)
+        else:
+            ctx = self._load(model_id, ir_version)
         checks = self._assemble(ctx)
         results = [self._safe_run(chk, ctx) for chk in checks]
 
@@ -76,8 +109,11 @@ class Gate:
         blocking_failures = [
             r.check_id for r in blocking if r.status in (CheckStatus.FAIL, CheckStatus.ERROR)
         ]
-        if cannot_attest and not blocking_failures:
-            # Make the reason legible instead of an unexplained `passed=False`.
+        if cannot_attest:
+            # A separate reason, reported alongside the failing checks rather
+            # than only when nothing else failed. "The bbox is wrong" and "there
+            # are no measurements to judge anything against" are both true of a
+            # broken build, and dropping the second hides the more serious one.
             blocking_failures.append(
                 "gate:cannot_attest_no_measurements"
                 if no_measurements
@@ -98,6 +134,8 @@ class Gate:
             blocking_failures=blocking_failures,
             advisory_findings=advisory_findings,
             skipped_checks=skipped_checks,
+            attempt_id=ctx.build_stamp.attempt_id if ctx.build_stamp else "",
+            ir_sha256=ctx.build_stamp.ir_sha256 if ctx.build_stamp else "",
         )
 
     # ── internal ──────────────────────────────────────────────────────────

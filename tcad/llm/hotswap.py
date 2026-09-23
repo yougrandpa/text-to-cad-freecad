@@ -122,9 +122,15 @@ async def probe_llm(
     """Establish whether these settings can actually reach a model.
 
     Two-step, cheapest first. ``GET /models`` is one request and also yields the
-    live model list; only if that is unavailable do we spend a real (1-token)
-    completion to prove the chat path works. A provider that answers ``/models``
-    but cannot complete is still reported as failing the chat fallback.
+    live model list; that alone is enough to report the connection as working.
+    A one-token completion is spent only when the listing is unavailable.
+
+    **What this does not answer**: whether the provider can *serve*. ``/models``
+    returns 200 for a credential whose account has no balance, and every chat
+    request then returns 402 — so ``ok=True`` here means "the endpoint answers
+    and the settings parse", not "layer 3 can run". Anything that reports a
+    verdict from this result must say so; ``tools/doctor.py`` and the layer-3
+    pre-flight therefore send their own minimal completion and classify it.
     """
     base = settings.resolved_base_url()
     result = ProbeResult(

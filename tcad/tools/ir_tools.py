@@ -26,6 +26,7 @@ from tcad.core.types import (
     ToolSpec,
     ToolTier,
 )
+from tcad.ir import capability
 from tcad.ir.schema import IrDocument
 
 
@@ -127,7 +128,8 @@ async def ir_commit_handler(services: "Any", args: dict, ctx: ToolContext) -> "A
     message = args.get("message", "") if isinstance(args, dict) else ""
     version = services.store.current_version(ctx.model_id)
     result, report = await run_commit(
-        services, ctx.model_id, version, message, ctx.workdir, ctx.data_dir
+        services, ctx.model_id, version, message, ctx.workdir, ctx.data_dir,
+        hooks=getattr(ctx, "hooks", None),
     )
     return ToolOutcome(result=result, gate_report=report)
 
@@ -178,16 +180,20 @@ op names and their payload shapes:
         Set "reversed": true, or "midplane": true, in the pad's params to extrude
         the other way / symmetrically.
 
-      POSITIONING A PROFILE — prefer `offset` over absolute dimensions:
-        Model the profile around the sketch's OWN origin (bind one curve to the
-        sketch origin, then dimension the opposite endpoints — the recipe below),
-        then place it with "offset": {"x": ..., "y": ..., "z": ...} (applied in
-        world axes, after the sketch is attached).
-        Dimensioning several points in absolute coordinates instead tends to
-        over-determine the sketch: mixing an absolute dimension on a line's start
-        point with a horizontal/vertical constraint and a dimension on its end
-        point is a solver conflict, reported as "the sketch contains conflicting
-        constraints".
+      POSITIONING A PROFILE — the coordinates ARE the position:
+        Write each point where you want it in world coordinates. Do NOT reach for
+        a sketch `offset`: it is refused, because it does not place the profile
+        and — together with a curve bound to the sketch origin — actively
+        deforms it. Measured on the kernel: a 40x20 rectangle padded 5 gives
+        volume 4000 at offset (0,0,0), 2500 at (10,10,0) and 4050 with a sheared
+        bbox at (5,-3,0). Same profile, same bbox, different solid.
+        To anchor a profile that does not start at the origin, dimension its
+        points ABSOLUTELY — one DistanceX and one DistanceY per edge, referencing
+        that edge's own points — and leave the origin binding out. What DOES
+        over-determine a sketch is dimensioning both endpoints of the same line
+        in absolute coordinates *while also* binding one of them to the origin:
+        those two say different things, and the solver satisfies both by moving
+        the geometry. Pick one anchor per edge, not both.
 
       Constraint refs are positional, exactly as Sketcher.Constraint(type, *refs):
         {"type":"Coincident","refs":[0,2,1,1]}   line0 end  == line1 start
@@ -199,25 +205,100 @@ op names and their payload shapes:
       ORDER MATTERS: bind a curve to the origin FIRST (refs [i, pointIdx, -1, 1]), then
       dimension its FREE endpoints. Dimensioning a point already tied to the origin is a
       solver conflict, and FreeCAD reports that with a misleading "Invalid constraint index".
+      Coordinates and constraints are the SAME thing to the solver — it satisfies the
+      constraints and moves the geometry to do it. So a bind that contradicts the
+      coordinates you wrote (profile at (10,10)…(30,30) plus a Coincident to the
+      origin) does NOT fail: the solver drags the profile over to the origin, the
+      build passes, and the cut lands somewhere you did not write. Bind the origin
+      only when the profile really starts there; a profile that lives elsewhere
+      must be anchored with absolute dimensions instead (and never with a sketch
+      offset — that is refused). Whenever a feature's measured result is not what
+      you intended, check this before anything else.
 
   add_feature  payload is a feature:
       {"id": "ft_pad", "name": "base_pad", "op": "pad", "profile_sketch": "sk_base",
        "params": {"length": 10.0, "type": "Length"}}
-      op 必须精确，不存在通配写法：
-        pad | pocket | revolution | groove | hole | fillet | chamfer | draft
-        | thickness | mirrored | linear_pattern | circular_pattern | polar_pattern
-        | multi_transform | datum_plane
-        | additive_box | additive_cylinder | additive_sphere
-        | subtractive_box | subtractive_cylinder | subtractive_sphere
+{OP_CAPABILITY}
 
       pad params:    {"length": <mm>, "type": "Length"|"UpToLast"|"UpToFirst"|"UpToFace"}
       pocket params: {"length": <mm>, "type": "Length"|"ThroughAll"|"UpToFirst"|"UpToFace",
                       "reversed": true|false}
                      (a through-slot is {"type": "ThroughAll"})
+      revolution params: {"angle": <deg, default 360>, "type": "Angle",
+                          "axis": "V_Axis"|"H_Axis"|"N_Axis"|"X"|"Y"|"Z"}
+                     A Revolve needs an AXIS, and it must lie in the profile's plane:
+                       V_Axis / H_Axis / N_Axis -> the PROFILE SKETCH's own vertical /
+                         horizontal / normal axis (default V_Axis). This follows the
+                         sketch, so it stays correct when the sketch is offset.
+                       X / Y / Z -> that axis of the BODY's origin. Use this when the
+                         profile is drawn away from the sketch origin and the revolve
+                         axis must stay on the global axis.
+                     RECIPE (measured): draw the closed profile at its real coordinates
+                     and close the loop with Coincident constraints; put one edge ON the
+                     axis you revolve about. Adding DistanceX/DistanceY on top of an
+                     already-closed chain can silently MOVE a vertex — a shaft that
+                     should be 2720*pi came out at 38453 mm^3 with no error — so size a
+                     revolved profile by its coordinates, then check ir_digest.
+                     Example (stepped shaft about Z, profile on XZ):
+                       points (0,0) (10,0) (10,20) (6,20) (6,40) (0,40), edge (0,40)-(0,0)
+                       lies on the axis; revolution with axis "V_Axis" -> V = 2720*pi.
+      mirrored / linear_pattern / polar_pattern — the plane and the axis are
+      REFERENCES, and the kernel's failure mode when one is missing is SILENT:
+        mirrored:       "plane": {"kind":"origin_plane","plane":"XY"|"XZ"|"YZ"}
+                        or {"kind":"face","feature_id":"ft_plate","sub":"Face6"}.
+                        With no plane FreeCAD returns a NULL shape.
+        linear_pattern: params {"axis":"X"|"Y"|"Z", "mode":"Extent"|"Spacing",
+                        "length" (Extent) | "offset" (Spacing) in mm,
+                        "occurrences": <n>}. Extent spreads the copies across the
+                        length; Spacing steps by offset. With no axis FreeCAD
+                        returns ONE occurrence and reports no error.
+        polar_pattern:  params {"axis":"X"|"Y"|"Z", "angle": <deg>,
+                        "occurrences": <n>}. Spacing is angle/(occurrences-1), so
+                        angle 270 with 4 copies lands at 0/90/180/270 degrees.
+                     X / Y / Z are the BODY's origin axes. H_Axis / V_Axis /
+                     N_Axis are the PROFILE sketch's axes (revolution/groove only)
+                     and are refused here: a pattern repeats features, not a
+                     profile. `refs` names the feature(s) to repeat, and they must
+                     already exist — a pattern of nothing is refused.
+      draft / thickness — the FACES are references, carried in the same two fields
+      a fillet uses for edges ("base_feature" + "sub_elements" = the face names
+      ir_digest publishes), and draft takes its neutral plane from the same typed
+      "plane" field a mirror uses:
+        draft:      the named faces are tapered about the neutral plane; params
+                    {"angle": <deg>, "reversed": true|false}. With no "plane" the
+                    kernel returns a NULL shape; a face PARALLEL to the neutral
+                    plane has no intersection line to rotate about and fails —
+                    both are refused by name and tell you the fix. Measured: the
+                    four side faces of a 40x40x20 box drafted 5 deg off the XY
+                    plane → 29282.0083 mm^3 (reversed grows to 34881.2827).
+                    Prefer the XY/XZ/YZ plane that the part stands on.
+        thickness:  the named face is OPENED (it stays where it is; every other
+                    face is offset inwards by the wall); params {"value": <mm
+                    wall thickness>, "reversed": true|false}. It reads no plane.
+                    Measured: opening the top face of the same box with value=2
+                    leaves 8672 mm^3 — a cup, not a shell around the outside.
       additive_*/subtractive_* are PRIMITIVES: no sketch needed, they carry their own
       size. Pass lowercase keys matching the object's properties, e.g.
       {"length": 30, "width": 10, "height": 10}. An unknown key comes back as
       "unsupported property" — read the object with ir_get rather than guessing.
+      WHERE a primitive goes is the typed "placement" field, in WORLD mm:
+        "placement": {"position": {"x": 20, "y": 30, "z": 0}}
+        "placement": {"position": {"x": 40, "y": 25, "z": 8},
+                      "axis": {"x": 0, "y": 1, "z": 0}, "angle": 90}
+      A primitive with no placement is built AT THE ORIGIN, and a part that does
+      not contain the origin gets a lump floating beside it — a Compound, which
+      the Gate rejects. `position` is the feature's own origin: a box grows into
+      +X/+Y/+Z from there, a cylinder/sphere is centred on it. `axis` + `angle`
+      (degrees, counter-clockwise about `axis` through `position`) turn it; a
+      cylinder defaults to its axis along +Z, so axis Y with angle 90 lays it
+      along +X. Measured on the real kernel: cylinder r6 h20 at (10,10,0) on an
+      80x50x8 plate merges into ONE solid of 32000 + 432*pi mm^3; a subtractive
+      box 10x10x4 at (40,20,4) removes exactly 400. Only the primitives take a
+      placement — every other op is positioned by its sketch, its `refs` or its
+      `plane`, and offering one there is refused. To move a primitive that is
+      already there ("move that pin to the other corner"), send the new
+      `placement` in an `update_feature` on it; a null placement sends it back
+      to the origin. Do not rebuild the part to move one feature.
 
       ── growing material onto an existing solid (an arm, a boss, a rib) ──
       Features in one body DO merge into a single solid — but only where they
@@ -229,19 +310,37 @@ op names and their payload shapes:
       a pocket cuts in the direction OPPOSITE its profile's normal. A profile on
       the XY plane has normal +Z, so the cut goes DOWN (-Z). If the material sits
       on the +Z side of that plane — which it does when you padded the same XY
-      profile — the cut goes into empty space and the feature does nothing at all
-      while still reporting success. Set "reversed": true to cut upward through
-      the plate. Cheap check: if a pocket "succeeded" but the volume did not
-      change, this is why.
+      profile — the cut goes into empty space. Set "reversed": true INSIDE the
+      pocket's `params` — i.e. {"op": "pocket", "profile_sketch": "sk",
+      "params": {"length": 8, "reversed": true}} — to cut upward through the
+      plate. `reversed` is a `params` key on every profile op; writing it at the
+      top level of the payload is refused by name rather than ignored, because a
+      silently dropped direction is a cut that goes into air. The compiler also
+      refuses a cut that leaves the solid unchanged and names the feature ("did
+      not change the solid"), so a pocket that misses is an error rather than a
+      quiet no-op — but measure after any cut anyway (ir_digest), because "the
+      volume dropped" is not the same as "the volume dropped by what I asked
+      for".
 
       `refs` declares build ORDER only — it creates no geometric relationship.
       Pointing it at the torso will NOT make the arm grow out of the torso. To
       attach a feature to an existing solid, do one of:
         (a) draw its sketch ON one of that solid's faces:
             "plane": {"kind":"face","feature_id":"ft_body","sub":"Face6"}
-            (look the face number up with ir_get / ir_digest — do not guess it)
-        (b) keep the sketch on an origin plane and use offset / coordinates to
-            place it inside the torso's extent, overlapping it
+            `ir_digest` LISTS the planar faces with their name, area, outward
+            normal and centre — pick by intent ("the +Z face of area 4000") rather
+            than guessing a number, which shifts when the model changes. The name
+            is FreeCAD's 1-based `Face<N>`.
+            A face-attached sketch is interpreted in THAT face's frame, so the
+            profile coordinates are relative to the face, not to the world origin.
+        (b) keep the sketch on an origin plane and write the profile's WORLD
+            coordinates so it sits inside the torso's extent, overlapping it.
+            Use coordinates for this, NOT `offset`: sketch coordinates are world
+            coordinates and `offset` is part of the same placement, so a
+            non-zero offset CANCELLED OUT against them and moved nothing
+            (measured on the real kernel — a 40x20 XY rectangle with
+            offset=(10,10,0) pads to a body still at the origin). A non-zero
+            offset now draws a warning saying exactly that.
       (a) is usually less work: face attachment inherits that face's coordinate
       system, so there is no mapping to work out by hand.
 
@@ -250,8 +349,17 @@ op names and their payload shapes:
   update_sketch      target_id = sketch id; payload = partial sketch fields.
                      `geometry`/`constraints` REPLACE the whole list; use
                      `geometry_append`/`constraints_append` to add instead.
+                     These are ARRAYS of objects, and the values are TYPED:
+                     `reversed`/`require_fully_constrained` are booleans, `offset`
+                     is an object, `plane` is an object. A string where a list or
+                     a boolean belongs is rejected with the field named — it is
+                     not coerced ("false" would otherwise be a truthy string and
+                     silently reverse the sketch).
   update_feature     target_id = feature id; payload = partial feature fields.
                      `params` merges field-wise; `refs` replaces (`refs_append` adds).
+                     `refs` is an ARRAY OF ID STRINGS — passing the bare id
+                     ("refs": "ft_pad") is rejected rather than read as a list of
+                     characters.
   remove_feature     target_id = feature id; refused if another feature references it,
                      and the error names the dependents. Pass "cascade": true only to
                      deliberately rewire dependents.
@@ -279,6 +387,13 @@ mean "whatever is latest when this patch is applied".
     one that can detect that the model moved under you, and it is refused rather
     than silently rebased. A stale integer is rejected, never rebased."""
 
+# Substituted, not formatted: the text above is full of literal JSON braces.
+# The op list and its tiers come from tcad/ir/capability.py — the same table the
+# validator reads — so the promise in the prompt cannot drift from the proof.
+_IR_PATCH_DESCRIPTION = _IR_PATCH_DESCRIPTION.replace(
+    "{OP_CAPABILITY}", capability.describe_for_model()
+)
+
 
 def _ir_patch_schema() -> dict:
     """Model-facing schema for ir_patch.
@@ -294,6 +409,15 @@ def _ir_patch_schema() -> dict:
     """
     schema = IrPatch.model_json_schema()
     schema["required"] = ["base_version", "ops"]
+    # The declared type must match what the handler actually accepts. `ir_patch`
+    # resolves the literal string "current" to the latest version before building
+    # the IrPatch, so declaring `base_version: integer` would make the enforced
+    # schema reject a documented, supported call.
+    schema["properties"]["base_version"] = {
+        "anyOf": [{"type": "integer"}, {"type": "string", "enum": ["current"]}],
+        "title": "Base Version",
+        "description": "The integer IR version you last read, or \"current\".",
+    }
     op_def = schema.get("$defs", {}).get("IrPatchOp", {})
     if isinstance(op_def, dict):
         op_def["required"] = ["op", "payload", "reason"]
@@ -326,7 +450,9 @@ def build_ir_tools(services: "Any") -> dict[str, ToolSpec]:
         "ir_digest": ToolSpec(
             name="ir_digest",
             tier=ToolTier.READ,
-            description="Return a compact program-generated geometry digest (feature chain, topology, bbox, volume, key dimensions). Cheaper than ir_get.",
+            description=("Return a compact program-generated geometry digest (feature chain, "
+                         "topology, bbox, volume, key dimensions, BRep-measured holes and the "
+                         "planar faces you can attach a sketch to). Cheaper than ir_get."),
             params_schema={"type": "object", "properties": {}},
             handler=functools.partial(ir_digest_handler, services),
             concurrency_safe=True,
