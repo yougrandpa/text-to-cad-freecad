@@ -6,7 +6,7 @@
 <title>tcad · 对话式 CAD</title>
 <link rel="icon" type="image/svg+xml" href="./favicon.svg">
 <link rel="icon" type="image/png" sizes="64x64" href="./favicon.png">
-<link rel="stylesheet" href="./styles.css?v=20261004-motion">
+<link rel="stylesheet" href="./styles.css?v=20261004-assembly">
 </head>
 <body>
 
@@ -141,9 +141,10 @@
     </div>
     <div class="view-status" id="viewStatus" role="status" aria-live="polite">真实网格 · 自由旋转 / 缩放 / 平移</div>
     <div class="motion-controls" id="motionControls" hidden>
-      <label for="crankAngle">摇杆转角 <output id="crankAngleValue">0°</output></label>
+      <label for="crankAngle"><span id="motionLabel">摇杆转角</span> <output id="crankAngleValue">0°</output></label>
       <input id="crankAngle" type="range" min="0" max="720" step="1" value="0">
-      <div class="muted small">按声明的传动比演示 · 未验证碰撞、齿面接触或实际切削</div>
+      <div class="motion-player"><button class="mini" id="animationPlay" type="button">播放</button> <button class="mini" id="animationReset" type="button">归零</button> <label>速度 <select id="animationSpeed"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select></label> <label><input id="animationLoop" type="checkbox" checked>循环</label></div>
+      <div class="muted small" id="motionNote">按声明的传动比演示 · 未验证碰撞、齿面接触或实际切削</div>
     </div>
     <div class="filebar" id="fileBar"></div>
   </section>
@@ -229,6 +230,6 @@
   </div>
 </div>
 
-<script type="module" src="./app.js?v=20261004-motion"></script>
+<script type="module" src="./app.js?v=20261004-assembly"></script>
 </body>
 </html>

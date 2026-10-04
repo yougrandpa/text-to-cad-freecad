@@ -87,11 +87,17 @@ tools:
     - ir_digest
     - ir_list_features
     - geo_view
+    - geo_check_motion
+    - assembly_simulate
+    - assembly_solve
+    - assembly_export
     - geo_measure
     - asset_export
     - asset_import
   write:
     - ir_patch
+    - ir_gear_profile
+    - assembly_configure
     - ir_commit
   privileged: []                    # empty = raw_python et al. are not even registered
 

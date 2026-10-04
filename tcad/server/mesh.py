@@ -56,6 +56,38 @@ class MeshPreviewResponse(BaseModel):
     motion: list[PreviewMotion] = Field(default_factory=list)
 
 
+def _checked_animation(result: dict, ir_data: dict, vertex_count: int) -> dict:
+    """Validate bounded native poses before sending worker data to the viewport."""
+    parts, frames = result.get("parts"), result.get("frames")
+    expected = {body["id"] for body in ir_data["bodies"]}
+    if not isinstance(parts, list) or not isinstance(frames, list) or not 1 <= len(frames) <= 600:
+        raise HTTPException(502, "invalid native animation frames")
+    ids, ranges = set(), []
+    for part in parts:
+        id, start, count = part.get("body_id"), part.get("vertex_start"), part.get("vertex_count")
+        if (id not in expected or id in ids or type(start) is not int or type(count) is not int
+                or start < 0 or count <= 0 or start+count > vertex_count
+                or any(start < hi and start+count > lo for lo,hi in ranges)):
+            raise HTTPException(502, "invalid native animation body range")
+        ids.add(id)
+        ranges.append((start,start+count))
+    if ids != expected or sum(hi-lo for lo,hi in ranges) != vertex_count:
+        raise HTTPException(502, "incomplete native animation bodies")
+    for frame in frames:
+        if not isinstance(frame, dict) or set(frame) != ids:
+            raise HTTPException(502, "incomplete native animation pose")
+        for matrix in frame.values():
+            if (not isinstance(matrix,list) or len(matrix) != 16
+                    or not all(type(v) in (int,float) and math.isfinite(v) for v in matrix)
+                    or any(abs(matrix[i]-v) > 1e-6 for i,v in ((12,0),(13,0),(14,0),(15,1)))):
+                raise HTTPException(502, "invalid native animation transform")
+    spec = ir_data["assembly"]
+    if result.get("start") != spec["start"] or result.get("step") != spec["step"]:
+        raise HTTPException(502, "animation time does not match declaration")
+    return {"parts": parts, "frames": frames, "start": result["start"], "step": result["step"],
+            "solver": "FreeCAD Assembly"}
+
+
 def _checked_motion(raw: Any, ir_data: dict, vertex_count: int) -> list[dict]:
     """Accept only measured ranges corresponding to the stored declarations."""
     declared = {b["id"]: b["motion"] for b in ir_data["bodies"] if b.get("motion")}
@@ -207,7 +239,7 @@ def mesh_preview(
             # worker-side build side effects remain isolated and are cleaned up.
             with tempfile.TemporaryDirectory(prefix="mesh-", dir=root) as workdir:
                 res = services.worker.request(
-                    M_TESSELLATE,
+                    ("simulate_assembly" if ir.assembly.drivers else "solve_assembly") if ir.assembly is not None else M_TESSELLATE,
                     {"ir": ir_data, "out_dir": workdir, "tolerance": tolerance},
                     timeout_s=180.0,
                 )
@@ -228,10 +260,13 @@ def mesh_preview(
             status = 504 if kind == "timeout" else 503 if kind == "runtime" else 422
             raise HTTPException(status, f"cannot tessellate model: {message or 'tessellate failed'}")
         mesh = _checked_mesh(result.get("mesh") if isinstance(result, dict) else None)
-        motion = _checked_motion(result.get("motion"), ir_data, mesh["vertex_count"])
+        animation = _checked_animation(result, ir_data, mesh["vertex_count"]) if ir.assembly is not None else None
+        motion = [] if animation else _checked_motion(result.get("motion"), ir_data, mesh["vertex_count"])
         payload = {"model_id": model_id, "version": actual_version, "mesh": mesh}
         if motion:
             payload["motion"] = motion
+        if animation:
+            payload["animation"] = animation
         body = json.dumps(
             payload,
             ensure_ascii=False, allow_nan=False, separators=(",", ":"),

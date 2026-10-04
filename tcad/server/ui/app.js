@@ -13,7 +13,7 @@
  *     real decisions.
  */
 
-import { MeshViewport } from "./viewport.js?v=20261004-motion";
+import { MeshViewport } from "./viewport.js?v=20261004-assembly";
 
 const $ = (id) => document.getElementById(id);
 
@@ -840,7 +840,7 @@ async function loadView(force, { version = null } = {}) {
       if (!current()) return;
       if (body.model_id !== token.modelId || !Number.isInteger(body.version) || body.version < 0 ||
           (version != null && body.version !== version)) throw new Error("网格响应与当前模型版本不匹配");
-      const count = meshViewer.setMesh(body.mesh, body.motion || []);
+      const count = meshViewer.setMesh(body.mesh, body.motion || [], body.animation || null);
       clearViewImage();
       placeholder.hidden = true;
       setViewMode(true, `IR v${body.version} · ${count.toLocaleString()} 三角面 · 拖动旋转，滚轮缩放`);
@@ -897,7 +897,7 @@ async function loadArtifacts() {
       (token.version != null ? `?version=${token.version}` : "")
     );
     if (stale(token)) return;   // the user moved on; this answer is not ours to show
-    const files = (body.files || []).filter((f) => !f.endsWith(".png") && !f.endsWith(".json"));
+    const files = (body.files || []).filter((f) => !f.endsWith(".png") && (!f.endsWith(".json") || f.endsWith("animation.json")) && !f.toLowerCase().endsWith(".fcbak"));
     if (!files.length) {
       bar.append(el("span", { class: "muted small", text: "暂无导出产物（STEP / STL 在 Gate 通过后生成）" }));
       return;
@@ -1414,7 +1414,7 @@ function wire() {
   });
   meshViewer = new MeshViewport($("viewCanvas"), {
     axes: $("viewAxes"),
-    motionControls: { root: $("motionControls"), input: $("crankAngle"), output: $("crankAngleValue") },
+    motionControls: { root: $("motionControls"), input: $("crankAngle"), output: $("crankAngleValue"), play: $("animationPlay"), reset: $("animationReset"), speed: $("animationSpeed"), loop: $("animationLoop"), label: $("motionLabel"), note: $("motionNote") },
     onChange: ({ view }) => selectView(view),
     onError: () => loadView(false),
   });

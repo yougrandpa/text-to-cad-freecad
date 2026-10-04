@@ -17,6 +17,9 @@ M_COMPILE_IR = "compile_ir"
 M_INTROSPECT = "introspect_document"
 M_EXPORT = "export_artifacts"
 M_TESSELLATE = "tessellate"
+M_CHECK_MOTION = "check_motion"
+M_SIMULATE_ASSEMBLY = "simulate_assembly"
+M_SOLVE_ASSEMBLY = "solve_assembly"
 M_IMPORT_ASSET = "import_asset"
 M_REOPEN_EDIT = "reopen_edit_measure"
 
@@ -27,6 +30,9 @@ WORKER_METHODS: tuple[str, ...] = (
     M_INTROSPECT,
     M_EXPORT,
     M_TESSELLATE,
+    M_CHECK_MOTION,
+    M_SIMULATE_ASSEMBLY,
+    M_SOLVE_ASSEMBLY,
     M_IMPORT_ASSET,
     M_REOPEN_EDIT,
 )

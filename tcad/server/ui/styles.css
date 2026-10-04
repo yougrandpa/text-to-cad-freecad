@@ -664,3 +664,9 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); 
 .motion-controls[hidden] { display: none; }
 .motion-controls label { display: flex; justify-content: space-between; }
 .motion-controls input { width: 100%; }
+
+.motion-player { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
+.motion-player label { display: inline-flex; gap: 4px; align-items: center; }
+.motion-player input { width: auto; }
+
+.motion-player select { background: var(--panel-2); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }

@@ -890,8 +890,18 @@ def _add_sketch(doc, body, s: dict, ref_objects: dict) -> dict:
                 ),
             })
 
+    # Generated fixed profiles need one solver update, rather than one per edge.
+    constraints = s.get("constraints") or []
+    if constraints and all(c.get("type") == "Block" and len(c.get("refs") or []) == 1 for c in constraints):
+        try:
+            sk.addConstraint([Sketcher.Constraint("Block", int(c["refs"][0])) for c in constraints])
+            constraints = []
+        except Exception as exc:
+            state["errors"].append({"kind": "solver", "feature_id": s.get("id"),
+                                    "message": f"fixed profile constraints failed: {exc}"})
+            constraints = []
     # ── constraints ──
-    for con in s.get("constraints") or []:
+    for con in constraints:
         try:
             con_type = con.get("type")
             refs = list(con.get("refs") or [])

@@ -30,3 +30,15 @@ test('invalid, overlapping, or out-of-bounds ranges are rejected', () => {
       [motion(0,1),motion(0,2)],[motion(0,Infinity)]]) assert.throws(()=>poseMesh(mesh,parts,0));
   assert.throws(()=>poseMesh(mesh,[motion(0,1)],NaN));
 });
+
+const { poseAnimation } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+test('native animation applies row-major solver rotation and translation without drift', () => {
+  const mesh={vertices:[[1,0,0],[5,5,5]],facets:[]};
+  const m=[0,-1,0,10,1,0,0,20,0,0,1,30,0,0,0,1];
+  const animation={parts:[{body_id:'arm',vertex_start:0,vertex_count:1}],frames:[{arm:m}]};
+  const posed=poseAnimation(mesh,animation,0);
+  close(posed.vertices[0],[10,21,30]); close(posed.vertices[1],[5,5,5]); close(mesh.vertices[0],[1,0,0]);
+  assert.throws(()=>poseAnimation(mesh,animation,1));
+  animation.frames[0].arm[0]=Infinity;
+  assert.throws(()=>poseAnimation(mesh,animation,0));
+});

@@ -57,3 +57,18 @@ def test_motion_tessellates_real_bodies_and_leaves_static_body_fixed(worker, tmp
     assert zero["mesh"]["facets"] == turned["mesh"]["facets"]
     for a,b in zip(zero["mesh"]["vertices"][start:],turned["mesh"]["vertices"][start:]):
         assert b == pytest.approx([10-a[1],a[0]-10,a[2]],abs=1e-6)
+
+
+def test_sampled_brep_collision_uses_pivot_and_detects_interior_overlap(worker, tmp_path):
+    ir = {'model_id': 'collision', 'bodies': [
+        {'id': 'fixed', 'name': 'fixed', 'features': [{'id': 'box', 'op': 'additive_box',
+         'params': {'length': 2, 'width': 2, 'height': 2}, 'placement': {'position': {'x': -1, 'y': 4, 'z': 0}}}]},
+        {'id': 'arm', 'name': 'arm', 'motion': {'pivot': {'x': 0, 'y': 0, 'z': 0},
+         'axis': {'x': 0, 'y': 0, 'z': 1}, 'ratio': 1}, 'features': [{'id': 'arm_box', 'op': 'additive_box',
+         'params': {'length': 6, 'width': 2, 'height': 2}}]}]}
+    result = worker.request_sync('check_motion', {'ir': ir, 'out_dir': str(tmp_path), 'angles': [0, -90, 90]}, timeout_s=180)
+    assert result['ok'], result
+    assert result['pairs_checked'] == 1
+    assert len(result['interferences']) == 1
+    assert result['interferences'][0]['angle_deg'] == 90
+    assert result['interferences'][0]['overlap_mm3'] == pytest.approx(4)

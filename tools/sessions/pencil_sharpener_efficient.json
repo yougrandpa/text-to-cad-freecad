@@ -1,0 +1,1036 @@
+[
+  {
+    "name": "ir_patch",
+    "args": {
+      "base_version": "current",
+      "ops": [
+        {
+          "op": "add_body",
+          "payload": {
+            "id": "body_1",
+            "name": "body_1"
+          },
+          "reason": "Create independent assembly part"
+        },
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "shell_outer",
+            "name": "shell_outer",
+            "op": "additive_box",
+            "params": {
+              "length": 120,
+              "width": 90,
+              "height": 70
+            },
+            "placement": {
+              "position": {
+                "x": 0.0,
+                "y": 0.0,
+                "z": 0.0
+              }
+            },
+            "body_id": "body_1"
+          },
+          "reason": "Build the planned mechanism feature"
+        },
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "shell_cavity",
+            "name": "shell_cavity",
+            "op": "subtractive_box",
+            "params": {
+              "length": 114,
+              "width": 84,
+              "height": 67
+            },
+            "placement": {
+              "position": {
+                "x": 3.0,
+                "y": 3.0,
+                "z": 4.0
+              }
+            },
+            "body_id": "body_1"
+          },
+          "reason": "Build the planned mechanism feature"
+        },
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "crank_bearing",
+            "name": "crank_bearing",
+            "op": "subtractive_cylinder",
+            "params": {
+              "radius": 3.5,
+              "height": 8
+            },
+            "placement": {
+              "position": {
+                "x": 28.0,
+                "y": -2.0,
+                "z": 38.0
+              },
+              "axis": {
+                "x": 1.0,
+                "y": 0.0,
+                "z": 0.0
+              },
+              "angle": -90.0
+            },
+            "body_id": "body_1"
+          },
+          "reason": "Build the planned mechanism feature"
+        },
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "pencil_entry",
+            "name": "pencil_entry",
+            "op": "subtractive_cylinder",
+            "params": {
+              "radius": 4.5,
+              "height": 8
+            },
+            "placement": {
+              "position": {
+                "x": 66.0,
+                "y": 85.0,
+                "z": 38.0
+              },
+              "axis": {
+                "x": 1.0,
+                "y": 0.0,
+                "z": 0.0
+              },
+              "angle": -90.0
+            },
+            "body_id": "body_1"
+          },
+          "reason": "Build the planned mechanism feature"
+        },
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "drive_bearing_tower",
+            "name": "drive_bearing_tower",
+            "op": "additive_box",
+            "params": {
+              "length": 14,
+              "width": 6,
+              "height": 41
+            },
+            "placement": {
+              "position": {
+                "x": 21.0,
+                "y": 5.0,
+                "z": 4.0
+              },
+              "axis": {
+                "x": 0.0,
+                "y": 0.0,
+                "z": 1.0
+              }
+            },
+            "body_id": "body_1"
+          },
+          "reason": "Build the planned mechanism feature"
+        },
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "drive_bearing_bore",
+            "name": "drive_bearing_bore",
+            "op": "subtractive_cylinder",
+            "params": {
+              "radius": 3.5,
+              "height": 8
+            },
+            "placement": {
+              "position": {
+                "x": 28.0,
+                "y": 4.0,
+                "z": 38.0
+              },
+              "axis": {
+                "x": 1.0,
+                "y": 0.0,
+                "z": 0.0
+              },
+              "angle": -90.0
+            },
+            "body_id": "body_1"
+          },
+          "reason": "Build the planned mechanism feature"
+        },
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "driven_bearing_tower",
+            "name": "driven_bearing_tower",
+            "op": "additive_box",
+            "params": {
+              "length": 14,
+              "width": 6,
+              "height": 41
+            },
+            "placement": {
+              "position": {
+                "x": 59.0,
+                "y": 5.0,
+                "z": 4.0
+              },
+              "axis": {
+                "x": 0.0,
+                "y": 0.0,
+                "z": 1.0
+              }
+            },
+            "body_id": "body_1"
+          },
+          "reason": "Build the planned mechanism feature"
+        },
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "driven_bearing_bore",
+            "name": "driven_bearing_bore",
+            "op": "subtractive_cylinder",
+            "params": {
+              "radius": 3.5,
+              "height": 8
+            },
+            "placement": {
+              "position": {
+                "x": 66.0,
+                "y": 4.0,
+                "z": 38.0
+              },
+              "axis": {
+                "x": 1.0,
+                "y": 0.0,
+                "z": 0.0
+              },
+              "angle": -90.0
+            },
+            "body_id": "body_1"
+          },
+          "reason": "Build the planned mechanism feature"
+        },
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "fixed_pencil_guide",
+            "name": "fixed_pencil_guide",
+            "op": "additive_cylinder",
+            "params": {
+              "radius": 7,
+              "height": 15
+            },
+            "placement": {
+              "position": {
+                "x": 66.0,
+                "y": 85.0,
+                "z": 38.0
+              },
+              "axis": {
+                "x": 1.0,
+                "y": 0.0,
+                "z": 0.0
+              },
+              "angle": -90.0
+            },
+            "body_id": "body_1"
+          },
+          "reason": "Build the planned mechanism feature"
+        },
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "fixed_guide_bore",
+            "name": "fixed_guide_bore",
+            "op": "subtractive_cylinder",
+            "params": {
+              "radius": 4.5,
+              "height": 19
+            },
+            "placement": {
+              "position": {
+                "x": 66.0,
+                "y": 83.0,
+                "z": 38.0
+              },
+              "axis": {
+                "x": 1.0,
+                "y": 0.0,
+                "z": 0.0
+              },
+              "angle": -90.0
+            },
+            "body_id": "body_1"
+          },
+          "reason": "Build the planned mechanism feature"
+        },
+        {
+          "op": "add_body",
+          "payload": {
+            "id": "drive",
+            "name": "drive",
+            "motion": {
+              "pivot": {
+                "x": 28.0,
+                "y": 0.0,
+                "z": 38.0
+              },
+              "axis": {
+                "x": 0.0,
+                "y": 1.0,
+                "z": 0.0
+              },
+              "ratio": 1.0
+            }
+          },
+          "reason": "Create independent assembly part"
+        },
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "drive_shaft",
+            "name": "drive_shaft",
+            "op": "additive_cylinder",
+            "params": {
+              "radius": 3,
+              "height": 27
+            },
+            "placement": {
+              "position": {
+                "x": 28.0,
+                "y": -12.0,
+                "z": 38.0
+              },
+              "axis": {
+                "x": 1.0,
+                "y": 0.0,
+                "z": 0.0
+              },
+              "angle": -90.0
+            },
+            "body_id": "drive"
+          },
+          "reason": "Build the planned mechanism feature"
+        },
+        {
+          "op": "add_body",
+          "payload": {
+            "id": "driven",
+            "name": "driven",
+            "motion": {
+              "pivot": {
+                "x": 66.0,
+                "y": 0.0,
+                "z": 38.0
+              },
+              "axis": {
+                "x": 0.0,
+                "y": 1.0,
+                "z": 0.0
+              },
+              "ratio": -0.9
+            }
+          },
+          "reason": "Create independent assembly part"
+        },
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "driven_shaft",
+            "name": "driven_shaft",
+            "op": "additive_cylinder",
+            "params": {
+              "radius": 3,
+              "height": 7
+            },
+            "placement": {
+              "position": {
+                "x": 66.0,
+                "y": 8.0,
+                "z": 38.0
+              },
+              "axis": {
+                "x": 1.0,
+                "y": 0.0,
+                "z": 0.0
+              },
+              "angle": -90.0
+            },
+            "body_id": "driven"
+          },
+          "reason": "Build the planned mechanism feature"
+        },
+        {
+          "op": "add_body",
+          "payload": {
+            "id": "knife",
+            "name": "knife",
+            "motion": {
+              "pivot": {
+                "x": 66.0,
+                "y": 0.0,
+                "z": 38.0
+              },
+              "axis": {
+                "x": 0.0,
+                "y": 1.0,
+                "z": 0.0
+              },
+              "ratio": -0.9
+            }
+          },
+          "reason": "Create independent assembly part"
+        },
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "clamp_guide_hole",
+            "name": "clamp_guide_hole",
+            "body_id": "body_1",
+            "op": "subtractive_cylinder",
+            "params": {
+              "radius": 1.7,
+              "height": 15
+            },
+            "placement": {
+              "position": {
+                "x": 66,
+                "y": 93,
+                "z": 38
+              }
+            }
+          },
+          "reason": "Detail nominal clamping and replaceable shaft bushings; manufacturing fit and cutting loads require physical validation"
+        },
+        {
+          "op": "add_body",
+          "payload": {
+            "id": "drive_bushing",
+            "name": "drive_bushing"
+          },
+          "reason": "Separate stationary removable sleeve from shaft and bearing tower"
+        },
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "drive_bushing_outer",
+            "name": "drive_bushing_outer",
+            "body_id": "drive_bushing",
+            "op": "additive_cylinder",
+            "params": {
+              "radius": 3.4,
+              "height": 6
+            },
+            "placement": {
+              "position": {
+                "x": 28,
+                "y": 5,
+                "z": 38
+              },
+              "axis": {
+                "x": 1,
+                "y": 0,
+                "z": 0
+              },
+              "angle": -90
+            }
+          },
+          "reason": "Detail nominal clamping and replaceable shaft bushings; manufacturing fit and cutting loads require physical validation"
+        },
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "drive_bushing_bore",
+            "name": "drive_bushing_bore",
+            "body_id": "drive_bushing",
+            "op": "subtractive_cylinder",
+            "params": {
+              "radius": 3.15,
+              "height": 8
+            },
+            "placement": {
+              "position": {
+                "x": 28,
+                "y": 4,
+                "z": 38
+              },
+              "axis": {
+                "x": 1,
+                "y": 0,
+                "z": 0
+              },
+              "angle": -90
+            }
+          },
+          "reason": "Detail nominal clamping and replaceable shaft bushings; manufacturing fit and cutting loads require physical validation"
+        },
+        {
+          "op": "add_body",
+          "payload": {
+            "id": "driven_bushing",
+            "name": "driven_bushing"
+          },
+          "reason": "Separate stationary removable sleeve from shaft and bearing tower"
+        },
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "driven_bushing_outer",
+            "name": "driven_bushing_outer",
+            "body_id": "driven_bushing",
+            "op": "additive_cylinder",
+            "params": {
+              "radius": 3.4,
+              "height": 6
+            },
+            "placement": {
+              "position": {
+                "x": 66,
+                "y": 5,
+                "z": 38
+              },
+              "axis": {
+                "x": 1,
+                "y": 0,
+                "z": 0
+              },
+              "angle": -90
+            }
+          },
+          "reason": "Detail nominal clamping and replaceable shaft bushings; manufacturing fit and cutting loads require physical validation"
+        },
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "driven_bushing_bore",
+            "name": "driven_bushing_bore",
+            "body_id": "driven_bushing",
+            "op": "subtractive_cylinder",
+            "params": {
+              "radius": 3.15,
+              "height": 8
+            },
+            "placement": {
+              "position": {
+                "x": 66,
+                "y": 4,
+                "z": 38
+              },
+              "axis": {
+                "x": 1,
+                "y": 0,
+                "z": 0
+              },
+              "angle": -90
+            }
+          },
+          "reason": "Detail nominal clamping and replaceable shaft bushings; manufacturing fit and cutting loads require physical validation"
+        },
+        {
+          "op": "add_body",
+          "payload": {
+            "id": "pencil_clamp",
+            "name": "pencil_clamp"
+          },
+          "reason": "Nominal adjustable screw/pad holds pencil during cutting; release to feed by hand"
+        },
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "clamp_stem",
+            "name": "clamp_stem",
+            "body_id": "pencil_clamp",
+            "op": "additive_cylinder",
+            "params": {
+              "radius": 1.5,
+              "height": 10
+            },
+            "placement": {
+              "position": {
+                "x": 66,
+                "y": 93,
+                "z": 40
+              }
+            }
+          },
+          "reason": "Detail nominal clamping and replaceable shaft bushings; manufacturing fit and cutting loads require physical validation"
+        },
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "clamp_knob",
+            "name": "clamp_knob",
+            "body_id": "pencil_clamp",
+            "op": "additive_cylinder",
+            "params": {
+              "radius": 3,
+              "height": 2
+            },
+            "placement": {
+              "position": {
+                "x": 66,
+                "y": 93,
+                "z": 49.5
+              }
+            }
+          },
+          "reason": "Detail nominal clamping and replaceable shaft bushings; manufacturing fit and cutting loads require physical validation"
+        },
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "clamp_pad",
+            "name": "clamp_pad",
+            "body_id": "pencil_clamp",
+            "op": "additive_cylinder",
+            "params": {
+              "radius": 2,
+              "height": 1
+            },
+            "placement": {
+              "position": {
+                "x": 66,
+                "y": 93,
+                "z": 39.5
+              }
+            }
+          },
+          "reason": "Detail nominal clamping and replaceable shaft bushings; manufacturing fit and cutting loads require physical validation"
+        }
+      ],
+      "summary": "Build fixed housing and independent shafts"
+    }
+  },
+  {
+    "name": "ir_gear_profile",
+    "args": {
+      "id": "drive_outline",
+      "body_id": "drive",
+      "teeth": 18,
+      "module": 2,
+      "pressure_angle": 20,
+      "backlash": 0.12,
+      "phase_deg": 0,
+      "samples": 5,
+      "plane": "XZ",
+      "center": {
+        "x": 28,
+        "y": 15,
+        "z": 38
+      },
+      "support_feature": "drive_shaft",
+      "support_face": "Face3",
+      "reason": "Generate compatible 18/20-tooth involute-flank gear pair with 38mm pitch center distance"
+    }
+  },
+  {
+    "name": "ir_gear_profile",
+    "args": {
+      "id": "driven_outline",
+      "body_id": "driven",
+      "teeth": 20,
+      "module": 2,
+      "pressure_angle": 20,
+      "backlash": 0.12,
+      "phase_deg": 9,
+      "samples": 5,
+      "plane": "XZ",
+      "center": {
+        "x": 66,
+        "y": 15,
+        "z": 38
+      },
+      "support_feature": "driven_shaft",
+      "support_face": "Face3",
+      "reason": "Generate compatible 18/20-tooth involute-flank gear pair with 38mm pitch center distance"
+    }
+  },
+  {
+    "name": "ir_patch",
+    "args": {
+      "base_version": "current",
+      "ops": [
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "drive_gear",
+            "name": "drive_gear",
+            "op": "pad",
+            "profile_sketch": "drive_outline",
+            "params": {
+              "length": 6
+            },
+            "body_id": "drive"
+          },
+          "reason": "Build the planned mechanism feature"
+        },
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "crank_arm",
+            "name": "crank_arm",
+            "op": "additive_box",
+            "params": {
+              "length": 6,
+              "width": 5,
+              "height": 31
+            },
+            "placement": {
+              "position": {
+                "x": 25.0,
+                "y": -12.0,
+                "z": 35.0
+              },
+              "axis": {
+                "x": 0.0,
+                "y": 1.0,
+                "z": 0.0
+              }
+            },
+            "body_id": "drive"
+          },
+          "reason": "Build the planned mechanism feature"
+        },
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "crank_grip",
+            "name": "crank_grip",
+            "op": "additive_cylinder",
+            "params": {
+              "radius": 5,
+              "height": 18
+            },
+            "placement": {
+              "position": {
+                "x": 28.0,
+                "y": -27.0,
+                "z": 62.0
+              },
+              "axis": {
+                "x": 1.0,
+                "y": 0.0,
+                "z": 0.0
+              },
+              "angle": -90.0
+            },
+            "body_id": "drive"
+          },
+          "reason": "Build the planned mechanism feature"
+        },
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "driven_gear",
+            "name": "driven_gear",
+            "op": "pad",
+            "profile_sketch": "driven_outline",
+            "params": {
+              "length": 6
+            },
+            "body_id": "driven"
+          },
+          "reason": "Build the planned mechanism feature"
+        },
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "cutter_drum",
+            "name": "cutter_drum",
+            "op": "additive_cylinder",
+            "params": {
+              "radius": 11,
+              "height": 65
+            },
+            "placement": {
+              "position": {
+                "x": 66.0,
+                "y": 20.0,
+                "z": 38.0
+              },
+              "axis": {
+                "x": 1.0,
+                "y": 0.0,
+                "z": 0.0
+              },
+              "angle": -90.0
+            },
+            "body_id": "driven"
+          },
+          "reason": "Build the planned mechanism feature"
+        },
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "pencil_bore",
+            "name": "pencil_bore",
+            "op": "subtractive_cylinder",
+            "params": {
+              "radius": 4.5,
+              "height": 66
+            },
+            "suppress": true,
+            "placement": {
+              "position": {
+                "x": 66.0,
+                "y": 22.0,
+                "z": 38.0
+              },
+              "axis": {
+                "x": 1.0,
+                "y": 0.0,
+                "z": 0.0
+              },
+              "angle": -90.0
+            },
+            "body_id": "driven"
+          },
+          "reason": "Build the planned mechanism feature"
+        },
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "tapered_pencil_channel",
+            "name": "tapered_pencil_channel",
+            "op": "subtractive_cone",
+            "params": {
+              "radius1": 4.5,
+              "radius2": 0.8,
+              "height": 25
+            },
+            "placement": {
+              "position": {
+                "x": 66.0,
+                "y": 85.0,
+                "z": 38.0
+              },
+              "axis": {
+                "x": 1.0,
+                "y": 0.0,
+                "z": 0.0
+              },
+              "angle": 90.0
+            },
+            "body_id": "driven"
+          },
+          "reason": "Build the planned mechanism feature"
+        },
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "chip_discharge_window",
+            "name": "chip_discharge_window",
+            "op": "subtractive_box",
+            "params": {
+              "length": 12,
+              "width": 27,
+              "height": 3
+            },
+            "placement": {
+              "position": {
+                "x": 66.0,
+                "y": 59.0,
+                "z": 38.0
+              }
+            },
+            "body_id": "driven"
+          },
+          "reason": "Build the planned mechanism feature"
+        },
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "knife_mount_1",
+            "name": "knife_mount_1",
+            "op": "additive_cylinder",
+            "params": {
+              "radius": 1.4,
+              "height": 3
+            },
+            "placement": {
+              "position": {
+                "x": 69.5,
+                "y": 63.0,
+                "z": 37.0
+              }
+            },
+            "body_id": "driven"
+          },
+          "reason": "Build the planned mechanism feature"
+        },
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "knife_mount_2",
+            "name": "knife_mount_2",
+            "op": "additive_cylinder",
+            "params": {
+              "radius": 1.4,
+              "height": 3
+            },
+            "placement": {
+              "position": {
+                "x": 72.0,
+                "y": 81.0,
+                "z": 37.0
+              }
+            },
+            "body_id": "driven"
+          },
+          "reason": "Build the planned mechanism feature"
+        },
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "knife_blank",
+            "name": "knife_blank",
+            "op": "additive_box",
+            "params": {
+              "length": 2,
+              "width": 25.27231687044146,
+              "height": 0.8
+            },
+            "placement": {
+              "position": {
+                "x": 66.8,
+                "y": 60.0,
+                "z": 38.0
+              },
+              "axis": {
+                "x": 0.0,
+                "y": 0.0,
+                "z": 1.0
+              },
+              "angle": -8.41866287779965
+            },
+            "body_id": "knife"
+          },
+          "reason": "Build the planned mechanism feature"
+        },
+        {
+          "op": "add_feature",
+          "payload": {
+            "id": "knife_bevel",
+            "name": "knife_bevel",
+            "op": "chamfer",
+            "params": {
+              "size": 0.35
+            },
+            "base_feature": "knife_blank",
+            "sub_elements": [
+              "Edge2"
+            ],
+            "body_id": "knife"
+          },
+          "reason": "Build the planned mechanism feature"
+        }
+      ],
+      "summary": "Build crank and tapered cutter"
+    }
+  },
+  {
+    "name": "ir_commit",
+    "args": {
+      "message": "Verify sharpener concept assembly geometry"
+    }
+  },
+  {
+    "name": "geo_view",
+    "args": {
+      "views": [
+        "iso",
+        "top"
+      ],
+      "driver_angle_deg": 90
+    }
+  },
+  {
+    "name": "geo_check_motion",
+    "args": {
+      "angles": [
+        0,
+        10,
+        20,
+        30,
+        45,
+        60,
+        90,
+        180,
+        270,
+        360
+      ],
+      "pairs": [
+        [
+          "body_1",
+          "drive"
+        ],
+        [
+          "body_1",
+          "driven"
+        ],
+        [
+          "body_1",
+          "knife"
+        ],
+        [
+          "drive",
+          "driven"
+        ],
+        [
+          "body_1",
+          "drive_bushing"
+        ],
+        [
+          "body_1",
+          "driven_bushing"
+        ],
+        [
+          "drive",
+          "drive_bushing"
+        ],
+        [
+          "driven",
+          "driven_bushing"
+        ],
+        [
+          "body_1",
+          "pencil_clamp"
+        ]
+      ]
+    }
+  },
+  {
+    "name": "design_review",
+    "args": {
+      "summary": "Seven-body sharpener concept: compatible 18/20-tooth sampled involute flanks, replaceable bushings, nominal clamp, tapered cutter and crank. Sampled BRep interference checks do not prove cutting functionality.",
+      "checklist": [
+        {
+          "source_text": "创建一个削铅笔的工具盒",
+          "check_ids": []
+        },
+        {
+          "source_text": "支持摇杆转动",
+          "check_ids": []
+        },
+        {
+          "source_text": "从而实现削铅笔",
+          "check_ids": []
+        }
+      ],
+      "remaining_work": [
+        "连续全周期间隙、齿面接触与摩擦未求解；渐开线离散为折线，齿根不是加工刀具生成的过渡曲线",
+        "夹笔螺杆为光杆几何，未建螺纹；人工松开后送料，未模拟轴向送料或夹紧力",
+        "刀片紧固、轴套实际材料与配合公差需工程设计和实物检验",
+        "切削受力、材料去除和实物削尖试验未执行；运动仍由预设比例驱动"
+      ]
+    }
+  }
+]

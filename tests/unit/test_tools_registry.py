@@ -15,7 +15,7 @@ def _fake_services():
 def test_inspect_exposes_only_read_tools():
     reg = build_default_registry(_fake_services())
     names = set(reg.names_for(TurnKind.INSPECT))
-    read = {"ir_get", "ir_digest", "ir_list_features", "geo_view", "geo_measure", "asset_export", "asset_import"}
+    read = {"ir_get", "ir_digest", "ir_list_features", "geo_view", "geo_check_motion", "assembly_simulate", "assembly_solve", "assembly_export", "geo_measure", "asset_export", "asset_import"}
     assert names == read
     assert "ir_patch" not in names
     assert "ir_commit" not in names

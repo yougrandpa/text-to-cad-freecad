@@ -73,6 +73,23 @@ export function poseMesh(mesh, motion, angle) {
   return { ...mesh, vertices };
 }
 
+/** Apply native solver placements to the unchanged reference mesh. */
+export function poseAnimation(mesh, animation, frameIndex) {
+  if (!Number.isInteger(frameIndex) || frameIndex < 0 || frameIndex >= animation.frames.length) throw new Error("动画帧无效");
+  const poses = animation.frames[frameIndex], vertices = mesh.vertices.map(p => [...p]), ranges = [];
+  for (const part of animation.parts) {
+    const start = part.vertex_start, end = start + part.vertex_count, m = poses[part.body_id];
+    if (!Number.isInteger(start) || !Number.isInteger(part.vertex_count) || start < 0 || part.vertex_count <= 0 || end > vertices.length ||
+        ranges.some(([lo,hi]) => start < hi && end > lo) || !Array.isArray(m) || m.length !== 16 || !m.every(Number.isFinite)) throw new Error("原生动画姿态无效");
+    ranges.push([start,end]);
+    for (let i = start; i < end; i++) {
+      const [x,y,z] = mesh.vertices[i];
+      vertices[i] = [m[0]*x+m[1]*y+m[2]*z+m[3], m[4]*x+m[5]*y+m[6]*z+m[7], m[8]*x+m[9]*y+m[10]*z+m[11]];
+    }
+  }
+  return {...mesh, vertices};
+}
+
 export class OrbitCamera {
   constructor() { this.reset(); }
   reset() {
@@ -211,10 +228,19 @@ export class MeshViewport {
     this.listeners = [];
     this.frame = null;
     if (motionControls) this.listen(motionControls.input, "input", () => {
-      if (!this.hasMesh || !this.motion.length) return;
-      const angle = Number(motionControls.input.value);
-      this._uploadMesh(poseMesh(this.motionSource, this.motion, angle));
-      motionControls.output.textContent = `${angle}°`;
+      this.stopPlayback();
+      this.setMotionValue(Number(motionControls.input.value));
+    });
+    this.animation = null;
+    this.playbackFrame = null;
+    if (motionControls?.play) this.listen(motionControls.play, "click", () => {
+      if (this.playbackFrame !== null) this.stopPlayback(); else this.play();
+    });
+    if (motionControls?.reset) this.listen(motionControls.reset, "click", () => {
+      this.stopPlayback(); this.setMotionValue(0);
+    });
+    if (motionControls?.speed) this.listen(motionControls.speed, "change", () => {
+      if (this.playbackFrame !== null) { this.stopPlayback(); this.play(); }
     });
     try {
       this.gl = canvas.getContext("webgl", { antialias: true, alpha: true }) || canvas.getContext("experimental-webgl");
@@ -262,16 +288,75 @@ export class MeshViewport {
     finally { for (const shader of shaders) gl.deleteShader(shader); }
   }
   get aspect() { return Math.max(this.canvas.clientWidth, 1) / Math.max(this.canvas.clientHeight, 1); }
-  setMesh(mesh, motion = []) {
+  setMotionValue(value) {
+    if (!this.hasMesh || (!this.animation && !this.motion.length)) return;
+    if (this.animation) {
+      value = clamp(Math.floor(value), 0, this.animation.frames.length - 1);
+      if (this.displayedMotionValue === value) return;
+      this.displayedMotionValue = value;
+      this._uploadMesh(poseAnimation(this.motionSource, this.animation, value));
+      this.motionControls.output.textContent = `${(this.animation.start + value*this.animation.step).toFixed(2)} s · ${value+1}/${this.animation.frames.length}`;
+    } else {
+      this._uploadMesh(poseMesh(this.motionSource, this.motion, value));
+      this.motionControls.output.textContent = `${Math.round(value)}°`;
+    }
+    this.motionControls.input.value = String(value);
+  }
+  stopPlayback() {
+    if (this.playbackFrame !== null) cancelAnimationFrame(this.playbackFrame);
+    this.playbackFrame = null;
+    if (this.motionControls?.play) this.motionControls.play.textContent = "播放";
+  }
+  play() {
+    if (!this.motionControls || (!this.animation && !this.motion.length) || this.animation?.frames.length === 1) return;
+    this.stopPlayback();
+    const maximum = Number(this.motionControls.input.max);
+    let initial = Number(this.motionControls.input.value);
+    if (initial >= maximum) initial = 0;
+    const speed = Number(this.motionControls.speed?.value || 1);
+    const rate = this.animation ? 1/this.animation.step : 60;
+    const start = performance.now();
+    if (this.motionControls.play) this.motionControls.play.textContent = "暂停";
+    const tick = now => {
+      let value = initial + (now-start)/1000*rate*speed;
+      if (value > maximum) {
+        if (this.motionControls.loop?.checked) value %= maximum || 1;
+        else { this.setMotionValue(maximum); this.stopPlayback(); return; }
+      }
+      this.setMotionValue(value);
+      this.playbackFrame = requestAnimationFrame(tick);
+    };
+    this.playbackFrame = requestAnimationFrame(tick);
+  }
+  setMesh(mesh, motion = [], animation = null) {
     poseMesh(mesh, motion, 0); // Validate before replacing the displayed model.
-    const count = this._uploadMesh(mesh);
+    if (animation) {
+      if (!animation.frames?.length || !animation.parts?.length || !(animation.step > 0)) throw new Error("动画数据无效");
+      if (animation.frames.length > 600 || !Number.isFinite(animation.start)) throw new Error("动画时间或帧数无效");
+      for (const frame of animation.frames) {
+        for (const part of animation.parts) {
+          const m = frame[part.body_id];
+          if (!Array.isArray(m) || m.length !== 16 || !m.every(Number.isFinite)) throw new Error("原生动画姿态无效");
+        }
+      }
+      poseAnimation(mesh, animation, 0);
+    }
+    this.stopPlayback();
+    this.animation = animation;
+    this.displayedMotionValue = null;
+    const count = this._uploadMesh(animation ? poseAnimation(mesh, animation, 0) : mesh);
     this.motionSource = mesh;
     this.motion = motion;
     if (this.motionControls) {
-      this.motionControls.root.hidden = motion.length === 0;
+      this.motionControls.root.hidden = !animation && motion.length === 0;
+      if (this.motionControls.play) this.motionControls.play.disabled = animation?.frames.length === 1;
+      this.motionControls.input.max = String(animation ? animation.frames.length-1 : 720);
+      if (this.motionControls.label) this.motionControls.label.textContent = animation ? "仿真时间" : "摇杆转角";
+      if (this.motionControls.note) this.motionControls.note.textContent = animation ? "FreeCAD 原生关节求解 · 未验证接触力、碰撞或实际切削" : "按声明的传动比演示 · 未验证碰撞、齿面接触或实际切削";
       this.motionControls.input.value = "0";
       this.motionControls.output.textContent = "0°";
     }
+    if (animation && this.motionControls) this.setMotionValue(0);
     return count;
   }
   _uploadMesh(mesh) {
@@ -297,6 +382,8 @@ export class MeshViewport {
   }
   clear({ resetCamera = false } = {}) {
     this.hasMesh = false;
+    this.stopPlayback();
+    this.animation = null;
     this.motion = [];
     this.motionSource = null;
     if (this.motionControls) this.motionControls.root.hidden = true;

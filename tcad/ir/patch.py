@@ -198,6 +198,7 @@ def _require_mapping(value: object, *, field: str) -> dict:
 #: handwritten list would start refusing valid payloads the day a field is added,
 #: which is the failure mode that makes people delete whitelists.
 _PAYLOAD_FIELDS: dict[str, frozenset[str]] = {
+    "set_assembly": frozenset({"assembly"}),
     "add_body": frozenset({"id", "name", "motion"}),
     "update_body": frozenset({"name", "motion"}),
     "add_sketch": frozenset(SketchSpec.model_fields) | {"body_id", "geometry_append", "constraints_append"},
@@ -601,7 +602,16 @@ def _op_rename(ir: IrDocument, op: IrPatchOp, out: PatchOutcome) -> None:
         out.changes.append(f"rename feature '{old}' -> '{new_name}' (id={f.id})")  # type: ignore[union-attr]
 
 
+def _op_set_assembly(ir: IrDocument, op: IrPatchOp, out: PatchOutcome) -> None:
+    from tcad.ir.assembly import AssemblySpec
+    _reject_unknown_payload_keys("set_assembly", op.payload)
+    value = op.payload.get("assembly")
+    ir.assembly = AssemblySpec.model_validate(value) if value is not None else None
+    out.changes.append(f"set_assembly: {op.reason or '-'}")
+
+
 _HANDLERS = {
+    "set_assembly": _op_set_assembly,
     "add_body": _op_add_body,
     "update_body": _op_update_body,
     "add_sketch": _op_add_sketch,

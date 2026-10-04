@@ -44,7 +44,16 @@ def _err(
 
 async def ir_get_handler(services: "Any", args: dict, ctx: ToolContext) -> ToolResult:
     ir = services.store.load(ctx.model_id)
-    return _ok(ir.model_dump_json(indent=2))
+    ids = args.get("ids")
+    if ids:
+        objects = {obj.id: obj for body in ir.bodies for obj in (body, *body.sketches, *body.features)}
+        missing = [id for id in ids if id not in objects]
+        if missing:
+            return _err(ToolErrorKind.NOT_FOUND, f"unknown IR IDs: {missing}")
+        data = {"version": ir.version, "objects": [objects[id].model_dump(mode="json", exclude_defaults=not args.get("include_defaults", False)) for id in ids]}
+    else:
+        data = ir.model_dump(mode="json", exclude_defaults=not args.get("include_defaults", False))
+    return _ok(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
 
 
 async def ir_digest_handler(services: "Any", args: dict, ctx: ToolContext) -> ToolResult:
@@ -61,7 +70,7 @@ async def ir_list_features_handler(services: "Any", args: dict, ctx: ToolContext
         for b in ir.bodies
         for f in b.features
     ]
-    return _ok(json.dumps(feats, indent=2))
+    return _ok(json.dumps(feats, ensure_ascii=False, separators=(",", ":")))
 
 
 async def ir_patch_handler(services: "Any", args: dict, ctx: ToolContext) -> ToolResult:
@@ -118,6 +127,27 @@ async def ir_patch_handler(services: "Any", args: dict, ctx: ToolContext) -> Too
         f"Bodies: {len(new_doc.bodies)}, features: {len(new_doc.all_features())}."
     )
     return _ok(content, patch_applied=patch)
+
+
+async def ir_gear_profile_handler(services, args, ctx):
+    from tcad.ir.gears import gear_sketch
+    try:
+        payload = gear_sketch(args)
+    except (ValueError, KeyError, TypeError) as exc:
+        return _err(ToolErrorKind.SCHEMA, str(exc))
+    return await ir_patch_handler(services, {
+        "base_version": args.get("base_version", "current"),
+        "ops": [{"op": "add_sketch", "payload": payload, "reason": args["reason"]}],
+        "summary": "Generated sampled involute profile; radial root transitions, not manufacturing-verified",
+    }, ctx)
+
+
+async def assembly_configure_handler(services, args, ctx):
+    return await ir_patch_handler(services, {
+        "base_version": args.get("base_version", "current"),
+        "ops": [{"op": "set_assembly", "payload": {"assembly": args["assembly"]}, "reason": args["reason"]}],
+        "summary": "Configured native FreeCAD Assembly joints and drivers",
+    }, ctx)
 
 
 async def ir_commit_handler(services: "Any", args: dict, ctx: ToolContext) -> "Any":
@@ -482,7 +512,31 @@ async def design_review_handler(services, args, ctx):
 
 def build_ir_tools(services: "Any") -> dict[str, ToolSpec]:
     from tcad.loop.completion import DesignReview
+    from tcad.ir.assembly import AssemblySpec
     return {
+        "assembly_configure": ToolSpec(
+            name="assembly_configure", tier=ToolTier.WRITE,
+            description="Configure native FreeCAD Assembly: grounded body IDs, all 13 joint types, world connector positions/axes/roll, limits and time drivers. Replaces assembly declaration; null clears it. Clear prescribed body.motion first. Angular drivers target Revolute/Cylindrical; Linear target Slider/Cylindrical. Formula is native math in time (seconds); Angular uses radians (e.g. pi/2*time for 90 degrees/s), Linear mm, initialValue is supported. Gears/Belt distance and distance2 are positive pitch radii; RackPinion distance=pitch radius; Screw distance=native pitch. Native constraints must make the mechanism solvable; grounding graph alone does not prove solvability. Then assembly_simulate for actual solver frames. ir_commit still grades zero-pose part geometry separately.",
+            params_schema={"type": "object", "additionalProperties": False, "required": ["assembly", "reason"],
+                "$defs": AssemblySpec.model_json_schema().get("$defs", {}),
+                "properties": {"assembly": {"anyOf": [AssemblySpec.model_json_schema(), {"type": "null"}]},
+                    "reason": {"type": "string"}, "base_version": {"anyOf": [{"type": "integer"}, {"type": "string", "enum": ["current"]}]}}},
+            handler=functools.partial(assembly_configure_handler, services),
+        ),
+        "ir_gear_profile": ToolSpec(
+            name="ir_gear_profile", tier=ToolTier.WRITE,
+            description="Create one fully constrained spur-gear sketch from compact parameters; no coordinate output needed. Then pad it with ir_patch and batch other features before one ir_commit. Uses sampled involute flanks, radial roots, no profile shift; rejects undercut-risk counts. Units mm/degrees; backlash is tooth thickness reduction per gear. plane sets world coordinate axes; offset planes require support_feature/support_face and world center on that face. Compatible pairs need same module/pressure angle, center distance module*(z1+z2)/2 and correctly phased teeth. Not certified tooth contact or manufacturing geometry.",
+            params_schema={"type": "object", "additionalProperties": False, "required": ["id", "body_id", "teeth", "module", "reason"], "properties": {
+                "id": {"type": "string"}, "body_id": {"type": "string"}, "reason": {"type": "string"},
+                "base_version": {"anyOf": [{"type": "integer"}, {"type": "string", "enum": ["current"]}]},
+                "teeth": {"type": "integer", "minimum": 18, "maximum": 120}, "module": {"type": "number", "minimum": 1e-6},
+                "pressure_angle": {"type": "number", "minimum": 15, "maximum": 30}, "backlash": {"type": "number", "minimum": 0},
+                "phase_deg": {"type": "number"}, "samples": {"type": "integer", "minimum": 3, "maximum": 12},
+                "plane": {"type": "string", "enum": ["XY", "XZ", "YZ"]},
+                "center": {"type": "object", "additionalProperties": False, "required": ["x", "y", "z"], "properties": {k: {"type": "number"} for k in ("x", "y", "z")}},
+                "support_feature": {"type": "string"}, "support_face": {"type": "string"}}},
+            handler=functools.partial(ir_gear_profile_handler, services),
+        ),
         "design_review": ToolSpec(
             name="design_review", tier=ToolTier.WRITE,
             description=("After completing ALL requested geometry and committing it, review EVERY user objective. "
@@ -498,8 +552,8 @@ def build_ir_tools(services: "Any") -> dict[str, ToolSpec]:
         "ir_get": ToolSpec(
             name="ir_get",
             tier=ToolTier.READ,
-            description="Return the full current IR document as JSON. Use when you need the complete, exact current state.",
-            params_schema={"type": "object", "properties": {}},
+            description="Read current IR, omitting reconstructible defaults. Prefer ids to fetch only needed bodies/sketches/features; ir_digest for measured geometry. include_defaults=true returns all fields.",
+            params_schema={"type": "object", "additionalProperties": False, "properties": {"ids": {"type": "array", "minItems": 1, "items": {"type": "string"}}, "include_defaults": {"type": "boolean"}}},
             handler=functools.partial(ir_get_handler, services),
             concurrency_safe=True,
         ),
@@ -542,6 +596,6 @@ def build_ir_tools(services: "Any") -> dict[str, ToolSpec]:
                 "properties": {"message": {"type": "string"}},
                 "required": ["message"],
             },
-            handler=functools.partial(ir_commit_handler, services),
+            handler=functools.partial(ir_commit_handler, services), timeout_s=480.0,
         ),
     }

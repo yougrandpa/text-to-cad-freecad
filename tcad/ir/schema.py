@@ -289,6 +289,9 @@ class RequirementSpec(BaseModel):
 # ══════════════════════════════════════════════════════════════════════════
 
 
+from tcad.ir.assembly import AssemblySpec
+
+
 class IrDocument(BaseModel):
     schema_version: int = SCHEMA_VERSION
     model_id: str
@@ -297,6 +300,7 @@ class IrDocument(BaseModel):
     bodies: list[BodySpec] = Field(default_factory=list)
     requirements: RequirementSpec = Field(default_factory=RequirementSpec)
     notes: list[str] = Field(default_factory=list)
+    assembly: AssemblySpec | None = None
 
     # ── lookup helpers (used by patch validation, digest, compiler) ──
 
@@ -323,7 +327,7 @@ class IrDocument(BaseModel):
 # ══════════════════════════════════════════════════════════════════════════
 
 PatchOpName = Literal[
-    "add_body", "update_body",
+    "add_body", "update_body", "set_assembly",
     "add_sketch", "update_sketch", "add_feature", "update_feature",
     "remove_feature", "update_requirement", "rename",
 ]

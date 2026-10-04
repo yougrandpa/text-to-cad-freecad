@@ -145,10 +145,10 @@ class ToolsConfig(BaseModel):
     read: list[str] = Field(
         default_factory=lambda: [
             "ir_get", "ir_digest", "ir_list_features",
-            "geo_view", "geo_measure", "asset_export", "asset_import",
+            "geo_view", "geo_check_motion", "assembly_simulate", "assembly_solve", "assembly_export", "geo_measure", "asset_export", "asset_import",
         ]
     )
-    write: list[str] = Field(default_factory=lambda: ["ir_patch", "ir_commit"])
+    write: list[str] = Field(default_factory=lambda: ["ir_patch", "ir_gear_profile", "assembly_configure", "ir_commit"])
     privileged: list[str] = Field(default_factory=list)
     """Empty by default. The escape hatch is opt-in, per design §4.2."""
 

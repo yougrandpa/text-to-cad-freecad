@@ -19,6 +19,8 @@ from tcad.worker.protocol import (
 from tcad.worker.compiler import compile_ir, _measure
 from tcad.worker.introspect import introspect_document
 from tcad.worker.mesh import tessellate
+from tcad.worker.collision import check_motion
+from tcad.worker.assembly import simulate_assembly, solve_assembly
 from tcad.worker.exporters import export_artifacts
 from tcad.worker.reopen import reopen_edit_measure
 from tcad.worker.selftest import api_selftest
@@ -30,6 +32,9 @@ _HANDLERS = {
     "compile_ir": compile_ir,
     "introspect_document": introspect_document,
     "tessellate": tessellate,
+    "check_motion": check_motion,
+    "simulate_assembly": simulate_assembly,
+    "solve_assembly": solve_assembly,
     "export_artifacts": export_artifacts,
     "reopen_edit_measure": reopen_edit_measure,
     "import_asset": None,  # assigned below

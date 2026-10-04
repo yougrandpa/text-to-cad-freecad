@@ -288,6 +288,14 @@ def validate_ir(ir: IrDocument) -> list[ValidationIssue]:
     sketch_ids: set[str] = {s.id for s in sketches}
     feature_ids: set[str] = {f.id for f in features}
 
+    if ir.assembly is not None:
+        try:
+            ir.assembly.validate_bodies(b.id for b in ir.bodies)
+            if any(b.motion is not None for b in ir.bodies):
+                raise ValueError("native assembly and prescribed body.motion cannot be combined; clear body.motion first")
+        except ValueError as exc:
+            issues.append(ValidationIssue(code="assembly_invalid", severity="error", message=str(exc)))
+
     # 1) Unique ids within the document (sketch<->feature clash included).
     seen: set[str] = set()
     for body in ir.bodies:
