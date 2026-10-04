@@ -1,6 +1,17 @@
 # Interactive CAD preview acceptance
 
-Date: 2026-10-02. Base: `ea9b193229d94a7c39a719ccba4aee933e856a22`.
+Historical acceptance date: 2026-10-02. Base before the implementation:
+`ea9b193229d94a7c39a719ccba4aee933e856a22`.
+
+Current verification update: 2026-10-04, implementation commit `9bf00e0`.
+The full Python suite passed with **1,258 passed** in 76.58 seconds; Node frontend
+runtime tests passed with **17 passed**. Compileall and whitespace checks passed.
+No browser/GPU or live-model acceptance was repeated in this verification.
+
+The figures, native-kernel environment, live-model examples and browser blocking
+result below belong to the earlier acceptance run. They are retained as historical
+records and are not measurements of the current environment. Current delivery
+scope and corrected status are in [DELIVERY.md](../DELIVERY.md).
 
 ## Delivered scope
 
@@ -22,7 +33,7 @@ Other fixes: one active chat turn per thread/model; PATH command resolution;
 explicit Linux native-Python FreeCAD adapter; FreeCAD 1.0 pattern enum
 compatibility; honest optional API diagnostics; deterministic demo sketch.
 
-## Final automated result
+## Historical automated result (2026-10-02)
 
 - Full Python suite: 1,085 passed, 6 skipped
 - Node frontend runtime: 17 passed
@@ -33,7 +44,7 @@ compatibility; honest optional API diagnostics; deterministic demo sketch.
 - Demo repair: 30 repeated native rebuilds remained centered and fully constrained;
   permanent regression repeats compile, independent introspection and STEP checks
 
-## Actual live-model acceptance
+## Historical live-model acceptance (2026-10-02)
 
 A fresh reasoning-model agent received only the app's actual messages and
 declared tool contract through `tools/native_agent_bridge.py`. It did not read
@@ -83,7 +94,7 @@ interrupt probe returned `aborted` 0.03s after stop, then the same session ran a
 new turn. That probe's finite scripted model later ends `failed` when exhausted;
 this checks recoverability, not successful model reasoning.
 
-## Explicit limits and manual browser checklist
+## Historical browser limit and pending manual checklist
 
 The cloud browser refused the localhost preview with `net::ERR_BLOCKED_BY_CLIENT`.
 Therefore actual browser WebGL shader rendering, desktop dragging and a finished

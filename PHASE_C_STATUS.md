@@ -1,96 +1,46 @@
-# 阶段 C 交付状态：会话管理与可恢复运行
+# 阶段 C 状态核对：会话与运行生命周期
 
-> 本轮目标见用户给出的《对话式 3D CAD 工作台》任务书。本文只记录**本阶段**
-> （§7 会话管理、§8 任务生命周期）的完成情况与证据，并如实区分
-> 已实现并验证 / 已实现但受环境阻塞 / 尚未实现。
+更新日期：2026-10-04。代码基线：`9bf00e0`。
 
-## 一、这一阶段改变了什么
+原记录把可恢复运行和完整会话管理写成已交付，但当前仓库没有
+`tcad/server/runs.py`、RunHub、运行重连路由或这些会话管理接口。
+本文按当前代码纠正状态；完整交付范围见 [DELIVERY.md](DELIVERY.md)。
 
-### 1. 运行不再等于连接（§8 的核心）
+## 已实现
 
-改造前：`/chat` 的生成器**拥有**引擎任务，`finally` 里 `task.cancel()`。
-后果是关掉标签页、刷新页面、切到别的会话，都会**静默杀掉正在跑的回合**。
-"重连"只能靠重发 `/chat`，而 `/chat` 会写入用户消息——于是重连变成了重复建模。
-
-改造后引入了 `tcad/server/runs.py`：
-
-| 概念 | 位置 | 职责 |
-| --- | --- | --- |
-| `Run` | `tcad/server/runs.py` | 拥有工作、事件序号和事件日志；连接只是它的观众 |
-| `RunHub` | 同上 | 进程内的运行注册表；并发上限（默认 1，`loop.max_concurrent_turns`）；排队 |
-| `Run.follow(after_seq)` | 同上 | 从游标重放，然后跟随实时事件 |
-| `Run.request_stop()` | 同上 | 真正取消引擎任务；停止前先记录 `saved` 摘要 |
-| `Run.snapshot()` / `snapshot_of()` | 同上 | 权威状态；重启后从数据库回答"已中断，可重试" |
-
-具体行为：
-
-- **断开连接不取消任务**：`/chat` 的 SSE 生成器只做 `run.follow()`，客户端离开
-  只移除观众。事件继续写入日志，刷新即可从游标读回。
-- **重连是一次读取**：`GET /runs/{id}/stream?after_seq=N`、`GET /runs/{id}/events`、
-  `GET /runs/{id}`。前端 `reattachRun()` 走的就是这三个只读接口，**不重发 `/chat`**。
-- **停止是独立动作**：`POST /chat/interrupt` 返回 `stage`、`reaches_engine` 和
-  `saved`（已保存的消息数、基线 IR 版本、Gate 结论），不承诺不存在的回滚。
-- **一模型一写者**：同一会话已有运行 → 409，并在消息里给出重连地址。
-- **连接中断 ≠ 失败**：事件里只有 `result`/`error`/终态 `state` 才算结论；
-  断流时前端明确提示"连接中断不是任务失败"。
-- **状态字段不等于恢复执行**：进程启动后第一次读取会话/运行时，把数据库里
-  残留的 `running` 回合标成 `interrupted`（已跳过本进程持有的运行），
-  前端显示"已中断"。
-
-### 2. 会话管理（§7）
-
-- 存储层（`tcad/store/session_db.py`）：`title / pinned / archived_at / trashed_at /
-  last_read_at` 五个新列 + `run_events` + `pending_cleanup` 表；
-  `_migrate()` 用 `PRAGMA table_info` + `ALTER TABLE` 给**已有数据库**补列。
-- 视图语义用两个时间列表达，所以"先归档再删除，恢复后回到归档区"是自然结果。
-- 搜索：标题 + 消息正文，用 `instr(lower(...))` 而不是 `LIKE`，
-  所以搜 `100%` 就是找百分号本身。
-- 永久删除：`confirm` 必须回填会话 id；返回逐表删除行数、要清理的文件、
-  以及**模型是否被其它会话共享**（共享则拒绝删除 IR 快照与产物）。
-- 文件清理失败会记进 `pending_cleanup`，`POST /maintenance/cleanup` 可重试，
-  不默认自动清理。
-- 直接链接不能绕过状态：回收站里的会话，`GET /threads/{id}/messages` 返回 410。
-- 前端侧栏：活动/已归档/回收站三个入口 + 搜索框 + 每行 `⋯` 菜单
-  （重命名/置顶/归档/移入回收站/恢复/永久删除），行本身可 Tab 聚焦、Enter 打开，
-  菜单 `role="menu"`、Esc 关闭并把焦点还给触发按钮。
-
-## 二、已实现并验证
-
-| 项目 | 证据 |
+| 能力 | 当前实现与证据 |
 | --- | --- |
-| 单元测试全绿 | `.venv/bin/python -m pytest tests/unit -q` → **928 passed, 2 skipped**（其中 `test_session_management.py` 22 项、`test_server_session_management.py` 11 项、`test_server_ui.py` 新增 6 项） |
-| 旧库迁移不丢数据 | `test_an_old_database_opens_with_its_sessions_intact`：手工造一份旧 schema 的 sqlite，用新代码打开后列已补齐、会话/消息/运行状态仍在；重复打开幂等 |
-| 真实服务 + 真实重启 | `tests/manual/live_session_management.py`：起**真的 uvicorn 进程**（独立 data dir），HTTP 走完重命名/置顶/归档/回收站/永久删除/批量归档，然后**杀掉进程再起一个**，14/14 检查通过（含"重启后活动/归档视图完全一致"、"重启后置顶仍是置顶"、"重启后仍能按标题搜索到"） |
-| 断开不等于停止 | `test_a_client_that_leaves_does_not_stop_the_turn`：断开后模型调用**没有**被取消，运行仍 live，`replay()` 能从游标读回（`after_seq=1` → 下一条 `seq==2`） |
-| 停止真的到达引擎 | `test_interrupting_a_running_turn_ends_the_stream_with_an_aborted_verdict`：`result` 帧 `state == "aborted"`，`blocking.cancelled` 置位，随后快照 `state == "stopped"` |
-| 重连不写入 | `test_a_cursor_reconnect_does_not_write_to_the_session`：读运行状态前后消息数不变；重复 request_id 得到 409 且提示 `/runs/{id}/stream` |
-| 前端确实是读而不是重发 | `test_a_refresh_reattaches_by_reading_and_never_re_sends_chat` 检查 `reattachRun()` 内不含 `streamChat`、含 `after_seq=` |
-| 前端语法 | `node --check tcad/server/ui/app.js` 通过 |
+| 新建及切换会话 | `POST /sessions` 同时创建模型和会话；会话不能换绑模型。`tests/unit/test_server_sessions.py` 覆盖创建、列表、拒绝覆盖和模型绑定 |
+| 消息持久化 | SQLite 保存会话、回合和文本消息；`GET /threads/{id}/messages` 读取。`tests/unit/test_store_session_db.py` 覆盖持久化与列表排序 |
+| 回合互斥 | 同会话或模型的在飞回合拒绝新请求；注册边界再次检查。`tests/unit/test_server_turn_exclusion.py` 覆盖 HTTP 拒绝及 SSE 注册竞态 |
+| 停止 | `POST /chat/interrupt` 接收 `request_id`；运行中取消任务，提前停止请求在注册时生效。`tests/unit/test_server_interrupt.py` 覆盖 aborted 结果和停止竞态 |
+| 断连清理 | SSE 生成器清理时取消引擎任务，直到取消清理完成才释放模型占用。`test_disconnect_keeps_model_busy_until_cancellation_cleanup_finishes` 覆盖该行为 |
+| 会话切换隔离 | 前端切换会话会断开当前请求；会话标记拒绝迟到视口响应。`tests/frontend/app_viewport.test.mjs` 覆盖异步响应竞态 |
 
-未复现的旧行为（已随改造删除的断言）：`test_client_disconnect_cancels_the_running_turn`
-已被改写为相反的契约——那是本阶段的目标，不是回归。
+客户端连接目前仍拥有回合的生命周期。刷新、关页或切换会话会断开流并取消任务；
+消息历史可以再次读取，但这不恢复工具轨迹或被取消回合的执行。
+停止接口返回 `interrupted / stage`，没有 `saved / reaches_engine` 字段。
+同会话或模型的第二个回合被拒绝，没有默认并发为 1 的排队器。
 
-## 三、已实现但受环境阻塞（BLOCKED）
+## 尚未实现
 
-| 项目 | 阻塞原因 | 已做到哪一步 |
-| --- | --- | --- |
-| 浏览器像素级验收（面板拖拽、1366/1440/1920 断点、视口遮挡判断、截图） | 自动化浏览器上报 0×0 视口，无法取到真实渲染结果 | 代码与源级测试就位；**未声称**截图或视觉结论 |
-| 真实图片→CAD（§6 验收第 7 条） | 没有可用的视觉模型服务/额度 | 能力探测、真实像素入请求、拒绝时的显式提示均已用真实 HTTP 证据验证（阶段 B 完成） |
-| FreeCAD 真机重建 | 本阶段未依赖它；阶段 A/B 的网格链路未改动 | 未触碰 |
+- Run / RunHub、`GET /runs*`、`GET /threads/{id}/events`、事件游标和只读重连。
+- 断开连接后继续运行、刷新后跟随原运行、重启后恢复或标记可重试运行。
+- 重命名、置顶、归档、回收站、恢复、永久删除、批量操作和搜索接口。
+- `title / pinned / archived_at / trashed_at / last_read_at` 管理列、
+  `run_events / pending_cleanup` 表，以及这些新增字段的旧库迁移。
+- 阶段 D 的参数表单、对象引用、模型与特征树双向选择。
 
-## 四、尚未实现（下一步，阶段 D）
+当前会话标题和摘要由消息历史派生，不表示已经实现可编辑标题或搜索。
+不能根据消息持久化测试推断完整旧库迁移、文件清理或重启恢复已通过验收。
 
-- 对象/特征树 ↔ 模型双向选择、显示/隐藏/隔离、面/边选择的诚实降级（§9）。
-- 参数表单带单位、按明确版本提交并触发后端重建与重验证（§9）。
-- 成果卡片/版本列表的最终修整与浏览器回归（§10）。
-- 完整交付文档：接口说明汇总、快捷键文档、浏览器测试记录、真实 CAD 样例。
+## 验证记录
 
-## 五、需要注意的两处设计取舍
+2026-10-04 对基线代码运行全量 Python 测试：**1258 passed**，76.58 秒；
+Node 前端运行时测试：**17 passed**；compileall 与空白检查通过。
+本次文档核对没有执行新的浏览器像素验收。
 
-1. **并发默认是 1**（`loop.max_concurrent_turns`）。所有回合共用一个 FreeCAD worker
-   进程，两个回合交错下发命令是真实的损坏风险。第二个回合被**排队**而不是拒绝，
-   并在事件里说明"排队中"。
-2. **永久删除会删模型产物**，但只在没有其它会话引用该模型时；被引用时返回
-   `model_files_removed: []` 并在 `note` 里说明原因。删除的目录限于
-   `data/{models,artifacts,gate_reports}/<model_id>`，名字里带 model_id 但不在
-   已知目录中的文件**只报告不删除**。
+原记录中的 `928 passed, 2 skipped`、手动会话管理 14/14、断连继续运行、
+游标重连及旧库迁移验收，没有对应的当前实现或脚本，撤回其作为当前完成证据的引用。
+交互预览历史验收保留在 [验收记录](docs/interactive-preview-acceptance.md)，
+其中的内核和测试环境不应当作为本次环境的默认结论。

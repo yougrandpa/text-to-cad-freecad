@@ -170,7 +170,10 @@ python -m venv .venv
 - WebGL 不可用时明确降级为静态 PNG；网格加载不等于 Gate 通过
 - 预览繁忙时显示可重试提示，不会通过 PNG 重试绕过后台限流
 
-实现与验收边界见 [交互预览验收记录](docs/interactive-preview-acceptance.md)。
+当前交付范围见 [交付说明](DELIVERY.md) 和 [会话与运行状态](PHASE_C_STATUS.md)；
+历史实现验收与本次测试结果见 [交互预览验收记录](docs/interactive-preview-acceptance.md)。
+2026-10-04 对 `9bf00e0` 全量运行结果为 1258 项 Python 测试、17 项 Node 测试通过；
+实际浏览器 GPU 与像素验收仍待完成。
 
 四栏布局：**会话列表 │ 对话流 │ 视图 │ 检查器**。
 
@@ -673,8 +676,8 @@ TypeError: type must be 'DocumentObject', 'NoneType' or ('DocumentObject',['Stri
 | # | 限制 | 说明 |
 |---|---|---|
 | 1 | **跨回合延续对话，但不回灌工具轨迹** | 每个 Turn 现在会装配受预算约束的上下文：相关历史（`session_db`）、需求合同、当前 IR 摘要（含稳定特征 id）、当前版本、以及上一轮 Gate 结论（`tcad/context/*`）。仍**不**回灌历史工具调用与结果——那会让模型只看到自己的旁白而看不到工具产出；几何事实由摘要块承担，无需从旁白里猜。历史超窗时走三档降级，但**未注入 LLM 摘要器**：被压缩的旧历史落成一条显式占位消息，而不是被静默丢弃。 |
-| 2 | **真机只在 DeepSeek 上验证过** | function calling 与 thinking 并存的真实行为、`probe_llm` 对真实供应商，只在 `deepseek-v4-flash` 上跑过。 |
-| 3 | **`context.window_tokens` 是估值** | 128000 未按真实 token 标定，三档降级（0.70 / 0.85）的阈值因此不准。 |
+| 2 | **供应商验证有环境边界** | 早期供应商记录涉及 `deepseek-v4-flash`；2026-10-02 的本地模型桥接验收见交互预览记录。桥接不验证商业供应商认证、流式协议或计费；本次测试通过不代表所有供应商已验证。 |
+| 3 | **上下文 token 计数是估值** | `context.window_tokens` 配置请求窗口，每次调用计入消息和工具 schema 并预留输出空间；UTF-8 估算不是供应商 tokenizer 的精确计数，压缩与历史降级阈值仍受此误差影响。 |
 | 4 | **界面无认证** | 默认只绑 `127.0.0.1`；绑非回环地址时启动会打印警告。不要暴露到公网。 |
 | 5 | **无会话重命名 / 删除 / 搜索**，不做会话内换模型 | 会话↔模型绑定单向是有意的。 |
 | 6 | **多标签页仍未协调（但有界）** | 每个请求的 hooks/视觉状态**已经隔离**：观测用的 tap 与 `geo_view` 检查点走 `ToolContext`，不再改写共享的 `services.hooks` / `services._visual_ok`（§5-E）。同一模型的并发写入也已按模型串行化（`IrStore` 的 load→apply→append→snapshot 是一个临界区，§5-D）。**当前增加了同会话 / 同模型的回合互斥**：在飞回合结束前，新 `/chat` 返回 409；注册竞态返回明确的 SSE 冲突。断连清理完成前保留占用。同一个 `request_id` 起第二个回合会被 409 拒绝。跨进程写同一个 `data_dir` 也不支持（进程内锁，不是文件锁）。 |
