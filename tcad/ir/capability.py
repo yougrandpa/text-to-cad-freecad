@@ -9,8 +9,8 @@ each invent their own version of what works.
 Tiers:
   * ``VERIFIED``      — a test that runs the real FreeCAD kernel builds this op
                         and measures the geometry it claims.
-  * ``EXPERIMENTAL``  — the FreeCAD object is created and the document
-                        recomputes, but nothing proves the resulting shape.
+  * ``EXPERIMENTAL``  — an object mapping exists, but availability depends on the
+                        FreeCAD build and nothing proves the resulting shape.
                         Several of these also cannot express the references they
                         need (see ``gap``).
 
@@ -142,7 +142,8 @@ _CAPABILITIES: dict[str, OpCapability] = {
         ""),
     "circular_pattern": OpCapability(
         EXPERIMENTAL, "no real-kernel test",
-        "this build's PartDesign::CircularPattern is spacing-driven "
+        "PartDesign::CircularPattern is unavailable on FreeCAD 1.0; builds that "
+        "provide it use a spacing-driven pattern "
         "(NumberCircles/RadialDistance) and cannot express 'N copies over an angle'; "
         "use polar_pattern for bolt circles"),
     "polar_pattern": OpCapability(
@@ -187,8 +188,8 @@ def describe_for_model() -> str:
         "      op 必须精确，不存在通配写法：",
         f"        {' | '.join(all_ops())}",
         "      OP CAPABILITY — verified means a test on the real FreeCAD kernel",
-        "      measured the geometry; experimental means the FreeCAD object is",
-        "      created and the document recomputes, and NOTHING proves the shape.",
+        "      measured the geometry; experimental means only an object mapping",
+        "      exists. Installed-build availability varies; NOTHING proves the shape.",
         "      Prefer verified ops. An experimental op can silently change nothing",
         "      while still reporting a successful build, so re-measure after it",
         "      (ir_digest) instead of assuming your parameters took effect.",

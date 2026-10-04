@@ -554,12 +554,13 @@ async def test_pass_state_resets_between_turns():
     assert len(engine._candidate_reports) == 1
 
 
-async def test_successful_write_after_pass_invalidates_pass():
+@pytest.mark.parametrize("strategy", ["loop_until_done", "fork_join", "adversarial"])
+async def test_successful_write_after_pass_invalidates_pass(strategy):
     """Within one step batch: commit passes, then a successful ir_patch writes.
 
     The IR the Gate graded is no longer the current IR, so "passed" must not
-    survive the write — even though the turn itself still finalizes from the
-    gate report it legitimately earned at commit time.
+    survive the write. Completion refers to the CURRENT model, not a report
+    legitimately earned by an earlier version in the same tool batch.
     """
     ir = make_ir()
     llm = ScriptedLlm([
@@ -573,11 +574,12 @@ async def test_successful_write_after_pass_invalidates_pass():
         ]),
     ])
     svc = make_services(ir, llm, gate_passed=True)
-    engine = make_engine(svc, max_steps=10)
+    engine = make_engine(svc, max_steps=10, strategy=strategy)
     thread = Thread(thread_id="th1", model_id="m1")
 
     result = await engine.run_turn(thread, UserMessage(kind=TurnKind.CREATE, text="bracket"))
-    assert result.state == TurnState.SUCCEEDED
+    assert result.state != TurnState.SUCCEEDED
+    assert result.gate_report is None
     assert len(svc.store.applied) == 1  # the patch really went through
     assert engine._last_commit_passed is False  # ...and the pass died with it
 

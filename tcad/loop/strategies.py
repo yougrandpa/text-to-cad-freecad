@@ -1,8 +1,8 @@
 """Execution strategies (design §4.1 decision 1).
 
   M1 loop_until_done : the default main path — step loop until a green Gate.
-  M2 fork_join        : scores candidate attempts by blocking failures then
-                        advisory findings, and promotes the best.
+  M2 fork_join        : records candidate attempts; current-version verification
+                        remains the authority (no historical candidate restore).
   M3 adversarial       : an isolated critic step after the main loop; advisory
                         output only — never changes the success decision.
 
@@ -49,7 +49,7 @@ async def _drive(engine: Any, turn: Any, messages: list[dict], allowed: set) -> 
             y = await engine._step(turn, messages, allowed)
             if y.gate_report is not None:
                 last_report = y.gate_report
-                if y.gate_report.passed:
+                if engine.gate_is_current(turn, y.gate_report):
                     turn.state = TurnState.SUCCEEDED
                     return last_report
             # if turn.state changed (ASK -> AWAITING_APPROVAL) the loop exits
@@ -74,9 +74,9 @@ class ForkJoinStrategy:
     """M2 — fork & join.
 
     Runs the same main loop, but records every candidate GateReport the model
-    produced and, if the turn did not end SUCCEEDED, promotes the best-scored
-    candidate (fewest blocking failures, then fewest advisories). The success
-    decision still comes only from ``GateReport.passed``.
+    produced for diagnostics. A candidate is not a branch checkout: no earlier
+    report may be promoted without restoring its IR and verifying it again.
+    Success therefore uses the same current-version predicate as M1.
     """
 
     def __init__(self, candidates: int = 3) -> None:
@@ -86,11 +86,9 @@ class ForkJoinStrategy:
         last_report = await _drive(engine, turn, messages, allowed)
         if turn.state == TurnState.SUCCEEDED:
             return engine._finalize(turn, messages, last_report)
-        # Choose the best attempted candidate and, if it passed, promote it.
-        best = best_candidate(list(engine._candidate_reports))
-        if best is not None and best.passed:
-            turn.state = TurnState.SUCCEEDED
-            return engine._finalize(turn, messages, best)
+        # Scoring a historical candidate does not restore its IR/artifacts.
+        # Only _drive's current-version Gate may succeed; in particular do not
+        # turn FAILED/AWAITING_APPROVAL into success with an older candidate.
         return engine._finalize(turn, messages, last_report)
 
 

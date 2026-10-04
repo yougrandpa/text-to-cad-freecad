@@ -680,6 +680,8 @@ def build_services(cfg: Config, *, start_worker: bool = True):
         llm_max_tokens=int(rs.max_tokens_per_step),
         llm_request_timeout_s=float(rs.request_timeout_s),
         llm_max_retries=int(rs.max_retries),
+        context_window_tokens=int(rs.resolved_context_window()),
+        repeated_tool_failure_limit=cfg.loop.repeated_tool_failure_limit,
         allow_privileged=bool(cfg.policy.allow_privileged),
         visual_checkpoints=tuple(cfg.context.visual_checkpoints),
         artifact_exports=tuple(cfg.storage.artifact_exports),
@@ -742,6 +744,7 @@ def apply_llm_settings(
     lc.llm_max_tokens = int(rs.max_tokens_per_step)
     lc.llm_request_timeout_s = float(rs.request_timeout_s)
     lc.llm_max_retries = int(rs.max_retries)
+    lc.context_window_tokens = int(rs.resolved_context_window())
 
     services.config = apply_to_config(services.config, settings)
     services.settings = settings

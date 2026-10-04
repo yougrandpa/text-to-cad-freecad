@@ -49,6 +49,8 @@ loop:
   step_timeout_s: null
   turn_wall_clock_s: null
   max_compile_retries: null
+  # Stall detector, not a total work ceiling. Successful IR changes reset it.
+  repeated_tool_failure_limit: 3
   default_strategy: "loop_until_done"
   strategies:
     loop_until_done: {}

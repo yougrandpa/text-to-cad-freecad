@@ -17,6 +17,9 @@ Severity contract
 NOTE on the param allow-list (design §7 / 附录 A-1 + B-3)
 --------------------------------------------------------
 The allow-list below is derived from the *verified* FreeCAD property tables.
+It describes accepted IR vocabulary, not a promise that every installed kernel
+has every property. Older builds lack some newer scalars: the worker checks the
+live property list and refuses unavailable keys with the FreeCAD version.
 FreeCAD property names are PascalCase (``Length``, ``UpToFace`` ...); the IR
 uses snake_case param keys (``length``, ``up_to_face`` ...), and the worker
 compiler is responsible for the translation. When a param key for a *verified*
@@ -135,7 +138,7 @@ _VERIFIED_OP_PARAMS: dict[str, frozenset[str]] = {
         "transform_mode",
     }),
     "linear_pattern": frozenset({
-        "axis", "mode", "mode2", "length", "length2", "occurrences",
+        "axis", "mode", "mode2", "length", "length2", "offset", "occurrences",
         "occurrences2", "reversed", "reversed2", "transform_mode",
     }),
     "polar_pattern": frozenset({

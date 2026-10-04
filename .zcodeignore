@@ -17,7 +17,6 @@ __pycache__/
 
 # 测试与构建产物
 .pytest_tmp/
-.pytest_tmp_*/
 .pytest_cache/
 build/
 dist/
@@ -34,3 +33,33 @@ tools/probes/*.FCStd
 # 用通配而不是逐条列举 —— 验证时随手起的目录名不会提前知道，漏一个就会把
 # 运行期数据提交进仓库。
 .tcad_*/
+
+# ===== ↑ 以上同步自 .gitignore（「从 .gitignore 同步」只重写以上部分）=====
+.git/
+.hg/
+.svn/
+node_modules/
+bower_components/
+jspm_packages/
+site-packages/
+venv/
+coverage/
+htmlcov/
+lcov-report/
+cmakefiles/
+cmake-build-*/
+bazel-*/
+pods/
+deriveddata/
+storybook-static/
+playwright-report/
+test-results/
+allure-results/
+allure-report/
+cdk.out/
+*.dist-info/
+eggs/
+pip-wheel-metadata/
+wheels/
+# ----- ↑ 以上为 ZCode 默认排除规则（自定义规则请写在本行下方，不会被同步/恢复改动）-----
+# 自定义规则写在下方（本行提示可删除）

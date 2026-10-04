@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -121,7 +122,11 @@ def resolve_paths(cfg: Config, *, root: Path | None = None) -> Config:
     different cwd — still finds the FreeCAD binary and the data directory.
     """
     base = root or REPO_ROOT
-    cfg.runtime.freecad_cmd = str((base / cfg.runtime.freecad_cmd).resolve())
+    command = cfg.runtime.freecad_cmd
+    # A bare executable is documented as a PATH lookup. Resolving it against
+    # the repository first turned e.g. `freecadcmd` into a nonexistent file.
+    on_path = shutil.which(command) if Path(command).name == command else None
+    cfg.runtime.freecad_cmd = str(Path(on_path).resolve()) if on_path else str((base / command).resolve())
     cfg.runtime.freecad_python_path = str(
         (base / cfg.runtime.freecad_python_path).resolve()
     )

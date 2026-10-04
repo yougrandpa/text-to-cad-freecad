@@ -455,18 +455,18 @@
    ]
   },
   {
-   "text": "槽草图报了约束冲突。根因是我把矩形放在绝对坐标上标注、又叠加了水平/垂直约束，等于过约束。重建为「草图自身原点上的矩形」，再用 offset 整体定位。",
+   "text": "约束冲突来自重复的尺寸。改用辅助构造线固定槽的位置，再独立标注 40×20 尺寸，让槽既居中又完全约束。",
    "calls": [
     {
      "name": "ir_patch",
      "args": {
       "base_version": "current",
-      "summary": "rebuild the slot profile around its own origin and position it with the sketch offset",
+      "summary": "fully constrain the 40x20 slot at x=20..60, y=15..35 using a dimensioned construction anchor",
       "ops": [
        {
         "op": "update_sketch",
         "target_id": "sk_slot",
-        "reason": "the previous constraint set was over-determined: dimensioning both a line's start point and a line's end point in absolute coordinates conflicted with the rectangle's horizontal/vertical constraints. Rebuilt with the proven recipe — model the 40x20 profile around the sketch's OWN origin (bind one line's start to the sketch origin, then dimension the opposite endpoints), and place it in the plate with the sketch offset instead of absolute dimensions. [updated: the sketch `offset` it used does not position a profile and deforms an origin-bound one, so it is now refused. Coordinates are world coordinates; the profile is placed by its points and the origin bind removed.]",
+        "reason": "remove the conflicting dimensions and constrain the slot size and position independently: a construction line anchored to the sketch origin locates the lower-left corner at (20,15); unambiguous one-reference DistanceX/DistanceY constraints set the 40x20 slot and the 20x15 construction offset. No sketch placement offset or free translation remains.",
         "payload": {
          "geometry": [
           {
@@ -476,12 +476,12 @@
             {
              "x": 20.0,
              "y": 15.0,
-             "z": 0
+             "z": 0.0
             },
             {
              "x": 60.0,
              "y": 15.0,
-             "z": 0
+             "z": 0.0
             }
            ]
           },
@@ -492,12 +492,12 @@
             {
              "x": 60.0,
              "y": 15.0,
-             "z": 0
+             "z": 0.0
             },
             {
              "x": 60.0,
              "y": 35.0,
-             "z": 0
+             "z": 0.0
             }
            ]
           },
@@ -508,12 +508,12 @@
             {
              "x": 60.0,
              "y": 35.0,
-             "z": 0
+             "z": 0.0
             },
             {
              "x": 20.0,
              "y": 35.0,
-             "z": 0
+             "z": 0.0
             }
            ]
           },
@@ -524,11 +524,28 @@
             {
              "x": 20.0,
              "y": 35.0,
-             "z": 0
+             "z": 0.0
             },
             {
              "x": 20.0,
              "y": 15.0,
+             "z": 0.0
+            }
+           ]
+          },
+          {
+           "id": "g_anchor",
+           "kind": "line",
+           "construction": true,
+           "points": [
+            {
+             "x": 0,
+             "y": 0,
+             "z": 0
+            },
+            {
+             "x": 20,
+             "y": 15,
              "z": 0
             }
            ]
@@ -596,23 +613,53 @@
            ]
           },
           {
+           "type": "Coincident",
+           "refs": [
+            4,
+            1,
+            -1,
+            1
+           ]
+          },
+          {
+           "type": "Coincident",
+           "refs": [
+            4,
+            2,
+            0,
+            1
+           ]
+          },
+          {
            "type": "DistanceX",
            "refs": [
-            0,
-            2
+            0
            ],
            "value": 40.0
           },
           {
            "type": "DistanceY",
            "refs": [
-            1,
-            2
+            1
            ],
            "value": 20.0
+          },
+          {
+           "type": "DistanceX",
+           "refs": [
+            4
+           ],
+           "value": 20.0
+          },
+          {
+           "type": "DistanceY",
+           "refs": [
+            4
+           ],
+           "value": 15.0
           }
          ],
-         "require_fully_constrained": false
+         "require_fully_constrained": true
         }
        }
       ]
@@ -621,7 +668,7 @@
     {
      "name": "ir_commit",
      "args": {
-      "message": "slot profile rebuilt around its own origin"
+      "message": "slot size and centred position fully constrained"
      }
     },
     {

@@ -965,6 +965,30 @@ def _prop_name(obj, key: str):
     return None
 
 
+def _freecad_version() -> str:
+    """Version for diagnostics; property probes, not version guesses, route API calls."""
+    return ".".join(str(v) for v in App.Version()[:3])
+
+
+def _enum_value(obj, pname: str, value):
+    """Translate the two documented linear-pattern modes across FreeCAD builds.
+
+    FreeCAD 1.0 calls these modes ``length`` / ``offset``; the newer pattern
+    extension calls them ``Extent`` / ``Spacing``. Both operate on Length and
+    Offset respectively. Query the live enum so newer releases keep their own
+    behaviour, and leave unknown values untouched for FreeCAD to reject.
+    """
+    if obj.TypeId != "PartDesign::LinearPattern" or pname not in {"Mode", "Mode2"}:
+        return value
+    choices = obj.getEnumerationsOfProperty(pname)
+    if value in choices:
+        return value
+    for aliases in (("Extent", "length"), ("Spacing", "offset")):
+        if value in aliases:
+            return next((alias for alias in aliases if alias in choices), value)
+    return value
+
+
 def _assign_props(obj, params: dict) -> list[dict]:
     """Set scalar params defensively (only keys that exist on the object).
 
@@ -981,7 +1005,9 @@ def _assign_props(obj, params: dict) -> list[dict]:
             errors.append({
                 "kind": "compile",
                 "feature_id": getattr(obj, "Name", None),
-                "message": f"unsupported property {k!r} for {obj.TypeId}",
+                "message": (f"unsupported property {k!r} for {obj.TypeId} on "
+                            f"FreeCAD {_freecad_version()}; this build does not "
+                            "provide that property"),
             })
             continue
         tid = obj.getTypeIdOfProperty(pname)
@@ -993,7 +1019,7 @@ def _assign_props(obj, params: dict) -> list[dict]:
             elif tid == "App::PropertyBool":
                 setattr(obj, pname, bool(v))
             elif tid == "App::PropertyEnumeration":
-                setattr(obj, pname, v)
+                setattr(obj, pname, _enum_value(obj, pname, v))
             else:
                 setattr(obj, pname, v)
         except Exception as exc:  # noqa: BLE001
@@ -1056,7 +1082,18 @@ def _apply_feature(doc, body, f: dict, ref_objects: dict) -> dict:
         return state
 
     name = _obj_name(f.get("id"), f.get("name"))
-    obj = doc.addObject(type_str, name)
+    try:
+        obj = doc.addObject(type_str, name)
+    except Exception as exc:  # noqa: BLE001
+        state["errors"].append({
+            "kind": "compile", "feature_id": f.get("id"),
+            "message": (f"cannot create feature {op!r} ({type_str}) on FreeCAD "
+                        f"{_freecad_version()}: {type(exc).__name__}: {exc}"
+                        + ("; circular_pattern is experimental and unavailable "
+                           "in some builds; use polar_pattern for bolt circles"
+                           if op == "circular_pattern" else "")),
+        })
+        return state
     obj.Label = f.get("name") or f.get("id")
     ref_objects[f.get("id")] = obj
 

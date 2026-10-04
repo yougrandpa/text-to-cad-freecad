@@ -1,9 +1,12 @@
 """api_selftest — verify every FreeCAD API claim at worker start-up.
 
-FreeCAD 26.3.0dev is a moving target. This rebuilds the documented 60x40x10 Pad
+FreeCAD's API is a moving target. This rebuilds the documented 60x40x10 Pad
 and probes each API touched by compiler/introspect/mesh/exporters. If anything
 disappears or changes behaviour, ``ok`` is False and ``missing`` lists the names,
-so the worker fails loudly instead of dying mid-build.
+so the worker fails loudly instead of dying mid-build. CircularPattern is an
+experimental, build-dependent type: its failed probe remains visible with
+``ok=False`` in checks and optional_missing, but does not disable the core CAD
+workflow. ``fully_supported`` distinguishes that case from a complete API pass.
 
 Runs inside FreeCADCmd. Stdlib + FreeCAD/Part/Sketcher only.
 """
@@ -19,15 +22,21 @@ import Sketcher
 
 App = FreeCAD
 
+# This is the one known build-dependent experimental type, not a blanket escape
+# hatch for missing APIs. Keep all other probes required, including verified ops.
+_OPTIONAL_FEATURE_OPS = frozenset({"circular_pattern"})
+
 
 def api_selftest(**_extra) -> dict:
     checks: list = []
     missing: list = []
+    optional_missing: list = []
 
-    def record(name, ok, detail=""):
-        checks.append({"name": name, "ok": bool(ok), "detail": str(detail)})
+    def record(name, ok, detail="", *, required=True):
+        checks.append({"name": name, "ok": bool(ok), "detail": str(detail),
+                       "required": required})
         if not ok:
-            missing.append(name)
+            (missing if required else optional_missing).append(name)
 
     # ── module-level constructors ──
     try:
@@ -183,18 +192,26 @@ def api_selftest(**_extra) -> dict:
     # ── feature type strings from FEATURE_TYPE_MAP exist ──
     from tcad.worker.compiler import FEATURE_TYPE_MAP
     for op, type_str in FEATURE_TYPE_MAP.items():
+        required = op not in _OPTIONAL_FEATURE_OPS
         try:
             obj = doc.addObject(type_str, f"Probe_{op}")
             ok_f = obj is not None
             doc.removeObject(obj.Name)
             doc.recompute()
-            record(f"feature:{op}", ok_f)
+            record(f"feature:{op}", ok_f, required=required)
         except Exception as exc:  # noqa: BLE001
-            record(f"feature:{op}", False, f"{type(exc).__name__}: {exc}")
+            record(f"feature:{op}", False, f"{type(exc).__name__}: {exc}",
+                   required=required)
 
     try:
         FreeCAD.closeDocument(name)
     except Exception:  # noqa: BLE001
         pass
 
-    return {"ok": len(missing) == 0, "checks": checks, "missing": missing}
+    errors = [{"kind": "compile", "feature_id": None,
+               "message": f"FreeCAD API self-test failed: {c['name']}: {c['detail']}"}
+              for c in checks if c["required"] and not c["ok"]]
+    return {"ok": not missing, "fully_supported": not (missing or optional_missing),
+            "freecad_version": ".".join(str(v) for v in App.Version()[:3]),
+            "checks": checks, "missing": missing,
+            "optional_missing": optional_missing, "errors": errors}

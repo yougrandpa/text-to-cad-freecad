@@ -16,6 +16,7 @@ Endpoints
 ``GET  /models/{id}/artifacts``         artefact file listing
 ``GET  /models/{id}/artifacts/{path}``  fetch one artefact (PNG / STEP / STL)
 ``GET  /models/{id}/render``            render a view on demand — see below
+``GET  /models/{id}/mesh``              bounded, versioned mesh for the 3D viewport
 ``POST /chat``                          run a turn; Server-Sent Events stream
 ``POST /chat/interrupt``                stop the turn named by ``request_id``
 ``GET  /approvals``                     pending approvals
@@ -62,9 +63,10 @@ from collections import deque
 from pathlib import Path
 from typing import Any, AsyncIterator, get_args
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
+from starlette.concurrency import run_in_threadpool
 
 from tcad.config.schema import Config
 from tcad.core.types import RenderStyle, TurnKind, TurnState
@@ -406,9 +408,10 @@ class RunningTurn:
     no-op rather than an error.
     """
 
-    def __init__(self, request_id: str, thread_id: str) -> None:
+    def __init__(self, request_id: str, thread_id: str, model_id: str | None = None) -> None:
         self.request_id = request_id
         self.thread_id = thread_id
+        self.model_id = model_id
         self.task: asyncio.Task | None = None
         self.stopped = False
 
@@ -486,6 +489,13 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
     #: learning about; see `_take_pending_stop` for the other half of that race.
     app.state.turns = {}
     app.state.pending_stops = {}
+    from tcad.server.mesh import (
+        MAX_ACTIVE_MESH_REQUESTS, MAX_TOLERANCE, MIN_TOLERANCE,
+        MeshPreviewCache, MeshPreviewResponse,
+    )
+
+    app.state.mesh_cache = MeshPreviewCache()
+    app.state.mesh_preview_jobs = set()
 
     def svc() -> Any:
         if app.state.services is None:
@@ -693,6 +703,54 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
         root = s.store.artifact_dir(model_id, int(ir.version))
         return FileResponse(_resolve_artifact(root, file_path))
 
+    @app.get("/models/{model_id}/mesh", response_model=MeshPreviewResponse)
+    async def get_mesh(
+        model_id: str,
+        version: int | None = Query(default=None, ge=0),
+        tolerance: float = Query(default=0.5, ge=MIN_TOLERANCE, le=MAX_TOLERANCE),
+        force: bool = False,
+    ) -> Response:
+        """Human preview only; mesh availability never establishes Gate success.
+
+        The latest snapshot is loaded once when ``version`` is omitted. Meshes
+        are cached by exact snapshot contents, version and bounded tolerance.
+        Async admission bounds preview waiters before they can occupy shared
+        ASGI threads. Disk IO, service initialization, worker RPC, validation and
+        JSON encoding all remain in the thread pool.
+        """
+        from tcad.server.mesh import mesh_preview
+
+        jobs = app.state.mesh_preview_jobs
+        # No await between admission and registration: competing requests cannot
+        # exceed the cap, and overload never waits for a thread-pool token.
+        if len(jobs) >= MAX_ACTIVE_MESH_REQUESTS:
+            raise HTTPException(
+                429, "mesh preview is busy; retry shortly",
+                headers={"Retry-After": "1"},
+            )
+
+        def build_preview() -> Response:
+            return mesh_preview(
+                svc(), app.state.mesh_cache, model_id,
+                version=version, tolerance=tolerance, force=force,
+            )
+
+        job = asyncio.create_task(run_in_threadpool(build_preview))
+        jobs.add(job)
+
+        def release_preview(finished: asyncio.Task) -> None:
+            jobs.discard(finished)
+            # A disconnected client no longer awaits a failed build. Retrieve
+            # its exception so that outcome does not become an unhandled task.
+            if not finished.cancelled():
+                finished.exception()
+
+        job.add_done_callback(release_preview)
+        # Cancelling an HTTP request cannot stop a running sync CAD call. Keep
+        # its slot until the actual work finishes, rather than admitting another
+        # job on each click/AbortController cancellation.
+        return await asyncio.shield(job)
+
     @app.get("/models/{model_id}/render")
     def render_view(
         model_id: str,
@@ -810,6 +868,22 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
                 f"unique while it is in flight (mint a new one per request)",
             )
 
+        def active_conflict() -> RunningTurn | None:
+            # Separate request ids do not make it safe to edit the same part
+            # concurrently. Both its conversation history and IR tool sequence
+            # must belong to one turn until it finishes (or is stopped).
+            return next((
+                turn for turn in app.state.turns.values()
+                if turn.thread_id == thread_id or turn.model_id == model_id
+            ), None)
+
+        conflict = active_conflict()
+        if conflict is not None:
+            raise HTTPException(
+                409, f"thread/model already has an active turn {conflict.request_id!r}; "
+                "stop that turn or wait for it to finish before sending another message",
+            )
+
         def remember_user() -> None:
             try:
                 d = db()
@@ -851,7 +925,7 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
                     pass
 
             task: asyncio.Task | None = None
-            running = RunningTurn(turn_id, thread_id)
+            running = RunningTurn(turn_id, thread_id, model_id)
             registered = False
             try:
                 # Registration is the authority, not the check in `chat()`: two
@@ -872,6 +946,16 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
                             ),
                         },
                     )
+                    return
+                conflict = active_conflict()
+                if conflict is not None:
+                    # The response headers have already started. Recheck at the
+                    # same no-await registration boundary as duplicate ids, so
+                    # two requests accepted together cannot both mutate a part.
+                    yield _sse("error", {
+                        "type": "ActiveTurnConflict",
+                        "message": f"thread/model already has an active turn {conflict.request_id!r}",
+                    })
                     return
                 remember_user()
                 # Registered before the `start` frame, so there is no moment in
@@ -936,8 +1020,10 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
             except Exception as exc:  # noqa: BLE001
                 yield _sse("error", {"type": type(exc).__name__, "message": str(exc)})
             finally:
-                if registered:
-                    app.state.turns.pop(turn_id, None)
+                def release_turn(_task=None) -> None:
+                    if registered and app.state.turns.get(turn_id) is running:
+                        app.state.turns.pop(turn_id, None)
+
                 # A turn must not outlive the client that asked for it.
                 #
                 # This mattered less when the loop had a step ceiling: a turn
@@ -946,7 +1032,14 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
                 # spending tokens and holding the worker — for as long as nobody
                 # stops it, and nothing else here would.
                 if task is not None and not task.done():
+                    # Cancellation is a request, not proof the engine finished
+                    # unwinding. Keep the model occupied until cleanup is done,
+                    # otherwise a reconnect could start a new edit while the
+                    # old turn is still aborting a shared worker call.
+                    task.add_done_callback(release_turn)
                     task.cancel()
+                else:
+                    release_turn()
                 # Nothing to unwrap: the tap was passed to the engine, never
                 # assigned onto the shared services bundle.
 

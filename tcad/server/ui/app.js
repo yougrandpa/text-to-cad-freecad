@@ -13,6 +13,8 @@
  *     real decisions.
  */
 
+import { MeshViewport } from "./viewport.js";
+
 const $ = (id) => document.getElementById(id);
 
 const state = {
@@ -328,7 +330,13 @@ function applyToolImages(data) {
   const images = (data.images || []).filter((i) => i && i.url);
   if (!images.length) return null;
   const latest = images[images.length - 1];
-  displayImage(latest.url, latest.view);
+  // A tool's fixed camera must never replace the user's interactive camera.
+  if (meshViewer?.available) loadView(false);
+  else {
+    cancelViewRequest();
+    displayImage(latest.url, latest.view);
+    setViewMode(false, "静态预览 · 交互视图不可用");
+  }
   return latest;
 }
 
@@ -400,6 +408,7 @@ function pushGateCard(report, turnState) {
 }
 
 async function handleResult(result) {
+  const token = sessionToken();
   state.threadId = result.thread_id;
   state.lastGate = result.gate_report || null;
   $("threadLabel").textContent = result.thread_id;
@@ -467,6 +476,7 @@ async function handleResult(result) {
   // the viewport are read — otherwise the UI can describe a version it has not
   // caught up with yet.
   await refreshInspector();
+  if (stale(token)) return;
   loadArtifacts();
   loadView(false);
 
@@ -475,6 +485,7 @@ async function handleResult(result) {
   // actually in — a stale "新会话" on a session that just built a part is the
   // kind of small lie that erodes trust in the whole panel.
   await loadSessions();
+  if (stale(token)) return;
 
   // ...and the header of the conversation you are looking at. The list and the
   // header read the same field; leaving the header behind means the first turn
@@ -674,7 +685,7 @@ function handleAgentEvent(d) {
   if (applyToolImages(d)) return;
 
   if (d.name === "ir_commit" && d.ok && d.gate && d.gate.passed) {
-    loadView(false);
+    loadView(false, { version: d.gate.ir_version });
   }
 }
 
@@ -682,66 +693,173 @@ function handleAgentEvent(d) {
 // viewport / files / inspector
 // ══════════════════════════════════════════════════════════════════════════
 
-/** Put an image in the viewport, optionally switching the active tab. */
-function displayImage(url, view) {
-  const img = $("viewImage");
-  const placeholder = $("viewPlaceholder");
-  if (view) {
-    state.view = view;
-    for (const tab of document.querySelectorAll(".tab")) {
-      tab.classList.toggle("active", tab.dataset.view === view);
-    }
-  }
-  img.src = url;
-  img.hidden = false;
-  placeholder.hidden = true;
+// Every load, including another load in the SAME session, invalidates the last.
+// Aborting saves work; the sequence/token checks are the authority, because an
+// already-resolved response can still finish after abort().
+let meshViewer = null;
+let viewRequest = 0;
+let viewAbort = null;
+let viewBlobUrl = null;
+
+function cancelViewRequest() {
+  viewRequest += 1;
+  viewAbort?.abort();
+  viewAbort = null;
+  return viewRequest;
 }
 
-async function loadView(force) {
-  const img = $("viewImage");
-  const placeholder = $("viewPlaceholder");
-  const token = sessionToken();
+function selectView(view) {
+  state.view = view;
+  for (const tab of document.querySelectorAll(".tab")) {
+    const selected = tab.dataset.view === view;
+    tab.classList.toggle("active", selected);
+    tab.setAttribute("aria-pressed", String(selected));
+  }
+}
 
-  // Deliberately does NOT consult `state.version`. At boot the model may not
-  // exist yet, so the cached version is null — and the old early-return on that
-  // meant a freshly built part never got rendered until a page reload. The
-  // server resolves "current version" itself; the HTTP status is the truth.
-  placeholder.textContent = state.busy ? "生成中…" : "渲染中…";
-  placeholder.hidden = false;
+function setViewMode(interactive, message = "", warning = false) {
+  $("fitView").disabled = !interactive || !meshViewer?.hasMesh;
+  $("viewHelp").hidden = !interactive || !meshViewer?.hasMesh;
+  $("viewStatus").textContent = message;
+  $("viewStatus").classList.toggle("warn", warning);
+  // The headless PNG API supports these four views. Do not offer buttons that
+  // would request unsupported views when WebGL or mesh loading is unavailable.
+  for (const tab of document.querySelectorAll(".tab")) {
+    tab.disabled = !interactive && !["iso", "front", "top", "right"].includes(tab.dataset.view);
+  }
+}
+
+function clearViewImage() {
+  const img = $("viewImage");
+  img.onload = null;
+  img.onerror = null;
   img.hidden = true;
+  img.removeAttribute("src");
+  if (viewBlobUrl) URL.revokeObjectURL(viewBlobUrl);
+  viewBlobUrl = null;
+}
+
+/** Put an already-generated PNG in the fallback viewport. */
+function displayImage(url, view) {
+  const img = $("viewImage"), placeholder = $("viewPlaceholder");
+  const token = sessionToken(), request = viewRequest;
+  clearViewImage();
+  if (view) selectView(view);
+  if (url.startsWith("blob:")) viewBlobUrl = url;
+  img.onload = () => {
+    if (stale(token) || request !== viewRequest) return;
+    img.hidden = false;
+    placeholder.hidden = true;
+  };
+  img.onerror = () => {
+    if (stale(token) || request !== viewRequest) return;
+    img.hidden = true;
+    placeholder.hidden = false;
+    placeholder.textContent = "预览图片加载失败，请点击刷新重试";
+  };
+  img.src = url;
+}
+
+async function loadView(force, { version = null } = {}) {
+  const token = sessionToken();
+  const request = cancelViewRequest();
+  const controller = new AbortController();
+  viewAbort = controller;
+  const current = () => !stale(token) && request === viewRequest;
+  const placeholder = $("viewPlaceholder");
+  const hasPreview = meshViewer?.hasMesh || !$("viewImage").hidden;
+  placeholder.textContent = state.busy ? "生成中…" : "加载几何…";
+  placeholder.hidden = !!hasPreview;
+  $("viewStatus").textContent = hasPreview ? "正在更新几何，保留当前视角…" : "正在读取几何…";
 
   if (!token.modelId) {
+    meshViewer?.clear();
+    clearViewImage();
+    placeholder.hidden = false;
     placeholder.textContent = "还没有会话 —— 左侧点「＋ 新建」，或直接在下面描述一个零件";
+    setViewMode(!!meshViewer?.available, "暂无几何");
     return;
   }
 
-  const url = `/models/${encodeURIComponent(token.modelId)}/render` +
-    `?view=${state.view}&force=${force ? "true" : "false"}&t=${Date.now()}`;
-  try {
-    const res = await fetch(url);
-    if (stale(token)) return;
-    if (res.status === 404) {
-      placeholder.textContent = "还没有模型 —— 发送第一条消息后会自动创建";
+  const params = new URLSearchParams({ force: force ? "true" : "false" });
+  // A live commit can arrive before the inspector learns its version. Omit the
+  // version then and let the server resolve current, instead of reloading an
+  // old cached state.version. Explicit known commit versions stay pinned.
+  if (version != null) params.set("version", String(version));
+  let fallbackReason = meshViewer?.error || "WebGL 不可用";
+  if (meshViewer?.available) {
+    try {
+      const res = await fetch(`/models/${encodeURIComponent(token.modelId)}/mesh?${params}`, { signal: controller.signal });
+      if (stale(token) || request !== viewRequest) return;
+      if (!res.ok) {
+        let detail = res.statusText;
+        try { detail = (await res.json()).detail || detail; } catch { /* not JSON */ }
+        if (!current()) return;
+        if (res.status === 429) {
+          // PNG rendering uses the same worker: falling back would bypass the
+          // server's preview admission limit and amplify a refresh storm.
+          const prior = meshViewer.hasMesh || !$("viewImage").hidden;
+          placeholder.hidden = prior;
+          placeholder.textContent = "预览繁忙，请稍后点击刷新重试";
+          setViewMode(meshViewer.hasMesh, prior
+            ? "预览繁忙 · 仍显示此前几何，请稍后点击刷新"
+            : "预览繁忙 · 请稍后点击刷新重试", true);
+          return;
+        }
+        if (res.status === 404 || (res.status === 422 && /no solid|empty mesh|no triangles/i.test(detail))) {
+          meshViewer.clear(); clearViewImage();
+          placeholder.hidden = false;
+          placeholder.textContent = res.status === 404
+            ? "还没有模型 —— 发送第一条消息后会自动创建"
+            : "还没有几何 —— 在左边描述一个零件，构建后这里会自动显示";
+          setViewMode(true, "暂无几何");
+          return;
+        }
+        throw new Error(`${res.status} ${detail}`);
+      }
+      const body = await res.json();
+      if (!current()) return;
+      if (body.model_id !== token.modelId || !Number.isInteger(body.version) || body.version < 0 ||
+          (version != null && body.version !== version)) throw new Error("网格响应与当前模型版本不匹配");
+      const count = meshViewer.setMesh(body.mesh);
+      clearViewImage();
+      placeholder.hidden = true;
+      setViewMode(true, `IR v${body.version} · ${count.toLocaleString()} 三角面 · 拖动旋转，滚轮缩放`);
       return;
+    } catch (err) {
+      if (!current() || err.name === "AbortError") return;
+      fallbackReason = err.message;
     }
+  }
+
+  // A failed mesh/WebGL path still leaves the offline software renderer usable.
+  // Never label this image as an interactive model, or leave the prior version
+  // on screen after a failed refresh.
+  if (!current()) return;
+  meshViewer?.clear(); clearViewImage();
+  placeholder.hidden = false;
+  placeholder.textContent = "正在加载静态预览…";
+  setViewMode(false, `静态预览 · ${fallbackReason}`, true);
+  const view = ["iso", "front", "top", "right"].includes(state.view) ? state.view : "iso";
+  selectView(view);
+  params.set("view", view);
+  try {
+    const res = await fetch(`/models/${encodeURIComponent(token.modelId)}/render?${params}`, { signal: controller.signal });
+    if (!current()) return;
     if (!res.ok) {
       let detail = res.statusText;
-      try { detail = (await res.json()).detail || detail; } catch { /* ignore */ }
-      // A model that exists but has no solid yet is the *normal* state of a fresh
-      // session — the IR is empty, so there is nothing to tessellate. Reporting
-      // that as "无法渲染" turns the ordinary empty state into an error, which is
-      // exactly what you see right after switching to a session you have not
-      // used yet.
-      const empty = res.status === 422 && /no solid/i.test(detail);
-      placeholder.textContent = empty
-        ? "还没有几何 —— 在左边描述一个零件，Gate 通过后这里会出现渲染图"
+      try { detail = (await res.json()).detail || detail; } catch { /* not JSON */ }
+      if (!current()) return;
+      placeholder.textContent = res.status === 404 ? "还没有模型 —— 发送第一条消息后会自动创建"
+        : res.status === 422 && /no solid/i.test(detail) ? "还没有几何 —— 在左边描述一个零件"
         : `无法渲染：${detail}`;
       return;
     }
     const blob = await res.blob();
-    if (stale(token)) return;
+    if (!current()) return;
     displayImage(URL.createObjectURL(blob));
   } catch (err) {
+    if (!current() || err.name === "AbortError") return;
     placeholder.textContent = `无法渲染：${err.message}`;
   }
 }
@@ -1180,6 +1298,15 @@ function updateModelChip(s) {
 // ══════════════════════════════════════════════════════════════════════════
 
 function wire() {
+  meshViewer = new MeshViewport($("viewCanvas"), {
+    axes: $("viewAxes"),
+    onChange: ({ view }) => selectView(view),
+    onError: () => loadView(false),
+  });
+  setViewMode(meshViewer.available, meshViewer.available
+    ? "真实网格 · 自由旋转 / 缩放 / 平移" : "静态预览 · " + meshViewer.error, !meshViewer.available);
+  $("fitView").addEventListener("click", () => meshViewer.fit());
+
   $("composer").addEventListener("submit", (e) => {
     e.preventDefault();
     const input = $("input");
@@ -1211,10 +1338,13 @@ function wire() {
   $("viewTabs").addEventListener("click", (e) => {
     const tab = e.target.closest(".tab");
     if (!tab) return;
-    for (const t of document.querySelectorAll(".tab")) t.classList.remove("active");
-    tab.classList.add("active");
-    state.view = tab.dataset.view;
-    loadView(false);
+    if (tab.disabled) return;
+    selectView(tab.dataset.view);
+    if (meshViewer?.available && meshViewer.hasMesh) meshViewer.setPreset(state.view);
+    else {
+      if (meshViewer?.available) meshViewer.setPreset(state.view);
+      loadView(false);
+    }
   });
 
   $("refreshView").addEventListener("click", () => loadView(true));
@@ -1473,6 +1603,13 @@ async function switchSession(threadId, { force = false } = {}) {
 
   // Bump first: in-flight loaders from the previous session must not write.
   state.sessionEpoch += 1;
+  cancelViewRequest();
+  meshViewer?.clear({ resetCamera: true });
+  clearViewImage();
+  selectView("iso");
+  $("viewPlaceholder").hidden = false;
+  $("viewPlaceholder").textContent = "正在切换会话…";
+  setViewMode(!!meshViewer?.available, "正在读取会话几何…");
   state.verdict = null;
 
   state.threadId = threadId;
@@ -1487,14 +1624,14 @@ async function switchSession(threadId, { force = false } = {}) {
   renderSessions();
 
   resetStream(true);
+  const token = sessionToken();
   await loadMessages(threadId);
+  if (stale(token)) return;
 
   refreshInspector();
   loadArtifacts();
-  // Cache-first, NOT forced. `/render` caches on disk keyed by
-  // (version, view, style, size) — and the version comes from this model's own
-  // IR — so a cached image can never belong to another session. Forcing here
-  // would re-tessellate and re-rasterise on every switch for no gain.
+  // Cache-first, NOT forced. The mesh cache is keyed by the exact model
+  // snapshot; a session switch does not need to re-tessellate the same solid.
   loadView(false);
 }
 
@@ -1505,10 +1642,13 @@ async function switchSession(threadId, { force = false } = {}) {
  * than silently appearing to have lost it.
  */
 async function loadMessages(threadId) {
+  const token = sessionToken();
   let messages = [];
   try {
     ({ messages } = await api(`/threads/${encodeURIComponent(threadId)}/messages`));
+    if (stale(token)) return;
   } catch (err) {
+    if (stale(token)) return;
     pushNotice("bad", `读取会话记录失败：${err.message}`);
     return;
   }

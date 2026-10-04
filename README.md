@@ -10,7 +10,7 @@ deterministic Gate decides whether it is actually done. FreeCAD is used as a
 
 ```
 Python 3.11+ · pydantic v2 · FastAPI + SSE · SQLite(WAL) · 前端零依赖零构建（原生 ES module）
-925 测试全绿（758 单测 + 167 契约测试，整包约 32–36 秒）；另有 4 项真实-LLM 端到端测试按环境变量开关（见「测试」）
+Python 单测 + 真 FreeCAD 契约测试 + Node 前端运行时测试；真实供应商测试按配置开关（见「测试」）
 ```
 
 ---
@@ -79,7 +79,25 @@ Gate 只读磁盘快照与导出产物，让"校验"与"生成"不共享内存�
 
 ## 快速开始
 
-### 1. 前置：构建 FreeCAD（硬前置，一次性）
+### 1. 前置：安装或构建 FreeCAD（一次性）
+
+可以使用已有的 FreeCADCmd：
+
+```bash
+export TCAD_FREECAD_CMD=/path/to/FreeCADCmd
+# PATH 中的裸命令名也支持：export TCAD_FREECAD_CMD=freecadcmd
+```
+
+Linux 发行版的 FreeCADCmd 嵌入解释器若无法启动，但匹配版本的系统 Python
+可以加载 FreeCAD.so，可显式使用原生模块适配器（仍然运行真实 FreeCAD）：
+
+```bash
+export TCAD_FREECAD_CMD="$PWD/tools/freecad_python.py"
+# 必要时：export TCAD_FREECAD_LIB_DIR=/path/to/freecad/lib
+# 适配器 shebang 默认 /usr/bin/python3，必须与 FreeCAD 的 Python ABI 匹配
+```
+
+也可以使用项目原来的源码构建：
 
 ```bash
 cd free-cad/FreeCAD          # 上游源码 26.3.0dev，已在 .gitignore 中（近 8000 文件，不入库）
@@ -114,7 +132,7 @@ python -m venv .venv
 
 > 一个 80x50 的安装底板，厚度 8mm，中间开一个 40x20 的通槽
 
-你会看到工具调用卡片、Gate 报告、四个标准视图的实时渲染，以及最终结论。
+你会看到工具调用卡片、Gate 报告、可自由旋转的真实网格，以及最终结论。
 `demo_bracket.json` 里有两次真实失败（草图过约束、pocket 切反方向）——
 重点看模型**有没有读懂错误并自己改对**，这是本项目最核心的假设。
 
@@ -142,6 +160,17 @@ python -m venv .venv
 ## 使用方式
 
 ### Web 界面
+
+中央 3D 视图使用真实 FreeCAD 三角网格，无 CDN、无需前端构建：
+
+- 左键拖动旋转，滚轮缩放，右键 / Shift+拖动平移
+- 等轴测、前、后、左、右、上、下七个视角；F / Home / 双击适配模型
+- 单指旋转、双指缩放和平移；聚焦画布后可使用方向键和 0–6 键
+- 同会话几何更新保留相机；切换会话重置，过期响应不能覆盖新会话
+- WebGL 不可用时明确降级为静态 PNG；网格加载不等于 Gate 通过
+- 预览繁忙时显示可重试提示，不会通过 PNG 重试绕过后台限流
+
+实现与验收边界见 [交互预览验收记录](docs/interactive-preview-acceptance.md)。
 
 四栏布局：**会话列表 │ 对话流 │ 视图 │ 检查器**。
 
@@ -283,6 +312,16 @@ FCStd 重开后改 `Angle` 的参数量作为证明；无法识别的轴名是**
 segfault，见「已知限制」）。
 
 ---
+
+## OpenCode 参考下的运行时加固
+
+- 每次模型请求都计算含工具 schema 的上下文估值，并预留输出空间
+- 长回合只移除完整的旧工具轮次；保留已选历史、当前需求、最新 IR/Gate 和最近工具结果
+- 同一 IR 上相同失败重复三次后明确停止；修改成功后重新计数，不自动放行权限
+- 400/401/确定性配额错误不反复请求；临时失败遵循有上限的 Retry-After
+- Gate 通过后再修改，或进入待审批状态，都不能沿用旧结果宣布成功
+
+参考源码、适配取舍和边界见 [Agent 运行时加固](docs/agent-runtime-hardening.md)。
 
 ## 一个 Turn 的生命周期
 
@@ -492,9 +531,10 @@ cfg = load_config("configs/default.yaml", overlays=["configs/policies/strict.yam
 
 ```bash
 .venv/bin/python tools/doctor.py                     # 三层前置体检：supervisor / 几何内核 / 模型服务
-.venv/bin/python -m pytest tests -q                  # 908 全绿 + 4 项按开关跳过（整包约 32–36 秒）
-.venv/bin/python -m pytest tests/unit -q             # 753，不需要 FreeCAD
-.venv/bin/python -m pytest tests/contract -q         # 155，真跑 FreeCADCmd
+.venv/bin/python -m pytest tests -q                  # 包含真实内核契约测试（需 TCAD_FREECAD_CMD）
+.venv/bin/python -m pytest tests/unit -q             # 不需要 FreeCAD
+.venv/bin/python -m pytest tests/contract -q         # 真跑 FreeCADCmd
+node --test tests/frontend/*.test.mjs                # 相机 / 控件 / 异步加载运行时回归
 ```
 
 第 3 层（真实 LLM 端到端）需要明确配置的 provider，未配置时**跳过而不是假装通过**：
@@ -531,8 +571,9 @@ manifest 里还有一份 **源码树摘要**（`tcad/`+`tools/`+`tests/` 下所�
 2. **只有真机能证明真机。** 离线替身不产生 `reasoning_content`，所以"思考模型必须回传 reasoning"
    这类协议要求**离线全绿也发现不了**——它是真机第 2 步炸出来的，现在由 `tests/unit/test_llm_client.py` 守着。
 
-`tests/unit/test_server_ui.py` 里前端部分是**源码结构断言**（本仓库不引入 JS 测试运行时，
-以保持"前端零依赖、零构建"）。运行时行为由真实浏览器验收覆盖，不靠断言假装覆盖。
+`tests/unit/test_server_ui.py` 保留源码结构断言；`tests/frontend/` 使用 Node 内置测试器
+验证相机数学、真实事件处理函数和异步加载竞态，不增加运行时依赖或构建步骤。
+WebGL 着色器和浏览器实际拖拽仍需真实浏览器验收，不等同于 Node 测试。
 
 ---
 
@@ -547,7 +588,7 @@ manifest 里还有一份 **源码树摘要**（`tcad/`+`tools/`+`tests/` 下所�
 - 面板里的「验证状态」直接显示后端的 `GET /models/{id}/verdict`（已验证 / 未验证 + 原因 + 阻断项），
   不从"有文件"推断"已完成"；侧边栏会话列表也区分 `v5 ✓` 与 `v5 ✗`。
 
-前端仍然没有 JS 测试运行时；回归靠源码结构断言 + `ApprovalRecord` 接口契约断言，
+前端使用 Node 内置运行时测试 + 源码结构断言 + `ApprovalRecord` 接口契约断言，
 另外加一条 `node --check`（有 node 时执行，没有则跳过）——它抓的是源码断言抓不到的那一类错误：文件根本不是合法 JS。
 
 ---
@@ -636,7 +677,7 @@ TypeError: type must be 'DocumentObject', 'NoneType' or ('DocumentObject',['Stri
 | 3 | **`context.window_tokens` 是估值** | 128000 未按真实 token 标定，三档降级（0.70 / 0.85）的阈值因此不准。 |
 | 4 | **界面无认证** | 默认只绑 `127.0.0.1`；绑非回环地址时启动会打印警告。不要暴露到公网。 |
 | 5 | **无会话重命名 / 删除 / 搜索**，不做会话内换模型 | 会话↔模型绑定单向是有意的。 |
-| 6 | **多标签页仍未协调（但有界）** | 每个请求的 hooks/视觉状态**已经隔离**：观测用的 tap 与 `geo_view` 检查点走 `ToolContext`，不再改写共享的 `services.hooks` / `services._visual_ok`（§5-E）。同一模型的并发写入也已按模型串行化（`IrStore` 的 load→apply→append→snapshot 是一个临界区，§5-D）。**仍未做**的是 per-thread 回合锁：同一会话并发两个 `/chat` 不是受支持的用法，最后一个写快照的赢。同一个 `request_id` 起第二个回合会被 409 拒绝。跨进程写同一个 `data_dir` 也不支持（进程内锁，不是文件锁）。 |
+| 6 | **多标签页仍未协调（但有界）** | 每个请求的 hooks/视觉状态**已经隔离**：观测用的 tap 与 `geo_view` 检查点走 `ToolContext`，不再改写共享的 `services.hooks` / `services._visual_ok`（§5-E）。同一模型的并发写入也已按模型串行化（`IrStore` 的 load→apply→append→snapshot 是一个临界区，§5-D）。**当前增加了同会话 / 同模型的回合互斥**：在飞回合结束前，新 `/chat` 返回 409；注册竞态返回明确的 SSE 冲突。断连清理完成前保留占用。同一个 `request_id` 起第二个回合会被 409 拒绝。跨进程写同一个 `data_dir` 也不支持（进程内锁，不是文件锁）。 |
 | 7 | **打断靠杀进程，不是协议级取消** | 在飞的 LLM 请求会被真的取消；已经发给 FreeCAD worker 的一次调用（编译 / 网格化）现在也**真的会停下来**：`WorkerHandle.abort_inflight` 杀掉并回收 worker 进程，被阻塞的调用方立刻拿到 `kind="cancelled"`（`WorkerAborted`），而不是等超时、也不再被误报成崩溃；被放弃的暂存目录同时丢弃，下一次调用按需重启 worker，所以"停止"的代价就是被停的那次构建。**代价与边界**：worker 协议本身没有中途取消，停的是**进程**；一个服务进程只有**一个** worker 进程，所以它也会终止同时使用它的其他调用的 RPC——正常情况下同一模型的并发写已被 `IrStore` 串行化，但跨模型的并发构建会互相牵连，各自收到 `cancelled` 并各自重启。OCCT 卡死的进程同样只能这样丢弃，不能指望它恢复。 |
 | 8 | **`Sketcher.Constraint` 对无法识别的形状会 segfault** | 不是抛异常，是原生崩溃（SIGSEGV，26.3.0dev 实测）。所以编译器只构造**实测验证过**的类型/参数组合，其余一律结构化拒绝（`tests/contract/test_sketch_planes.py`）。**代价**：`Radius`/`Diameter` 只能用「值写在构造函数里」的形式（它们的 refs-only 形式正是会崩的那种），而那种形式下 FreeCAD 不做冗余校验——「同时标半径和直径」这类过约束不会被判为 solver 错误。其余维度约束（`DistanceX/Y` 等）仍走校验路径。 |
 | 9 | **worker 崩溃/卡死靠替换，不是修复** | `worker_restart_on_crash`（默认开）现在真的会生效：崩溃或超时后杀掉旧进程、拉起新的，所以坏调用只毁掉**一次**调用。用户中断走同一条路（见限制 #7），服务器退出时（含 Ctrl-C）后端也会被关闭，不留孤儿进程。 |

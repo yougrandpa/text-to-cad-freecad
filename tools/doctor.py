@@ -147,6 +147,10 @@ def check_worker(r: Report, cfg, fast: bool) -> bool:
         out = subprocess.run([str(cmd), "--version"], capture_output=True,
                              text=True, timeout=120)
         first = (out.stdout or out.stderr).strip().splitlines()
+        if out.returncode != 0:
+            r.bad("freecad --version",
+                  f"exit {out.returncode}: {first[0] if first else '(no output)'}")
+            return False
         r.ok("freecad --version", first[0] if first else "(no output)")
     except Exception as exc:  # noqa: BLE001
         r.bad("freecad --version", f"{type(exc).__name__}: {exc}")
@@ -171,8 +175,14 @@ def check_worker(r: Report, cfg, fast: bool) -> bool:
         # FAIL while dumping a healthy selftest.
         st = handle.request_sync("api_selftest", {}, timeout_s=120.0)
         if st.get("ok"):
+            required = [check for check in st.get("checks", [])
+                        if check.get("required", True)]
             r.ok("worker:api_selftest",
-                 f"{len(st.get('checks', []))} FreeCAD API probes answered")
+                 f"{len(required)} required FreeCAD API probes passed")
+            if st.get("optional_missing"):
+                r.warn("optional FreeCAD APIs",
+                       f"unavailable on FreeCAD {st.get('freecad_version', 'unknown')}: "
+                       + ", ".join(st["optional_missing"]))
             # The selftest reports `feature:<op>` for all 21 ops, which reads as
             # "21 features work". It only proves addObject() returned an object.
             #

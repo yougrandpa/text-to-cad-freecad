@@ -13,7 +13,11 @@ per-request timeout. No agent logic lives here.
 from __future__ import annotations
 
 import asyncio
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 import json
+import math
+import time
 from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
@@ -84,17 +88,68 @@ class LlmClient(Protocol):
     ) -> LlmReply: ...
 
 
-# Transient errors worth retrying (openai >= 1.40).
-def _transient_errors():
-    from openai import (
-        APIConnectionError,
-        APIError,
-        APITimeoutError,
-        RateLimitError,
-        InternalServerError,
-    )
+_MAX_RETRY_DELAY_S = 30.0
 
-    return (APIError, APITimeoutError, APIConnectionError, RateLimitError, InternalServerError)
+
+def _is_retryable(error: Exception) -> bool:
+    """Retry transport failures and the SDK's transient HTTP status categories.
+
+    ``APIError`` itself is deliberately not retryable: it also covers auth,
+    invalid requests, and successful responses that failed SDK validation.
+    ``APITimeoutError`` is a subclass of ``APIConnectionError``.
+    """
+    from openai import APIConnectionError, APIStatusError
+
+    if isinstance(error, APIConnectionError):
+        return True
+    if isinstance(error, APIStatusError):
+        # Some compatible servers misreport an oversized prompt as a 5xx;
+        # OpenAI also uses 429 for exhausted billing quota. Neither is fixed
+        # by waiting and repeating the same request. Match only known codes.
+        permanent_codes = (
+            "context_length_exceeded", "context_window_exceeded", "insufficient_quota",
+        )
+        if error.code in permanent_codes:
+            return False
+        if isinstance(error.body, dict):
+            nested_error = error.body.get("error")
+            if isinstance(nested_error, dict) and nested_error.get("code") in permanent_codes:
+                return False
+        return error.status_code in (408, 409, 429) or 500 <= error.status_code < 600
+    return False
+
+
+def _retry_after_delay(error: Exception) -> float | None:
+    """Read provider retry hints without letting malformed headers stall a turn.
+
+    Match the SDK's preference for milliseconds, then seconds, then an HTTP
+    date. Invalid hints fall through to the next format or local backoff.
+    Zero is a valid immediate retry; negative and non-finite values are not.
+    """
+    from openai import APIStatusError
+
+    if not isinstance(error, APIStatusError):
+        return None
+    headers = error.response.headers
+    for header, scale in (("retry-after-ms", 1000.0), ("retry-after", 1.0)):
+        try:
+            value = float(headers[header])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(value) and value >= 0:
+            return min(value / scale, _MAX_RETRY_DELAY_S)
+
+    try:
+        date = parsedate_to_datetime(headers.get("retry-after"))
+        # Obsolete HTTP dates may omit GMT; they still denote UTC.
+        if date.tzinfo is None:
+            date = date.replace(tzinfo=timezone.utc)
+        delay = date.timestamp() - time.time()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+    if math.isfinite(delay) and delay >= 0:
+        return min(delay, _MAX_RETRY_DELAY_S)
+    return None
 
 
 class OpenAIClient:
@@ -143,7 +198,6 @@ class OpenAIClient:
         temperature: float | None = None,
     ) -> LlmReply:
         temp = temperature if temperature is not None else self.temperature
-        transient = _transient_errors()
         last_err: Exception | None = None
         backoff = 1.0
         for attempt in range(self.max_retries + 1):
@@ -156,17 +210,22 @@ class OpenAIClient:
                     temperature=temp,
                     max_tokens=self.max_tokens,
                 )
-                return self._parse(resp)
-            except transient as e:  # type: ignore[misc]
+            except Exception as e:
+                if not _is_retryable(e):
+                    raise
                 last_err = e
                 if attempt < self.max_retries:
-                    await asyncio.sleep(backoff)
-                    backoff = min(backoff * 2, 30.0)
+                    delay = _retry_after_delay(e)
+                    # asyncio cancellation propagates through both the request
+                    # and this wait; it must never become another attempt.
+                    await asyncio.sleep(backoff if delay is None else delay)
+                    backoff = min(backoff * 2, _MAX_RETRY_DELAY_S)
                 else:
                     raise
-            except Exception as e:
-                # Non-transient (e.g. auth, bad request) — do not retry.
-                raise
+            else:
+                # Parsing a successful response cannot be fixed by transport
+                # retries, which could also duplicate a billed request.
+                return self._parse(resp)
         # Should be unreachable; satisfies the type checker.
         assert last_err is not None
         raise last_err

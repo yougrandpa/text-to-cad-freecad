@@ -45,6 +45,7 @@ from tcad.core.types import (
     TurnState,
 )
 from tcad.loop.budget import Budget, BudgetLimits
+from tcad.loop.recovery import RepeatedFailures
 from tcad.loop.strategies import LoopUntilDoneStrategy, make_strategy
 from tcad.tools.base import Services, ToolOutcome, execute_tool
 from tcad.worker.protocol import WORKER_METHODS  # noqa: F401  (ensures worker contract imported)
@@ -94,6 +95,8 @@ class LoopConfig(BaseModel):
     llm_max_tokens: int = 4096
     llm_request_timeout_s: float = 120.0
     llm_max_retries: int = 2
+    context_window_tokens: int = Field(default=128_000, gt=0)
+    repeated_tool_failure_limit: int | None = Field(default=3, ge=2)
     allow_privileged: bool = False
     visual_checkpoints: tuple[str, ...] = ("first_compile", "major_change", "final")
     artifact_exports: tuple[str, ...] = ("step", "stl")
@@ -101,7 +104,10 @@ class LoopConfig(BaseModel):
         "You are a parametric CAD agent. You design by mutating an intermediate "
         "representation (IR) via ir_patch, then ir_commit to compile and gate. "
         "Never claim success unless ir_commit returns passed=true. Read tools "
-        "(ir_get/ir_digest/ir_list_features/geo_*) never change the design."
+        "(ir_get/ir_digest/ir_list_features/geo_*) never change the design. "
+        "A later edit invalidates an earlier passed Gate: commit and verify the current version. "
+        "After a tool error, inspect the feedback and change the failing operation; "
+        "repeating an identical failure without changing the design will stop the turn."
     )
     workdir: str = "."
     data_dir: str = "data"
@@ -227,6 +233,10 @@ class LoopEngine:
         self._last_gate_report: GateReport | None = None
         self._compile_failures = 0
         self._idle_steps = 0
+        self._repeated_failures = RepeatedFailures(self.config.repeated_tool_failure_limit)
+        self._trace_start = 0
+        self._current_user_message: UserMessage | None = None
+        self._pinned_history: list[dict] = []
         self._observer = observer
         self._stop_requested = stop_requested
         # Budgeted context build (design §4.3). When absent the engine keeps the
@@ -317,7 +327,6 @@ class LoopEngine:
 
     async def run_turn(self, thread: Thread, user_msg: UserMessage) -> TurnResult:
         turn = self._new_turn(thread, user_msg)
-        messages = await self._build_messages(user_msg, turn)
         privileged = bool(user_msg.privileged_requested) and self.config.allow_privileged
         allowed = self._allowed_tiers(turn.kind, privileged)
 
@@ -332,6 +341,11 @@ class LoopEngine:
         self._last_gate_report = None
         self._last_commit_passed = False
         self._candidate_reports = []
+        self._repeated_failures = RepeatedFailures(self.config.repeated_tool_failure_limit)
+        self._current_user_message = user_msg
+        self._pinned_history = []
+        messages = await self._build_messages(user_msg, turn)
+        self._trace_start = len(messages)
 
         # The budget is per-TURN, and the engine is reused (the CLI REPL runs
         # every turn through one engine). It was created once in ``__init__`` and
@@ -467,11 +481,13 @@ class LoopEngine:
         self.budget.check_step()
         step_start = time.monotonic()
 
+        tools = self.registry.as_openai_tools(
+            turn.kind, include_privileged=ToolTier.PRIVILEGED in allowed
+        )
+        await self._prepare_step_context(turn, messages, tools)
         reply = await self.services.llm.chat(
             messages=messages,
-            tools=self.registry.as_openai_tools(
-                turn.kind, include_privileged=ToolTier.PRIVILEGED in allowed
-            ),
+            tools=tools,
             temperature=self.config.llm_temperature,
         )
         self.budget.add_tokens(reply.usage.prompt_tokens, reply.usage.completion_tokens)
@@ -553,6 +569,10 @@ class LoopEngine:
         halt_after_this = False
         for idx, tc in enumerate(reply.tool_calls):
             spec = self.registry.get(tc.name)
+            if tc.name == "ir_commit":
+                # The most recent attempted commit owns the verification state.
+                # A failed recommit cannot reuse an earlier green report.
+                self._last_commit_passed = False
             if spec is None:
                 outcome = ToolOutcome(
                     result=ToolResult(
@@ -721,11 +741,37 @@ class LoopEngine:
             # write tool added after it was written, and "a pass survives a write"
             # is exactly the failure this exists to prevent.
             if (
-                self._last_commit_passed
-                and outcome.result.ok
+                outcome.result.ok
                 and _is_mutating(tc.name, spec)
             ):
                 self._last_commit_passed = False
+                self._repeated_failures.clear()
+
+            gate_failed = outcome.gate_report is not None and not outcome.gate_report.passed
+            if turn.state == TurnState.RUNNING and (not outcome.result.ok or gate_failed):
+                try:
+                    current_version = int(self.services.store.current_version(turn.model_id))
+                except Exception:  # no current snapshot is still a failed attempt
+                    current_version = None
+                effective_error = outcome.result.error
+                if effective_error is None and gate_failed:
+                    effective_error = ToolError(
+                        kind=ToolErrorKind.SEMANTIC,
+                        message="Gate failed: " + json.dumps(
+                            outcome.gate_report.blocking_failures, sort_keys=True
+                        ),
+                    )
+                repeats = self._repeated_failures.record(tc.name, tc.args, effective_error, current_version)
+                limit = self.config.repeated_tool_failure_limit
+                if limit is not None and repeats >= limit:
+                    turn.state = TurnState.FAILED
+                    turn.error = (
+                        f"no progress: {tc.name} failed identically {repeats} times at "
+                        f"IR version {current_version}. The turn was stopped; prior edits "
+                        "are preserved, but no new success is claimed. Inspect the tool "
+                        "error and change the failing operation before continuing."
+                    )
+                    halt_after_this = True
 
             if halt_after_this:
                 # The turn is suspended pending approval, so the remaining calls
@@ -734,24 +780,25 @@ class LoopEngine:
                 # tool_call id, and a resumed transcript built without them would
                 # be rejected by the provider — the suspension would look like a
                 # protocol error instead of a pending decision.
+                why = (f"this turn was suspended for approval on {tc.name}"
+                       if turn.state == TurnState.AWAITING_APPROVAL else turn.error)
                 for skipped in reply.tool_calls[idx + 1:]:
                     messages.append({
                         "role": "tool",
                         "tool_call_id": skipped.id,
                         "name": skipped.name,
                         "content": (
-                            f"NOT executed: this turn was suspended for approval on "
-                            f"{tc.name}, and no tool call after it was run. "
-                            f"Re-issue this call once the approval is granted."
+                            f"NOT executed: {why}; no tool call after it was run. "
+                            "Re-issue this call only in a new authorized continuation."
                         ),
                     })
                     self._observe("tool", {
                         "step": self.budget.steps,
                         "name": skipped.name,
                         "ok": False,
-                        "content": "skipped: turn suspended for approval",
+                        "content": f"skipped: {why}",
                         "error": {"kind": "denied",
-                                  "message": "not executed: turn suspended pending approval",
+                                  "message": f"not executed: {why}",
                                   "feature_id": None},
                         "images": [],
                         "gate": None,
@@ -836,7 +883,46 @@ class LoopEngine:
             {"role": "user", "content": user_msg.text},
         ]
 
-    async def _build_messages(self, user_msg: UserMessage, turn: Turn) -> list[dict]:
+    async def _prepare_step_context(self, turn: Turn, messages: list[dict], tools: list[dict]) -> None:
+        """Bound the actual outgoing request, including schemas and output reserve.
+
+        When a long turn reaches the estimate, rebuild authoritative CAD context
+        and omit only whole older tool batches. Latest replies retain call IDs,
+        arguments, result messages and provider reasoning fields unchanged.
+        This is deterministic checkpointing, not an invented LLM summary.
+        """
+        from tcad.context.turn_compaction import (
+            compact_turn, estimate_request_tokens, input_budget,
+        )
+
+        window = self.config.context_window_tokens
+        reserve = self.config.llm_max_tokens
+        estimated = estimate_request_tokens(messages, tools)
+        if estimated <= input_budget(window, reserve):
+            return
+        if self._current_user_message is None:
+            raise RuntimeError("cannot rebuild context without the current user request")
+        # The existing assembler handles previous conversation history. Refresh
+        # state from the actual store, never from a model-written summary.
+        prefix = await self._build_messages(self._current_user_message, turn, require_state=True)
+        trace = messages[self._trace_start:]
+        compacted = compact_turn(
+            prefix, trace, tools, window_tokens=window,
+            max_output_tokens=reserve, keep_recent_batches=2,
+        )
+        messages[:] = compacted.messages
+        self._trace_start = len(prefix) + (1 if compacted.dropped_batches else 0)
+        self._observe("context", {
+            "action": "compacted", "dropped_batches": compacted.dropped_batches,
+            "estimated_tokens_before": estimated,
+            "estimated_tokens_after": compacted.estimated_tokens,
+            "input_budget": compacted.input_budget,
+            "note": "Earlier tool rounds omitted; current IR/requirements/Gate refreshed. Estimates are approximate.",
+        })
+
+    async def _build_messages(
+        self, user_msg: UserMessage, turn: Turn, *, require_state: bool = False,
+    ) -> list[dict]:
         """Assemble the request context, budgeted (task book §5-D).
 
         Before this existed the model received ``[system, user]`` and nothing
@@ -851,7 +937,7 @@ class LoopEngine:
         raises, the turn falls back to the original two-message shape. Context is
         an optimisation for the model, never a precondition for running a turn.
         """
-        if self._context_assembler is None:
+        if self._context_assembler is None and not require_state:
             return self._init_messages(user_msg, turn)
 
         try:
@@ -861,6 +947,23 @@ class LoopEngine:
             )
 
             blocks = self._context_blocks(turn)
+            if require_state and not all(blocks[key].strip() for key in (
+                "requirements_text", "digest_text"
+            )):
+                raise RuntimeError(
+                    "cannot refresh current CAD requirements and IR digest for safe context compaction; "
+                    "earlier tool history was not discarded"
+                )
+            if require_state:
+                # Re-running history degradation as the IR grows could erase a
+                # prior user constraint. Pin exactly the history/summary chosen
+                # at turn start; refresh only deterministic CAD state blocks.
+                return [
+                    {"role": "system", "content": self.config.system_prompt},
+                    *({"role": "system", "content": text} for text in blocks.values() if text),
+                    *self._pinned_history,
+                    {"role": "user", "content": user_msg.text},
+                ]
             history = self._load_history(turn.thread_id, user_msg.text)
             ctx = AssembleContext(
                 system_prompt=self.config.system_prompt,
@@ -871,7 +974,13 @@ class LoopEngine:
             )
             assembled = await self._context_assembler.build(ctx, [])
             messages = to_openai_messages(assembled)
+            self._pinned_history = to_openai_messages([
+                message for message in assembled
+                if message.kind not in ("system", "requirements", "digest", "gate")
+            ])
         except Exception:  # noqa: BLE001 — see the degradation note above
+            if require_state:
+                raise
             return self._init_messages(user_msg, turn)
 
         # The current request always goes last, verbatim, exactly once.
@@ -988,6 +1097,14 @@ class LoopEngine:
             return None
 
     def _finalize(self, turn: Turn, messages: list[dict], gate_report: GateReport | None) -> TurnResult:
+        current_pass = self.gate_is_current(turn, gate_report)
+        if turn.state == TurnState.SUCCEEDED and not current_pass:
+            turn.state = TurnState.FAILED
+            turn.error = "the current IR version has no valid passed Gate; commit and verify it again"
+        if gate_report is not None and gate_report.passed and not current_pass:
+            # Keep historical reports for diagnostics/context, but do not send a
+            # green completion card for an unverified or approval-blocked turn.
+            gate_report = None
         return TurnResult(
             turn_id=turn.turn_id,
             thread_id=turn.thread_id,
@@ -999,6 +1116,17 @@ class LoopEngine:
             tokens_out=self.budget.tokens_out,
             error=turn.error,
         )
+
+    def gate_is_current(self, turn: Turn, report: GateReport | None) -> bool:
+        """One success predicate shared by strategies and finalization."""
+        if (turn.state not in (TurnState.RUNNING, TurnState.SUCCEEDED)
+                or not self._last_commit_passed or report is None or not report.passed
+                or self._last_gate_report is not report or report.model_id != turn.model_id):
+            return False
+        try:
+            return int(self.services.store.current_version(turn.model_id)) == report.ir_version
+        except Exception:  # an unreadable current version cannot be verified
+            return False
 
     # ─── production wiring ────────────────────────────────────────────────
 

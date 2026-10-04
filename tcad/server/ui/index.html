@@ -82,20 +82,35 @@
   <!-- ── 视图 ───────────────────────────────────────────────── -->
   <section class="col col-view">
     <div class="col-head">
-      <span>视图</span>
-      <div class="tabs" id="viewTabs">
-        <button class="tab active" data-view="iso">等轴测</button>
-        <button class="tab" data-view="front">正视</button>
-        <button class="tab" data-view="top">俯视</button>
-        <button class="tab" data-view="right">右视</button>
-      </div>
+      <span>3D 视图</span>
       <div class="grow"></div>
-      <button class="mini" id="refreshView" title="重新渲染（忽略缓存）">重渲染</button>
+      <button class="mini" id="fitView" title="居中并适配模型（F / Home / 双击）" disabled>适配</button>
+      <button class="mini" id="refreshView" title="重新加载网格（忽略缓存）">刷新</button>
+    </div>
+    <div class="tabs view-tabs" id="viewTabs" role="group" aria-label="标准视角">
+      <button class="tab active" data-view="iso" aria-pressed="true" title="等轴测（0）">等轴测</button>
+      <button class="tab" data-view="front" aria-pressed="false" title="正视（1）">前</button>
+      <button class="tab" data-view="back" aria-pressed="false" title="后视（2）">后</button>
+      <button class="tab" data-view="left" aria-pressed="false" title="左视（4）">左</button>
+      <button class="tab" data-view="right" aria-pressed="false" title="右视（3）">右</button>
+      <button class="tab" data-view="top" aria-pressed="false" title="俯视（5）">上</button>
+      <button class="tab" data-view="bottom" aria-pressed="false" title="仰视（6）">下</button>
     </div>
     <div class="viewport" id="viewport">
       <div class="placeholder" id="viewPlaceholder">还没有几何 —— 先在左边描述一个零件</div>
+      <canvas id="viewCanvas" tabindex="0" role="img" aria-label="交互式三维模型" aria-describedby="viewHelpText" hidden></canvas>
       <img id="viewImage" alt="模型视图" hidden>
+      <svg id="viewAxes" class="view-axes" viewBox="0 0 96 96" role="img" aria-label="坐标轴：X 红色，Y 绿色，Z 蓝色" hidden>
+        <g data-axis="0" class="axis-x"><line x1="48" y1="48" x2="76" y2="48"/><text x="84" y="48">X</text></g>
+        <g data-axis="1" class="axis-y"><line x1="48" y1="48" x2="48" y2="20"/><text x="48" y="12">Y</text></g>
+        <g data-axis="2" class="axis-z"><line x1="48" y1="48" x2="24" y2="68"/><text x="16" y="76">Z</text></g>
+      </svg>
+      <details class="view-help" id="viewHelp" hidden>
+        <summary title="鼠标、触屏与键盘操作说明">操作说明</summary>
+        <div id="viewHelpText">拖动旋转 · 滚轮缩放<br>右键拖动 / Shift+拖动平移<br>触屏：单指旋转，双指缩放和平移<br>聚焦模型后：方向键旋转，Shift+方向键平移，+/− 缩放<br>F / Home / 双击适配 · 0–6 标准视角</div>
+      </details>
     </div>
+    <div class="view-status" id="viewStatus" role="status" aria-live="polite">真实网格 · 自由旋转 / 缩放 / 平移</div>
     <div class="filebar" id="fileBar"></div>
   </section>
 

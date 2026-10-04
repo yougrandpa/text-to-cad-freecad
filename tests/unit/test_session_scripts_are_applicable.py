@@ -80,3 +80,25 @@ def test_no_session_script_carries_the_refused_offset_key_at_all(path: Path):
         f"key is refused, so the script reads as a working example of a recipe "
         f"that is not one."
     )
+
+
+def test_bracket_repair_scripts_share_a_fully_constrained_slot_recipe():
+    demo = json.loads((SESSIONS / "demo_bracket.json").read_text())
+    step = json.loads((SESSIONS / "bracket_step3.json").read_text())
+
+    def repair(node):
+        return next(item["payload"] for item in _iter_dicts(node)
+                    if item.get("op") == "update_sketch" and item.get("target_id") == "sk_slot")
+
+    payload = repair(demo)
+    assert payload == repair(step)
+    assert payload["require_fully_constrained"] is True
+    geometry = payload["geometry"]
+    assert len(geometry) == 5 and geometry[4]["construction"] is True
+    assert geometry[4]["points"] == [{"x": 0, "y": 0, "z": 0}, {"x": 20, "y": 15, "z": 0}]
+    dimensions = {(c["type"], tuple(c["refs"]), c["value"])
+                  for c in payload["constraints"] if "value" in c}
+    assert dimensions == {("DistanceX", (0,), 40), ("DistanceY", (1,), 20),
+                          ("DistanceX", (4,), 20), ("DistanceY", (4,), 15)}
+    assert {"type": "Coincident", "refs": [4, 1, -1, 1]} in payload["constraints"]
+    assert {"type": "Coincident", "refs": [4, 2, 0, 1]} in payload["constraints"]

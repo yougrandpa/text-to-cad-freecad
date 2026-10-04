@@ -831,6 +831,9 @@ def test_the_front_end_parses(tmp_path):
     node = shutil.which("node")
     if node is None:
         pytest.skip("node is not on PATH")
-    proc = subprocess.run([node, "--check", str(UI_DIR / "app.js")],
+    # The browser loads this as type=module. Parse that same grammar even on
+    # Node 18/20, where a .js file without package.json defaults to CommonJS.
+    proc = subprocess.run([node, "--input-type=module", "--check"],
+                          input=(UI_DIR / "app.js").read_text(encoding="utf-8"),
                           capture_output=True, text=True, timeout=30)
     assert proc.returncode == 0, proc.stderr

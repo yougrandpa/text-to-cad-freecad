@@ -270,7 +270,11 @@ def from_config(cfg: Config) -> RuntimeSettings:
             request_timeout_s=float(cfg.llm.request_timeout_s),
             max_retries=int(cfg.llm.max_retries),
             use_env_proxy=bool(preset.use_env_proxy) if preset else False,
-            context_window=int(preset.context_window) if preset else 128_000,
+            # YAML may calibrate a local/custom model below its provider's
+            # generic preset. Preserve that explicit request-window budget;
+            # persisted settings and later UI provider changes still own their
+            # existing precedence/resolution paths.
+            context_window=int(cfg.context.window_tokens),
         )
     )
 

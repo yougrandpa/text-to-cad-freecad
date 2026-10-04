@@ -463,10 +463,12 @@ button:disabled, input:disabled, textarea:disabled, select:disabled {
 }
 .tab:hover { color: var(--fg); }
 .tab.active { color: var(--fg); background: var(--panel-2); border-color: var(--line); }
+.view-tabs { padding: 7px 10px; flex-wrap: wrap; border-bottom: 1px solid var(--line-soft); }
+.view-tabs .tab { flex: 1 0 auto; padding: 3px 8px; }
 
 .viewport {
   flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center;
-  padding: 18px; position: relative;
+  padding: 18px; position: relative; overflow: hidden;
   background-image:
     linear-gradient(rgba(255,255,255,.022) 1px, transparent 1px),
     linear-gradient(90deg, rgba(255,255,255,.022) 1px, transparent 1px);
@@ -476,7 +478,21 @@ button:disabled, input:disabled, textarea:disabled, select:disabled {
   max-width: 100%; max-height: 100%; border-radius: 8px;
   background: #fff; box-shadow: 0 12px 40px rgba(0,0,0,.45);
 }
-.placeholder { color: var(--fg-faint); font-size: 13px; }
+.placeholder { color: var(--fg-faint); font-size: 13px; text-align: center; max-width: 38ch; }
+#viewCanvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+#viewCanvas.dragging { cursor: grabbing; }
+#viewCanvas:focus-visible { outline: 2px solid var(--accent); outline-offset: -4px; }
+.viewport [hidden] { display: none !important; }
+.view-axes { position: absolute; right: 8px; bottom: 8px; width: 96px; height: 96px; pointer-events: none; }
+.view-axes line { stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; }
+.view-axes text { fill: currentColor; text-anchor: middle; dominant-baseline: central; font: 600 12px var(--mono); }
+.axis-x { color: #f3868c; } .axis-y { color: #73d8aa; } .axis-z { color: #76baff; }
+.view-help { position: absolute; left: 12px; bottom: 12px; z-index: 1; max-width: calc(100% - 24px); font-size: 11px; color: var(--fg-dim); }
+.view-help summary { cursor: pointer; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; width: fit-content; }
+.view-help div { margin-top: 6px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); line-height: 1.85; }
+.view-status { flex: 0 0 auto; padding: 6px 14px; min-height: 29px; color: var(--fg-faint); font-size: 11px; border-top: 1px solid var(--line-soft); }
+.view-status.warn { color: var(--warn); }
+button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .spinner {
   width: 22px; height: 22px; border: 2px solid var(--line);
   border-top-color: var(--accent); border-radius: 50%;
@@ -583,7 +599,7 @@ button:disabled, input:disabled, textarea:disabled, select:disabled {
 /* ── narrow screens ───────────────────────────────────────────────────── */
 
 @media (max-width: 1080px) {
-  .layout { grid-template-columns: 1fr; grid-auto-rows: minmax(320px, auto); height: auto; }
+  .layout, .layout.no-sidebar { grid-template-columns: 1fr; grid-auto-rows: minmax(320px, auto); height: auto; }
   body { height: auto; overflow-y: auto; }
   .col-view { order: -1; }
   .viewport { min-height: 300px; }

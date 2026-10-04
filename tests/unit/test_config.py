@@ -87,7 +87,8 @@ def test_budget_total_excludes_history():
 # ── real files ────────────────────────────────────────────────────────────
 
 
-def test_default_yaml_loads_and_matches_schema():
+def test_default_yaml_loads_and_matches_schema(monkeypatch):
+    monkeypatch.delenv("TCAD_FREECAD_CMD", raising=False)
     cfg = load_default_config()
     assert cfg.version == 1
     assert cfg.runtime.freecad_cmd.endswith("FreeCADCmd")
@@ -164,9 +165,10 @@ def test_env_override_beats_file():
     assert cfg.loop.max_steps_per_turn == 3
 
 
-def test_resolve_paths_makes_paths_absolute():
+def test_resolve_paths_makes_paths_absolute(monkeypatch):
     from pathlib import Path
 
+    monkeypatch.delenv("TCAD_FREECAD_CMD", raising=False)
     cfg = load_default_config()
     resolve_paths(cfg, root=Path(REPO_ROOT))
     assert os.path.isabs(cfg.runtime.freecad_cmd)

@@ -24,6 +24,7 @@ Requires a built FreeCADCmd; skipped otherwise. Slow (tens of seconds).
 from __future__ import annotations
 
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -38,7 +39,8 @@ from tcad.server.app import create_app
 
 pytestmark = pytest.mark.contract
 
-FREECAD_CMD = REPO_ROOT / "free-cad" / "FreeCAD" / "build" / "debug" / "bin" / "FreeCADCmd"
+FREECAD_CMD = Path(os.environ.get("TCAD_FREECAD_CMD", str(
+    REPO_ROOT / "free-cad" / "FreeCAD" / "build" / "debug" / "bin" / "FreeCADCmd")))
 SCRIPT = REPO_ROOT / "tools" / "sessions" / "demo_bracket.json"
 MODEL_ID = "plate"
 REQUEST = "一个 80x50 的安装底板，厚度 8mm，中间开一个 40x20 的通槽"
@@ -352,6 +354,39 @@ def test_the_streamed_verdict_matches_a_fresh_independent_gate_run(session):
     assert {r.check_id for r in fresh.results} == {
         r["check_id"] for r in result["gate_report"]["results"]
     }
+
+
+def test_repaired_slot_is_centred_fully_constrained_and_repeatable(session, tmp_path):
+    """The old repair left two translation DoF: independent builds could drift
+    the slot out of the plate and report a spurious STEP round-trip mismatch.
+    Pin actual constraint state and slot wall positions, not just final volume.
+    """
+    response = session.client.get(f"/models/{MODEL_ID}/ir")
+    assert response.status_code == 200
+    ir = response.json()
+    slot = next(sk for body in ir["bodies"] for sk in body["sketches"]
+                if sk["id"] == "sk_slot")
+    assert slot["require_fully_constrained"] is True
+    worker = session.services._worker_handle
+    for attempt in range(10):
+        out = tmp_path / str(attempt)
+        built = worker.request_sync("compile_ir", {"ir": ir, "out_dir": str(out)}, timeout_s=180)
+        assert built["ok"] is True, built
+        assert built["measurements"]["volume"] == pytest.approx(25600.0, rel=1e-9)
+        assert built["round_trip"]["ok"] is True, built["round_trip"]
+        assert built["round_trip"]["rel_err"] < 1e-6
+        # Introspection deliberately rebuilds independently from the exported
+        # compile shape, exactly as the Gate does.
+        digest = worker.request_sync("introspect_document", {"ir": ir, "out_dir": str(out)}, timeout_s=180)
+        assert digest["volume"] == pytest.approx(25600.0, rel=1e-9)
+        assert digest["key_dimensions"]["sk_slot__dof"] == 0
+        assert digest["key_dimensions"]["sk_slot__fully_constrained"] == 1
+        inner_walls = sorted(tuple(face["center"]) for face in digest["faces"]
+                             if abs(face["normal"][2]) < 1e-9
+                             and 0 < face["center"][0] < 80
+                             and 0 < face["center"][1] < 50)
+        assert inner_walls == [(20.0, 25.0, 4.0), (40.0, 15.0, 4.0),
+                               (40.0, 35.0, 4.0), (60.0, 25.0, 4.0)]
 
 
 # ══════════════════════════════════════════════════════════════════════════

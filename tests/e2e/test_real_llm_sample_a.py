@@ -44,7 +44,8 @@ from tcad.core.types import TurnState
 from tcad.server.app import create_app
 from tests.e2e.provider_probe import configured_provider, probe_provider
 
-FREECAD_CMD = REPO_ROOT / "free-cad" / "FreeCAD" / "build" / "debug" / "bin" / "FreeCADCmd"
+FREECAD_CMD = Path(os.environ.get("TCAD_FREECAD_CMD", str(
+    REPO_ROOT / "free-cad" / "FreeCAD" / "build" / "debug" / "bin" / "FreeCADCmd")))
 
 BASE_URL, MODEL, API_KEY = configured_provider(REPO_ROOT)
 API_KEY = API_KEY or None

@@ -61,11 +61,25 @@ _SCALAR_TYPES = {
 _AXIS_NAME_OPS = {("revolution", "axis"), ("groove", "axis"),
                   ("linear_pattern", "axis"), ("polar_pattern", "axis")}
 
+# These are measured version boundaries, not a blanket allowance for absent
+# properties. Every absence must also exercise the real worker refusal below.
+# The 26.3 development build's wider scalar vocabulary stays tested unchanged.
+_FREECAD_1_0_ABSENT_SCALARS = {
+    "chamfer": {"operation"}, "draft": {"operation"}, "fillet": {"operation"},
+    "groove": {"operation", "side_type", "start_offset", "start_type", "type2"},
+    "hole": {"base_profile_type", "cosmetic_thread", "operation", "start_offset", "start_type"},
+    "linear_pattern": {"length2", "mode2", "occurrences2", "reversed2"},
+    "pad": {"offset2", "side_type", "start_type", "type2"},
+    "pocket": {"offset2", "side_type", "start_type", "type2"},
+    "revolution": {"fuse_order", "operation", "side_type", "start_offset", "start_type", "type2"},
+    "thickness": {"operation"},
+}
+
 _WORKER_SCRIPT = textwrap.dedent('''
     """Print the property type behind every probed key. Runs in FreeCADCmd."""
     import json
     import FreeCAD
-    from tcad.worker.compiler import FEATURE_TYPE_MAP, _prop_name
+    from tcad.worker.compiler import FEATURE_TYPE_MAP, _prop_name, _assign_props, _apply_feature
 
     ALLOW = json.load(open(ALLOW_JSON))     # {op: [allowed keys]}
     REFUSED = json.load(open(REFUSED_JSON)) # {op: [refused keys]}
@@ -87,13 +101,20 @@ _WORKER_SCRIPT = textwrap.dedent('''
             return "absent"
         return obj.getTypeIdOfProperty(pname)
 
-    out = {"allowed": {}, "refused": {}}
+    out = {"allowed": {}, "refused": {}, "unavailable_errors": {},
+           "version": FreeCAD.Version()[:3]}
     for op in sorted(ALLOW):
         obj = objs.get(op)
         if obj is None:
             out["allowed"][op] = {"__op__": "NO_OBJECT"}
+            state = _apply_feature(doc, body,
+                {"id": "missing_" + op, "op": op, "params": {}}, {})
+            out["unavailable_errors"][op] = state["errors"]
             continue
         out["allowed"][op] = {k: kind(obj, k) for k in ALLOW[op]}
+        for key, type_id in out["allowed"][op].items():
+            if type_id == "absent" and key != "axis":
+                out["unavailable_errors"][op + "." + key] = _assign_props(obj, {key: 1})
     for op in sorted(REFUSED):
         obj = objs.get(op)
         if obj is None:
@@ -139,13 +160,25 @@ def measured(tmp_path_factory) -> dict:
 
 
 def test_no_allowed_key_is_a_reference_or_container_property(measured):
-    """The whole point: an advertised key must reach a settable property."""
+    """A scalar must be settable, or precisely version-gated and refused."""
     offenders = []
+    legacy = measured["version"][:2] == ["1", "0"]
     for op, row in measured["allowed"].items():
         for key, type_id in row.items():
             if type_id == "NO_OBJECT":
+                assert legacy and op == "circular_pattern", (op, measured["version"])
+                errors = measured["unavailable_errors"][op]
+                assert errors and errors[0]["kind"] == "compile", errors
+                assert errors[0]["feature_id"] == "missing_" + op, errors
+                assert "FreeCAD 1.0" in errors[0]["message"], errors
                 continue
             if (op, key) in _AXIS_NAME_OPS:
+                continue
+            if (type_id == "absent" and legacy
+                    and key in _FREECAD_1_0_ABSENT_SCALARS.get(op, set())):
+                errors = measured["unavailable_errors"][op + "." + key]
+                assert errors and errors[0]["kind"] == "compile", errors
+                assert key in errors[0]["message"] and "FreeCAD 1.0" in errors[0]["message"], errors
                 continue
             if type_id == "absent" or type_id not in _SCALAR_TYPES:
                 offenders.append(f"{op}.{key} -> {type_id}")
