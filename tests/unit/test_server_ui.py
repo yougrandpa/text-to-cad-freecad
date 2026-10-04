@@ -735,13 +735,13 @@ def test_the_ui_shows_what_is_being_approved():
     assert "p.args_summary" in js
 
 
-def test_the_approval_record_key_matches_what_the_ui_uses(client):
+def test_the_approval_record_key_matches_what_the_ui_uses(client, tmp_path):
     """The API contract the UI depends on, asserted against the real endpoint."""
     from tcad.config.loader import load_default_config
     from tcad.core.wiring import build_hooks
 
     cfg = load_default_config()
-    hooks, approvals = build_hooks(cfg, str(Path(__file__).resolve().parents[2] / "data"))
+    hooks, approvals = build_hooks(cfg, str(tmp_path / "data"))
     approvals.request("raw_python", args_hash="sha256:x", thread_id="th",
                       args_summary='{"code": "print(1)"}')
 

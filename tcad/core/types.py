@@ -28,6 +28,7 @@ class TurnKind(str, Enum):
 
 
 class TurnState(str, Enum):
+    INSPECTED = "inspected"
     RUNNING = "running"
     AWAITING_APPROVAL = "awaiting_approval"
     SUCCEEDED = "succeeded"
@@ -225,6 +226,7 @@ class ToolContext(BaseModel):
     #: open the visual checkpoint for another session's inspect step.
     visual_ok: bool = False
     request_text: str | None = None  # authoritative user text; model cannot rewrite it
+    access_mode: str | None = None  # operator selection, never model-controlled
 
 
 ToolHandler = Any  # Callable[[dict, ToolContext], Awaitable[ToolResult]]

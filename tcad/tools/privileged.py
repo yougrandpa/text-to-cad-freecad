@@ -1,5 +1,10 @@
 """Privileged tools — the escape hatch.
 
+The Web operator may explicitly select full access for a turn, which skips
+tool policy approval and executes Python without an application sandbox.
+The triple-gated defaults below still apply to legacy embedded callers that
+have not selected a per-turn access mode. Tool arguments cannot change modes.
+
 ``raw_python`` is **not registered by default** (design §4.2 / §4.5). It is the
 only path that lets arbitrary code run, so it is triple-gated:
 
@@ -191,7 +196,10 @@ async def raw_python_handler(services: "Any", args: dict, ctx: ToolContext) -> T
             hint="the answer is 'no', not 'which would you prefer'",
         )
 
-    decision = _sandbox_decision(services)
+    # Only the operator's per-turn selection may disable the sandbox; no tool
+    # argument can select full access.
+    decision = (_SandboxDecision(sandbox=False) if ctx.access_mode == "full"
+                else _sandbox_decision(services))
     if decision.refuse:
         return _err(ToolErrorKind.DENIED, decision.refuse)
 

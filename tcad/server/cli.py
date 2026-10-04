@@ -26,6 +26,7 @@ from tcad.server.app import ChatRequest, HookEventTap, run_turn_request
 _STATE_MARK = {
     TurnState.SUCCEEDED: "✓ SUCCEEDED (recorded constraints accepted; physical use still needs validation)",
     TurnState.DRAFT: "△ DRAFT (build passed; functional acceptance pending)",
+    TurnState.INSPECTED: "✓ INSPECTED (read-only analysis; no new build verified)",
     TurnState.EXHAUSTED: "✗ EXHAUSTED (budget ran out — this is NOT success)",
     TurnState.FAILED: "✗ FAILED",
     TurnState.ABORTED: "✗ ABORTED",

@@ -36,6 +36,7 @@ const state = {
   lastGate: null,
   settings: null,
   providers: [],
+  accessMode: "auto",
   sidebarHidden: false,
   abort: null,
   // The turn currently allowed to write to the screen. Identity, not a flag: a
@@ -198,7 +199,7 @@ function clearLive() {
 
 // A snapshot of which session a request belongs to, taken before any await.
 function sessionToken() {
-  return { epoch: state.sessionEpoch, modelId: state.modelId, version: state.version };
+  return { epoch: state.sessionEpoch, modelId: state.modelId, version: state.version, threadId: state.threadId };
 }
 
 // Has the user moved to another session since this request started?
@@ -432,6 +433,7 @@ async function handleResult(result) {
       "产物已导出。构建通过仅说明几何与导出检查通过；实际功能和需求完整性仍需验收。",
     ],
     draft: ["warn", "草稿已生成 · 功能待验收", "当前构建通过，但需求仍有未验证项，不能据此认定功能完成。"],
+    inspected: ["ok", "只读查看结束", "本次只查看和分析模型，没有修改或验收新的构建。"],
     exhausted: [
       "warn",
       "⚠ 预算耗尽，回合结束",
@@ -483,8 +485,9 @@ async function handleResult(result) {
   // it gets neither the green "完成" nor the red "未完成" that a failure gets.
   const stopped = result.state === "aborted";
   const draft = result.state === "draft";
-  setStatus(ok ? "ok" : draft || stopped ? "" : "bad",
-    ok ? (result.completion_review?.verified ? "约束验收通过" : "构建通过") : draft ? "草稿 · 待验收" : stopped ? "已打断" : "未完成");
+  const inspected = result.state === "inspected";
+  setStatus(ok || inspected ? "ok" : draft || stopped ? "" : "bad",
+    inspected ? "只读查看结束" : ok ? (result.completion_review?.verified ? "约束验收通过" : "构建通过") : draft ? "草稿 · 待验收" : stopped ? "已打断" : "未完成");
 
   // Await the inspector so `state.version` is current before the artefacts and
   // the viewport are read — otherwise the UI can describe a version it has not
@@ -602,6 +605,7 @@ async function send(text) {
   const turn = {
     controller: new AbortController(),
     requestId: newRequestId(),
+    accessMode: state.accessMode,
     stopped: false,
   };
   state.turn = turn;
@@ -626,6 +630,7 @@ async function send(text) {
         text: trimmed,
         thread_id: state.threadId,
         request_id: turn.requestId,
+        access_mode: turn.accessMode,
       },
       {
         start: (d) => {
@@ -1061,7 +1066,9 @@ async function refreshInspector() {
 
   // ── pending approvals ───────────────────────────────────────────────────
   try {
-    const { pending } = await api("/approvals");
+    if (!token.threadId) return;
+    const { pending } = await api(`/approvals?thread_id=${encodeURIComponent(token.threadId)}`);
+    if (stale(token)) return;
     if (pending.length) {
       const sec = el("div", { class: "sec" }, el("h4", { text: `待批 (${pending.length})` }));
       for (const p of pending) {
@@ -1312,6 +1319,66 @@ function updateModelChip(s) {
 // ══════════════════════════════════════════════════════════════════════════
 
 function wire() {
+  const modes = {
+    auto: "自动审批：允许 CAD 读写，保留路径限制；不开放 Python 执行。",
+    read_only: "仅可读取：允许查看与测量，不修改模型、不生成导出；预览可能生成缓存。",
+    full: "完全访问：允许 CAD 读写及 Python 执行；不进行工具审批、路径限制或 Python 沙箱隔离。",
+  };
+  try {
+    const saved = localStorage.getItem("tcad.accessMode");
+    if (Object.hasOwn(modes, saved)) state.accessMode = saved;
+  } catch { /* storage may be unavailable */ }
+  const accessTrigger = $("accessMode"), accessMenu = $("accessMenu");
+  const accessOptions = [...accessMenu.querySelectorAll(".access-option")];
+  const syncAccess = () => {
+    const chosen = accessOptions.find(option => option.dataset.mode === state.accessMode);
+    $("accessModeLabel").textContent = chosen.querySelector(".access-option-title").firstChild.textContent;
+    accessTrigger.dataset.mode = state.accessMode;
+    accessTrigger.title = modes[state.accessMode] + " 切换影响下一次请求。";
+    accessTrigger.setAttribute("aria-label", "权限模式：" + $("accessModeLabel").textContent);
+    for (const option of accessOptions) option.setAttribute("aria-checked", String(option === chosen));
+  };
+  const closeAccess = (focus = false) => {
+    accessMenu.hidden = true;
+    accessTrigger.setAttribute("aria-expanded", "false");
+    if (focus) accessTrigger.focus();
+  };
+  const openAccess = (last = false) => {
+    accessMenu.hidden = false;
+    accessTrigger.setAttribute("aria-expanded", "true");
+    (last ? accessOptions.at(-1) : accessOptions.find(option => option.dataset.mode === state.accessMode)).focus();
+  };
+  syncAccess();
+  accessTrigger.addEventListener("click", () => accessMenu.hidden ? openAccess() : closeAccess(true));
+  accessTrigger.addEventListener("keydown", event => {
+    if (["ArrowDown", "ArrowUp"].includes(event.key)) {
+      event.preventDefault(); openAccess(event.key === "ArrowUp");
+    }
+  });
+  for (const [index, option] of accessOptions.entries()) {
+    option.addEventListener("click", () => {
+      const changed = state.accessMode !== option.dataset.mode;
+      state.accessMode = option.dataset.mode;
+      syncAccess(); closeAccess(true);
+      try { localStorage.setItem("tcad.accessMode", state.accessMode); } catch { /* optional */ }
+      if (changed) pushNotice("info", modes[state.accessMode] + (state.busy ? " 当前回合权限保持不变。" : ""));
+    });
+    option.addEventListener("keydown", event => {
+      const target = { ArrowDown: (index + 1) % 3, ArrowUp: (index + 2) % 3, Home: 0, End: 2 }[event.key];
+      if (target !== undefined) { event.preventDefault(); accessOptions[target].focus(); }
+    });
+  }
+  $("accessPicker").addEventListener("keydown", event => {
+    if (event.key === "Escape" && !accessMenu.hidden) {
+      event.preventDefault(); event.stopPropagation(); closeAccess(true);
+    }
+  });
+  document.addEventListener("pointerdown", event => {
+    if (!$("accessPicker").contains(event.target)) closeAccess();
+  });
+  $("accessPicker").addEventListener("focusout", event => {
+    if (!$("accessPicker").contains(event.relatedTarget)) closeAccess();
+  });
   meshViewer = new MeshViewport($("viewCanvas"), {
     axes: $("viewAxes"),
     onChange: ({ view }) => selectView(view),

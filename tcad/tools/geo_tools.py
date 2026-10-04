@@ -204,9 +204,11 @@ async def asset_import_handler(services: "Any", args: dict, ctx: ToolContext) ->
     # directory — checked on the RESOLVED path so `..` and symlinks are collapsed
     # first. Anything else is refused with the roots named.
     roots = [r for r in (ctx.workdir, ctx.data_dir) if r]
-    resolved = None
+    resolved = os.path.realpath(path) if ctx.access_mode == "full" else None
     tried: list[str] = []
     for root in roots:
+        if resolved is not None:
+            break
         try:
             resolved = ensure_contained(path, root, kind="import path")
             break

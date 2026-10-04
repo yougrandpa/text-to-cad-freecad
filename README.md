@@ -505,6 +505,10 @@ cfg = load_config("configs/default.yaml", overlays=["configs/policies/strict.yam
 
 ## HTTP API
 
+Web UI 顶部提供「自动审批」「仅可读取」「完全访问」，默认自动审批。
+权限在每次发送时固定，只读查看以 `inspected` 结束；完全访问允许无沙箱 Python 执行。
+工具权限、审批隔离与验证边界详见 [权限模式](docs/access-modes.md)。
+
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `GET` | `/health` | 活性 + `data_dir`（分辨实例）+ `budget`（哪些上限没设） |

@@ -67,6 +67,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 from starlette.concurrency import run_in_threadpool
+from tcad.core.access import AccessMode
 
 from tcad.config.schema import Config
 from tcad.core.types import RenderStyle, TurnKind, TurnState
@@ -130,6 +131,7 @@ class ChatRequest(BaseModel):
     _validate_thread_id = field_validator("thread_id")(_safe_id_field("thread_id"))
     kind: TurnKind = TurnKind.CREATE
     privileged_requested: bool = False
+    access_mode: AccessMode = AccessMode.AUTO
     request_id: str | None = None
     """The client's name for *this* turn, used to address it later.
 
@@ -338,6 +340,14 @@ class HookEventTap:
 
     def dispatch(self, event: Any, payload: dict) -> Any:
         result = self._inner.dispatch(event, payload)
+        return self._record(event, payload, result)
+
+    def dispatch_with_access(self, event, payload, mode):
+        from tcad.hooks.access import AccessHooks
+        result = AccessHooks(self._inner, mode).dispatch(event, payload)
+        return self._record(event, {**payload, "access_mode": mode.value}, result)
+
+    def _record(self, event, payload, result):
         try:
             self.events.append(
                 {
@@ -1091,7 +1101,7 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
     # ── approvals ─────────────────────────────────────────────────────────
 
     @app.get("/approvals")
-    def list_approvals() -> dict:
+    def list_approvals(thread_id: str | None = None) -> dict:
         s = svc()
         store = getattr(s, "approvals", None)
         if store is None:
@@ -1101,6 +1111,7 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
             r.model_dump(mode="json")
             for r in records
             if not getattr(r, "granted", False) and getattr(r, "resolved_at", None) is None
+            and (thread_id is None or r.thread_id == thread_id)
         ]
         return {"pending": pending}
 
@@ -1380,7 +1391,7 @@ async def run_turn_request(
         thread_id=req.thread_id or f"th-{target_model}", model_id=target_model
     )
     registry = build_default_registry(
-        services, enable_privileged=bool(cfg.policy.allow_privileged)
+        services, enable_privileged=(req.access_mode == AccessMode.FULL)
     )
     limits = budget_limits_from_config(cfg)
     engine = LoopEngine(
@@ -1395,7 +1406,8 @@ async def run_turn_request(
         hooks=hooks,
     )
     return await engine.run_turn(
-        thread, UserMessage(kind=req.kind, text=req.text, privileged_requested=req.privileged_requested)
+        thread, UserMessage(kind=req.kind, text=req.text,
+                            privileged_requested=req.privileged_requested, access_mode=req.access_mode)
     )
 
 

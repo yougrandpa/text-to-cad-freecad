@@ -43,3 +43,10 @@ test('default no-hook allow events are quiet',()=>{
   const h=harness();h.pushHookLine({decision:'allow',hook:'<no-hooks>',event:'pre_step'});
   assert.equal(h.notices.length,0);
 });
+test('readonly analysis ends without claiming a verified build',async()=>{
+  const h=harness();await h.handleResult({thread_id:'t',state:'inspected',steps:2});
+  assert.match(h.verdicts[0][1],/只读查看结束/);
+  assert.equal(h.statuses[0][0],'ok');
+  assert.equal(h.statuses[0][1],'只读查看结束');
+  assert.ok(!h.verdicts[0][1].includes('构建通过'));
+});

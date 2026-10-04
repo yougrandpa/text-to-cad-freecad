@@ -28,6 +28,8 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from pydantic import BaseModel, Field
+from tcad.core.access import AccessMode, READ_ONLY_TOOLS
+from tcad.hooks.access import AccessHooks
 
 from tcad.core.types import (
     GateReport,
@@ -69,6 +71,7 @@ class UserMessage(BaseModel):
     kind: TurnKind = TurnKind.CREATE
     text: str
     privileged_requested: bool = False
+    access_mode: AccessMode | None = None
 
 
 class TurnResult(BaseModel):
@@ -271,6 +274,8 @@ class LoopEngine:
         # one request can observe its own lifecycle without mutating a bundle
         # other requests are using.
         self._hooks = hooks
+        self._base_hooks = hooks if hooks is not None else getattr(services, "hooks", None)
+        self._access_mode = None
 
     # ─── hook dispatch ────────────────────────────────────────────────────
 
@@ -346,8 +351,17 @@ class LoopEngine:
     # ─── public entry point ───────────────────────────────────────────────
 
     async def run_turn(self, thread: Thread, user_msg: UserMessage) -> TurnResult:
+        if user_msg.access_mode == AccessMode.READ_ONLY:
+            user_msg = user_msg.model_copy(update={"kind": TurnKind.INSPECT})
+        self._access_mode = user_msg.access_mode
+        if user_msg.access_mode is not None:
+            self._hooks = AccessHooks(self._base_hooks, user_msg.access_mode)
+        else:
+            self._hooks = self._base_hooks
         turn = self._new_turn(thread, user_msg)
         privileged = bool(user_msg.privileged_requested) and self.config.allow_privileged
+        if user_msg.access_mode is not None:
+            privileged = user_msg.access_mode == AccessMode.FULL and turn.kind != TurnKind.INSPECT
         allowed = self._allowed_tiers(turn.kind, privileged)
 
         # Per-turn loop state. The engine may be reused across turns (the CLI
@@ -528,6 +542,8 @@ class LoopEngine:
         tools = self.registry.as_openai_tools(
             turn.kind, include_privileged=ToolTier.PRIVILEGED in allowed
         )
+        if self._access_mode == AccessMode.READ_ONLY:
+            tools = [tool for tool in tools if tool["function"]["name"] in READ_ONLY_TOOLS]
         await self._prepare_step_context(turn, messages, tools)
         reply = await self.services.llm.chat(
             messages=messages,
@@ -597,6 +613,9 @@ class LoopEngine:
         # each reply is appended to the conversation, so the model does get to
         # react to its own narration before we call it stuck.
         if not reply.tool_calls:
+            if self._access_mode == AccessMode.READ_ONLY and (reply.text or "").strip():
+                turn.state = TurnState.INSPECTED
+                return StepYield()
             self._idle_steps += 1
             if self._idle_steps > MAX_IDLE_STEPS:
                 if self.config.require_design_review and self.build_is_current(turn, self._last_gate_report):
@@ -960,6 +979,7 @@ class LoopEngine:
     def _init_messages(self, user_msg: UserMessage, turn: Turn) -> list[dict]:
         return [
             {"role": "system", "content": self.config.system_prompt},
+            *self._access_messages(),
             *([{"role": "system", "content": "Authoritative user requirements:\n" + self._request_text}]
               if self._request_text else []),
             {"role": "user", "content": user_msg.text},
@@ -1067,7 +1087,22 @@ class LoopEngine:
 
         # The current request always goes last, verbatim, exactly once.
         messages.append({"role": "user", "content": user_msg.text})
+        messages[0:0] = self._access_messages()
         return messages
+
+    def _access_messages(self):
+        if self._access_mode is None:
+            return []
+        instruction = {
+            AccessMode.READ_ONLY: "Read-only inspection. Do not design, patch, commit, export or run Python. "
+                "Use inspection tools if needed, then answer the user in plain text. This does not verify a new build.",
+            AccessMode.AUTO: "CAD read/write calls are auto-approved within configured path restrictions. "
+                "Python execution is unavailable. Continue building and reviewing the requested design.",
+            AccessMode.FULL: "The operator selected full access for this turn. CAD tools and raw_python "
+                "are available without tool approval or Python sandbox isolation. Build and requirement "
+                "verification still apply; arbitrary Python output cannot prove functional completion.",
+        }[self._access_mode]
+        return [{"role": "system", "content": instruction}]
 
     def _context_blocks(self, turn: Turn) -> dict[str, str]:
         """The three generated context blocks, each independently best-effort."""
@@ -1143,6 +1178,7 @@ class LoopEngine:
             hooks=self._hooks,
             visual_ok=False,
             request_text=self._request_text,
+            access_mode=self._access_mode,
         )
 
     def _request_approval(

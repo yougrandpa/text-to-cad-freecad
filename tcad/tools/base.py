@@ -40,6 +40,7 @@ from tcad.core.types import (
 )
 from tcad.ir.schema import IrPatch as _IrPatch  # noqa: F401  (re-export for handlers)
 from tcad.tools.schema_check import validate_tool_args
+from tcad.core.access import AccessMode, READ_ONLY_TOOLS
 
 # ─── collaborator Protocols ────────────────────────────────────────────────
 # These are the exact method signatures the engine/tools depend on. Teammates
@@ -205,6 +206,12 @@ async def execute_tool(
     * converts any raised exception into a structured ``ToolError``;
     * returns a :class:`ToolOutcome` (normalising a bare ``ToolResult``).
     """
+    if ctx.access_mode == AccessMode.READ_ONLY and spec.name not in READ_ONLY_TOOLS:
+        return ToolOutcome(result=ToolResult(ok=False, error=ToolError(
+            kind=ToolErrorKind.DENIED, message="仅可读取：此工具不能执行")))
+    if ctx.access_mode == AccessMode.AUTO and spec.tier == ToolTier.PRIVILEGED:
+        return ToolOutcome(result=ToolResult(ok=False, error=ToolError(
+            kind=ToolErrorKind.DENIED, message="自动审批不允许 Python 执行，请由用户选择完全访问")))
     if allowed_tiers is not None and spec.tier not in allowed_tiers:
         return ToolOutcome(
             result=ToolResult(
