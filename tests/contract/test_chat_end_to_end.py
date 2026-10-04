@@ -227,7 +227,7 @@ def test_tool_frames_carry_fetchable_image_urls(session):
 
     urls = [img.get("url") for t in rendered for img in (t.get("images") or [])]
     assert urls, "geo_view 产出了图，但帧里没有可访问的 url"
-    assert all(u and u.startswith("/models/") for u in urls), urls
+    assert all(u and u.startswith("/artifact-sets/") and "/snapshots/" in u for u in urls), urls
 
     # and they must actually resolve to a real PNG
     for url in urls[:2]:

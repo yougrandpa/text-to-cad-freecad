@@ -22,8 +22,6 @@ import json
 import os
 
 from tcad.core.types import (
-    ImageRef,
-    Mesh,
     ToolContext,
     ToolErrorKind,
     ToolResult,
@@ -33,7 +31,6 @@ from tcad.core.types import (
 from tcad.worker.protocol import (
     M_EXPORT,
     M_IMPORT_ASSET,
-    M_TESSELLATE,
 )
 
 from tcad.tools.ir_tools import _err, _ok  # shared helpers
@@ -75,35 +72,27 @@ async def geo_view_handler(services: "Any", args: dict, ctx: ToolContext) -> Too
         )
     views = args.get("views") or ["iso"]
     style = args.get("style", "flat_edges")
-    version = services.store.current_version(ctx.model_id)
-    ir = services.store.load(ctx.model_id, version)
-    out_dir = _artifact_dir(ctx, version)
-    angle = args.get("driver_angle_deg", 0)
-    if angle:
-        out_dir = os.path.join(out_dir, f"motion_{angle:g}")
-    os.makedirs(out_dir, exist_ok=True)
+    from tcad.inspect.artifact import ArtifactReader
+    from tcad.render.snapshot import render_snapshot
 
-    mesh_res = await _ask_worker(
-        services, M_TESSELLATE,
-        {"ir": ir.model_dump(), "views": views, "out_dir": out_dir, "driver_angle_deg": angle},
-        timeout_s=60.0,
-    )
-    if not mesh_res.get("ok"):
-        e = mesh_res.get("error", {}) or {}
-        return _err(
-            ToolErrorKind(e.get("kind", "runtime")),  # type: ignore[arg-type]
-            e.get("message", "tessellation failed"),
-            feature_id=e.get("feature_id"),
-        )
-    mesh = Mesh.model_validate(mesh_res["result"]["mesh"])
-    images: list[ImageRef] = services.renderer.render(
-        mesh, out_dir=out_dir, views=list(views), style=style, width=768, height=576
-    )
+    def snapshot():
+        reader = ArtifactReader(ctx.data_dir)
+        artifact_id = args.get("artifact_id")
+        version = None if artifact_id else services.store.current_version(ctx.model_id)
+        manifest, root = reader.resolve(ctx.model_id, version, artifact_id)
+        images = render_snapshot(reader, manifest, root, services.renderer,
+            views=list(views), style=style, angle=args.get("driver_angle_deg", 0),
+            frame=args.get("frame_index", 0))
+        return manifest, images
+
+    try:
+        manifest, images = await asyncio.to_thread(snapshot)
+    except (OSError, ValueError) as exc:
+        return _err(ToolErrorKind.RUNTIME, str(exc), hint="Commit this version to create its scene first.")
     rendered = ", ".join(i.view for i in images) or "(no views)"
-    poses = {b.id: angle * b.motion.ratio for b in ir.bodies if b.motion}
-    detail = (f" Prescribed kinematic preview at input {angle:g} degrees; body angles: "
-              f"{json.dumps(poses)}. Contact, collisions and cutting are not verified.") if poses else ""
-    return _ok(f"Rendered {len(images)} view(s): {rendered}.{detail}", images=images)
+    return _ok(f"Rendered {len(images)} view(s): {rendered}. "
+               f"artifact_id={manifest.artifact_id}, v{manifest.ir_version}, status={manifest.status.value}. "
+               "Saved kinematic poses do not verify contact, collisions or cutting.", images=images)
 
 
 async def geo_measure_handler(services: "Any", args: dict, ctx: ToolContext) -> ToolResult:
@@ -345,9 +334,10 @@ def build_geo_tools(services: "Any") -> dict[str, ToolSpec]:
         "geo_view": ToolSpec(
             name="geo_view",
             tier=ToolTier.READ,
-            description=("Render orthographic views (iso/front/top/right) at a visual checkpoint. "
+            description=("Render saved artifact views (iso/front/top/right) at a visual checkpoint. "
+                         "Optional artifact_id pins a build; otherwise commit this version first. "
                          "Optional driver_angle_deg poses bodies using their motion pivot/axis/ratio "
-                         "and reports each body angle. This previews rigid kinematics, not collision, "
+                         "or frame_index selects a saved native animation frame. This previews rigid kinematics, not collision, "
                          "contact or material removal. Default 0 shows the static CAD/export pose."),
             params_schema={
                 "type": "object",
@@ -355,6 +345,8 @@ def build_geo_tools(services: "Any") -> dict[str, ToolSpec]:
                     "views": {"type": "array", "items": {"type": "string"}},
                     "style": {"type": "string"},
                     "driver_angle_deg": {"type": "number", "minimum": -720, "maximum": 720},
+                    "artifact_id": {"type": "string"},
+                    "frame_index": {"type": "integer", "minimum": 0, "maximum": 599},
                 },
             },
             handler=functools.partial(geo_view_handler, services),

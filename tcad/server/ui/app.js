@@ -829,7 +829,7 @@ async function loadView(force, { version = null } = {}) {
           meshViewer.clear(); clearViewImage();
           placeholder.hidden = false;
           placeholder.textContent = res.status === 404
-            ? "还没有模型 —— 发送第一条消息后会自动创建"
+            ? "还没有已发布的几何 —— 构建并验证通过后这里会自动显示"
             : "还没有几何 —— 在左边描述一个零件，构建后这里会自动显示";
           setViewMode(true, "暂无几何");
           return;
@@ -840,10 +840,14 @@ async function loadView(force, { version = null } = {}) {
       if (!current()) return;
       if (body.model_id !== token.modelId || !Number.isInteger(body.version) || body.version < 0 ||
           (version != null && body.version !== version)) throw new Error("网格响应与当前模型版本不匹配");
+      if (typeof body.artifact_id !== "string" || !/^sha256:[0-9a-f]{64}$/.test(body.artifact_id) ||
+          !["draft", "verifying", "verified", "failed"].includes(body.status)) throw new Error("几何响应缺少构建身份或验证状态");
+      params.set("artifact_id", body.artifact_id);
       const count = meshViewer.setMesh(body.mesh, body.motion || [], body.animation || null);
       clearViewImage();
       placeholder.hidden = true;
-      setViewMode(true, `IR v${body.version} · ${count.toLocaleString()} 三角面 · 拖动旋转，滚轮缩放`);
+      const status = body.status === "verified" ? "几何已验证" : "几何未验证";
+      setViewMode(true, `构建 v${body.version} · ${status} · ${count.toLocaleString()} 三角面 · 拖动旋转，滚轮缩放`);
       return;
     } catch (err) {
       if (!current() || err.name === "AbortError") return;
@@ -869,13 +873,21 @@ async function loadView(force, { version = null } = {}) {
       let detail = res.statusText;
       try { detail = (await res.json()).detail || detail; } catch { /* not JSON */ }
       if (!current()) return;
-      placeholder.textContent = res.status === 404 ? "还没有模型 —— 发送第一条消息后会自动创建"
+      placeholder.textContent = res.status === 404 ? "还没有已发布的几何 —— 构建并验证通过后这里会自动显示"
         : res.status === 422 && /no solid/i.test(detail) ? "还没有几何 —— 在左边描述一个零件"
         : `无法渲染：${detail}`;
       return;
     }
     const blob = await res.blob();
     if (!current()) return;
+    const renderedVersion = res.headers?.get("X-Artifact-Version");
+    const renderedStatus = res.headers?.get("X-Artifact-Status");
+    const renderedId = res.headers?.get("X-Artifact-ID");
+    if (params.has("artifact_id") && renderedId !== params.get("artifact_id")) throw new Error("预览与请求的构建身份不匹配");
+    if (renderedVersion != null) {
+      if (version != null && Number(renderedVersion) !== version) throw new Error("预览与请求的构建版本不匹配");
+      setViewMode(false, `静态预览 · 构建 v${renderedVersion} · ${renderedStatus === "verified" ? "几何已验证" : "几何未验证"}`);
+    }
     displayImage(URL.createObjectURL(blob));
   } catch (err) {
     if (!current() || err.name === "AbortError") return;
@@ -1018,7 +1030,7 @@ async function refreshInspector() {
     if (stale(token)) return;
     state.version = ir.version;
 
-    const chain = el("div", { class: "sec" }, el("h4", { text: "特征链（构建顺序）" }));
+    const chain = el("div", { class: "sec" }, el("h4", { text: `源模型特征（IR v${ir.version}）` }));
     const list = el("ul", { class: "chain" });
     let count = 0;
     for (const body of ir.bodies || []) {

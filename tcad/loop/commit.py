@@ -48,7 +48,7 @@ from tcad.core.types import (
     ToolResult,
 )
 from tcad.store.artifacts import write_build_stamp
-from tcad.worker.protocol import M_COMPILE_IR, M_EXPORT, M_INTROSPECT
+from tcad.worker.protocol import M_COMPILE_IR, M_EXPORT, M_INTROSPECT, M_READ_ARTIFACT_SCENE
 
 from tcad.tools.ir_tools import _err, _ok  # shared helpers
 
@@ -420,6 +420,34 @@ async def _build_and_grade(
     except Exception as exc:  # noqa: BLE001
         pipeline_notes.append(f"geometry measurement raised: {type(exc).__name__}: {exc}")
 
+    # Freeze the shared render input during the build transaction. Static
+    # scenes read the exported FCStd; native poses are solved once here, never
+    # by a viewer query. Minimal embedders without manifests keep their legacy
+    # commit protocol.
+    manifest_writer = getattr(services.store, "write_manifest", None)
+    if callable(manifest_writer):
+        from tcad.render.scene import SceneModel
+        if ir.assembly is not None:
+            method = "simulate_assembly" if ir.assembly.drivers else "solve_assembly"
+            params = {"ir": ir.model_dump(mode="json"), "out_dir": artifact_dir}
+        else:
+            method = M_READ_ARTIFACT_SCENE
+            params = {"fcstd_path": str(Path(artifact_dir) / f"{model_id}.FCStd"),
+                      "bodies": [{"id": b.id, "name": b.name,
+                                  "motion": b.motion.model_dump(mode="json") if b.motion else None}
+                                 for b in ir.bodies]}
+        try:
+            response = await _worker_call(services, method, params, timeout_s=180.0)
+            if not response.get("ok"):
+                return _worker_error(response.get("error")), None
+            scene = SceneModel.from_build(response["result"], ir.model_dump(mode="json"))
+            await asyncio.to_thread((Path(artifact_dir) / "scene.json").write_text,
+                                    scene.model_dump_json(), encoding="utf-8")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            return _err(ToolErrorKind.RUNTIME, f"artifact scene generation failed: {exc}"), None
+
     # 6/7. Gate.evaluate builds CheckContext FROM DISK and grades independently.
     # It also drives the worker (round_trip re-imports the STEP), so it goes off
     # the loop for the same reason the compile steps above do.
@@ -427,7 +455,6 @@ async def _build_and_grade(
     # With staging, the Gate is pointed at *this attempt's* directory. That is
     # what makes "old files must not fill in for a failed export" structural
     # rather than a timestamp heuristic.
-    manifest_writer = getattr(services.store, "write_manifest", None)
     if callable(manifest_writer):
         manifest_writer(artifact_dir, model_id=model_id, version=ir_version,
                         attempt_id=attempt_id, ir_sha256=stamp.ir_sha256,

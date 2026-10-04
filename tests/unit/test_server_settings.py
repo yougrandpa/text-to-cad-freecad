@@ -445,6 +445,8 @@ def test_the_url_it_produces_is_actually_servable(client):
 
 def _seed_model(client, model_id: str = "m1"):
     client.services.store.create(model_id, IrDocument(model_id=model_id))
+    from tests.fixtures.artifact_scene import publish_scene
+    publish_scene(client.services.config.storage.data_dir, model_id=model_id)
 
 
 def test_render_produces_a_png(client, tmp_path):
@@ -461,14 +463,16 @@ def test_render_does_not_retessellate_on_a_second_call(client):
     _seed_model(client)
     assert client.get("/models/m1/render?view=iso").status_code == 200
     assert client.get("/models/m1/render?view=iso").status_code == 200
-    assert client.services.worker.calls.count("tessellate") == 1
+    assert client.services.worker.calls == []
+    assert len(client.services.renderer.calls) == 1
 
 
 def test_render_force_bypasses_the_cache(client):
     _seed_model(client)
     client.get("/models/m1/render?view=iso")
     client.get("/models/m1/render?view=iso&force=true")
-    assert client.services.worker.calls.count("tessellate") == 2
+    assert client.services.worker.calls == []
+    assert len(client.services.renderer.calls) == 2
 
 
 def test_render_rejects_an_unknown_view(client):
@@ -521,12 +525,12 @@ def test_render_rejects_absurd_dimensions(client):
     assert client.get("/models/m1/render?view=iso&width=99999").status_code == 400
 
 
-def test_render_reports_a_worker_failure_as_a_client_error(client):
+def test_render_still_works_when_worker_is_unavailable(client):
     _seed_model(client)
     client.services.worker = MeshWorker(ok=False)
     r = client.get("/models/m1/render?view=iso")
-    assert r.status_code == 422
-    assert "无法网格化" in r.json()["detail"]
+    assert r.status_code == 200
+    assert client.services.worker.calls == []
 
 
 def test_render_404s_for_a_model_that_does_not_exist(client):

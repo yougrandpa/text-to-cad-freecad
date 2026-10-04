@@ -167,6 +167,11 @@ def build_check_context(
     bundled_ir = os.path.join(artifact_dir, "ir.json")
     ir = _load_ir(bundled_ir if os.path.isfile(manifest_path) else ir_path)
     digest = _load_digest(artifact_dir)
+    if manifest is not None and "scene.json" in manifest.files:
+        try:
+            reader.scene(manifest, Path(artifact_dir))
+        except (OSError, ValueError) as exc:
+            raise CheckContextError(f"artifact scene check failed: {exc}") from exc
     exports = _discover_exports(artifact_dir, model_id)
     if manifest is not None:
         exports = {fmt: path for fmt, path in exports.items() if Path(path).name in manifest.files}

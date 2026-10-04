@@ -22,6 +22,7 @@ M_SIMULATE_ASSEMBLY = "simulate_assembly"
 M_SOLVE_ASSEMBLY = "solve_assembly"
 M_IMPORT_ASSET = "import_asset"
 M_REOPEN_EDIT = "reopen_edit_measure"
+M_READ_ARTIFACT_SCENE = "read_artifact_scene"
 
 WORKER_METHODS: tuple[str, ...] = (
     M_PING,
@@ -35,6 +36,7 @@ WORKER_METHODS: tuple[str, ...] = (
     M_SOLVE_ASSEMBLY,
     M_IMPORT_ASSET,
     M_REOPEN_EDIT,
+    M_READ_ARTIFACT_SCENE,
 )
 
 # ── error kinds (must stay in sync with tcad.core.types.ToolErrorKind) ────

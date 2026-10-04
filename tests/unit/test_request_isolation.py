@@ -184,14 +184,14 @@ async def test_geo_view_reads_the_turn_context_not_the_shared_bundle(tmp_path):
     #    This is the case that catches an implementation still reading only the
     #    bundle: one session's commit opening another session's checkpoint.
     stepped = await geo_view_handler(services_with(None), {}, ctx_with(True))
-    assert "reached the worker" in (stepped.error.message or ""), (
+    assert "call ir_commit first" in (stepped.error.message or ""), (
         "a per-step visual checkpoint was ignored in favour of the shared bundle")
     assert "visual checkpoint" not in (stepped.error.message or "")
 
     # 3. Back-compat: an embedder that drives the tool directly may still use the
     #    old shared spelling.
     legacy = await geo_view_handler(services_with(True), {}, ctx_with(False))
-    assert "reached the worker" in (legacy.error.message or "")
+    assert "call ir_commit first" in (legacy.error.message or "")
     assert "visual checkpoint" not in (legacy.error.message or "")
 
 

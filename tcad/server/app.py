@@ -308,6 +308,13 @@ def artifact_url_for(path: str | None) -> str | None:
     """
     if not path:
         return None
+    snapshot_marker = "/derived/snapshots/"
+    if snapshot_marker in path:
+        parts = path.split(snapshot_marker, 1)[1].split("/")
+        if len(parts) == 4:
+            digest, model_id, key, filename = parts
+            return f"/artifact-sets/sha256:{digest}/snapshots/{model_id}/{key}/{filename}"
+        return None
     marker = "/artifacts/"
     index = path.find(marker)
     if index < 0:
@@ -660,6 +667,28 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
 
+    @app.get("/artifact-sets/{artifact_id}/scene", response_model=MeshPreviewResponse)
+    def get_artifact_scene(artifact_id: str, model_id: str) -> Response:
+        from tcad.server.mesh import mesh_preview
+        return mesh_preview(cfg().storage.data_dir, app.state.mesh_cache, model_id,
+                            version=None, tolerance=0.5, force=False, artifact_id=artifact_id)
+
+    @app.get("/artifact-sets/{artifact_id}/snapshots/{model_id}/{key}/{filename}")
+    def get_snapshot(artifact_id: str, model_id: str, key: str, filename: str) -> FileResponse:
+        from tcad.inspect.artifact import ArtifactReader
+        from tcad.render.snapshot import snapshot_dir, VIEWS
+        try:
+            reader = ArtifactReader(cfg().storage.data_dir)
+            reader.resolve(model_id, artifact_id=artifact_id)
+            if filename not in {f"{view}.png" for view in VIEWS}:
+                raise HTTPException(404, "no such snapshot")
+            root = snapshot_dir(reader.data_dir, artifact_id, model_id, key)
+            return FileResponse(_resolve_artifact(root, filename), media_type="image/png")
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
     @app.post("/models")
     def create_model(req: CreateModelRequest) -> dict:
         s = svc()
@@ -679,24 +708,24 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
 
     @app.get("/models/{model_id}/ir")
     def get_ir(model_id: str, version: int | None = None) -> dict:
-        s = svc()
+        store = session_store()
         try:
-            ir = s.store.load(model_id, version)
+            ir = store.load(model_id, version)
         except FileNotFoundError as exc:
             raise HTTPException(404, f"no such model/version: {exc}") from exc
         return json.loads(ir.model_dump_json())
 
     @app.get("/models/{model_id}/artifacts")
     def list_artifacts(model_id: str, version: int | None = None) -> dict:
-        s = svc()
+        store = session_store()
         try:
             # One `load()` for both the existence check and the version — see the
             # note on `StoreAdapter.current_version`.
-            ir = s.store.load(model_id, version)
+            ir = store.load(model_id, version)
         except FileNotFoundError as exc:
             raise HTTPException(404, f"no such model: {model_id}") from exc
         v = int(ir.version)
-        d = s.store.artifact_dir(model_id, v)
+        d = store.artifact_dir(model_id, v)
         files = (
             sorted(str(p.relative_to(d)) for p in d.rglob("*") if p.is_file())
             if d.exists()
@@ -718,7 +747,7 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
             # Artifacts alone say "files exist"; the verdict says whether THIS
             # version was graded green. A client must not have to infer the
             # second from the first.
-            "verdict": _verdict_or_none(s.store, model_id, v),
+            "verdict": _verdict_or_none(store, model_id, v),
         }
 
     @app.get("/models/{model_id}/verdict")
@@ -730,9 +759,9 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
         whose v4 passed and was then edited, and the reason string distinguishes
         them.
         """
-        s = svc()
+        store = session_store()
         try:
-            return s.store.verdict(model_id, version)
+            return store.verdict(model_id, version)
         except FileNotFoundError as exc:
             raise HTTPException(404, f"no such model: {model_id}") from exc
 
@@ -746,12 +775,12 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
         happily accepts ``../../etc/passwd``, so the resolved target is verified
         to sit inside the artefact directory before anything is opened.
         """
-        s = svc()
+        store = session_store()
         try:
-            ir = s.store.load(model_id, version)
+            ir = store.load(model_id, version)
         except FileNotFoundError as exc:
             raise HTTPException(404, f"no such model: {model_id}") from exc
-        root = s.store.artifact_dir(model_id, int(ir.version))
+        root = store.artifact_dir(model_id, int(ir.version))
         return FileResponse(_resolve_artifact(root, file_path))
 
     @app.get("/models/{model_id}/mesh", response_model=MeshPreviewResponse)
@@ -760,14 +789,15 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
         version: int | None = Query(default=None, ge=0),
         tolerance: float = Query(default=0.5, ge=MIN_TOLERANCE, le=MAX_TOLERANCE),
         force: bool = False,
+        artifact_id: str | None = None,
     ) -> Response:
         """Human preview only; mesh availability never establishes Gate success.
 
-        The latest snapshot is loaded once when ``version`` is omitted. Meshes
-        are cached by exact snapshot contents, version and bounded tolerance.
+        Without a selector, read the latest published artifact. The scene's
+        precision is fixed at build time; queries never rebuild source geometry.
         Async admission bounds preview waiters before they can occupy shared
-        ASGI threads. Disk IO, service initialization, worker RPC, validation and
-        JSON encoding all remain in the thread pool.
+        ASGI threads. Disk IO, validation and JSON encoding remain in the
+        thread pool.
         """
         from tcad.server.mesh import mesh_preview
 
@@ -782,8 +812,8 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
 
         def build_preview() -> Response:
             return mesh_preview(
-                svc(), app.state.mesh_cache, model_id,
-                version=version, tolerance=tolerance, force=force,
+                cfg().storage.data_dir, app.state.mesh_cache, model_id,
+                version=version, tolerance=tolerance, force=force, artifact_id=artifact_id,
             )
 
         job = asyncio.create_task(run_in_threadpool(build_preview))
@@ -797,7 +827,7 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
                 finished.exception()
 
         job.add_done_callback(release_preview)
-        # Cancelling an HTTP request cannot stop a running sync CAD call. Keep
+        # Cancelling an HTTP request cannot stop a running sync scene read. Keep
         # its slot until the actual work finishes, rather than admitting another
         # job on each click/AbortController cancellation.
         return await asyncio.shield(job)
@@ -811,79 +841,46 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
         height: int | None = None,
         version: int | None = None,
         force: bool = False,
+        artifact_id: str | None = None,
+        driver_angle_deg: float = Query(default=0, ge=-720, le=720),
+        frame_index: int = Query(default=0, ge=0, le=599),
     ) -> FileResponse:
-        """Render one orthographic view of the current geometry.
+        """Render one orthographic view of a published artifact.
 
         This is the *human's* view path, deliberately separate from the model's
         ``geo_view`` tool: no hook dispatch, no token budget, no checkpoint
-        requirement. Results are cached on disk keyed by
-        ``(version, view, style, size)``, so reloading a page costs nothing.
+        requirement. Both paths use the saved artifact scene. Derived PNGs live
+        in an isolated cache keyed by artifact identity and render settings.
         """
-        from tcad.core.types import Mesh
-        from tcad.worker.protocol import M_TESSELLATE
+        from tcad.core.wiring import RendererAdapter
+        from tcad.inspect.artifact import ArtifactReader
+        from tcad.render.snapshot import render_snapshot
 
         if view not in _ALLOWED_VIEWS:
-            raise HTTPException(
-                400, f"unknown view {view!r}; expected one of {sorted(_ALLOWED_VIEWS)}"
-            )
-        s = svc()
-        c = s.config
-        try:
-            # Load once and take the version from the document. Asking
-            # `current_version()` first is a trap: it returns 0 both for "no such
-            # model" and for "a model that happens to be at v0", which is exactly
-            # what a freshly created one is.
-            ir = s.store.load(model_id, version)   # version=None => latest
-            v = int(ir.version)
-        except FileNotFoundError as exc:
-            # A model that does not exist yet is a 404, not a 500 — the UI keys
-            # its "no model yet" message off this status.
-            raise HTTPException(404, f"no such model: {model_id}") from exc
+            raise HTTPException(400, f"unknown view {view!r}")
+        c = cfg()
         style = style or c.context.render.style
         if style not in _ALLOWED_STYLES:
-            raise HTTPException(
-                400, f"unknown style {style!r}; expected one of {sorted(_ALLOWED_STYLES)}"
-            )
-        w = int(width or c.context.render.width)
-        h = int(height or c.context.render.height)
+            raise HTTPException(400, f"unknown style {style!r}")
+        w, h = int(width or c.context.render.width), int(height or c.context.render.height)
         if not (16 <= w <= 4096 and 16 <= h <= 4096):
             raise HTTPException(400, "width/height must be within [16, 4096]")
-
-        d = s.store.artifact_dir(model_id, v)
-        d.mkdir(parents=True, exist_ok=True)
-        cached = d / f"view-{view}-{style}-{w}x{h}.png"
-        if cached.is_file() and not force:
-            return FileResponse(cached, media_type="image/png")
-
-        res = s.worker.request(
-            M_TESSELLATE,
-            {"ir": ir.model_dump(), "out_dir": str(d)},
-            timeout_s=180.0,
-        )
-        if not res.get("ok"):
-            err = res.get("error") or {}
-            raise HTTPException(
-                422,
-                f"无法网格化模型：{err.get('message', 'tessellate failed')}",
-            )
-        mesh_data = (res.get("result") or {}).get("mesh")
-        if not mesh_data:
-            raise HTTPException(422, "worker 未返回网格")
-        mesh = Mesh.model_validate(mesh_data)
-        images = s.renderer.render(
-            mesh, out_dir=str(d), views=[view], style=style, width=w, height=h
-        )
-        if not images:
-            raise HTTPException(500, "渲染未产生图像")
-        produced = Path(images[0].path)
-        if produced != cached and produced.is_file():
-            # normalise the name so the cache key is stable across strategies
-            try:
-                produced.replace(cached)
-            except OSError:
-                pass
-        target = cached if cached.is_file() else produced
-        return FileResponse(target, media_type="image/png")
+        reader = ArtifactReader(c.storage.data_dir)
+        try:
+            manifest, root = reader.resolve(model_id, version, artifact_id)
+            renderer = getattr(app.state.services, "renderer", None) or RendererAdapter(c.context.render.supersample)
+            images = render_snapshot(reader, manifest, root, renderer, views=[view],
+                                     style=style, width=w, height=h, force=force,
+                                     angle=driver_angle_deg, frame=frame_index)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except (OSError, ValueError) as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return FileResponse(images[0].path, media_type="image/png", headers={
+            "X-Artifact-ID": manifest.artifact_id,
+            "X-Artifact-Version": str(manifest.ir_version),
+            "X-Artifact-Status": manifest.status.value,
+        })
 
     # ── the turn ──────────────────────────────────────────────────────────
 

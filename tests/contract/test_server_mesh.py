@@ -7,6 +7,7 @@ then fetch both versions. Previewing must leave Gate verification untouched.
 from __future__ import annotations
 
 import os
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from tcad.config.loader import load_default_config, resolve_paths
 from tcad.core.wiring import build_services
 from tcad.ir.schema import IrDocument, IrPatch, IrPatchOp
 from tcad.server.app import create_app
+from tcad.loop.commit import run_commit
 from tests.contract.test_e2e_pipeline import make_ir
 
 TestClient = pytest.importorskip("fastapi.testclient").TestClient
@@ -49,6 +51,9 @@ def client(tmp_path_factory):
 def test_real_geometry_preview_and_versioned_edit(client):
     services = client.services
     services.store.create("mesh-part", make_ir(model_id="mesh-part"))
+    assert client.get("/models/mesh-part/mesh").status_code == 404
+    result, report = asyncio.run(run_commit(services, "mesh-part", 0, "build scene", str(REPO_ROOT), services.config.storage.data_dir))
+    assert report.passed, result.content
     before = services.store.verdict("mesh-part", 0)
     response = client.get("/models/mesh-part/mesh?version=0")
     assert response.status_code == 200, response.text
@@ -62,28 +67,45 @@ def test_real_geometry_preview_and_versioned_edit(client):
     assert mesh["vertex_count"] > 0 and mesh["facet_count"] >= 12
     assert all(0 <= index < mesh["vertex_count"] for face in mesh["facets"] for index in face)
     assert services.store.verdict("mesh-part", 0) == before
-    assert before["verified"] is False
-    assert not services.store.artifact_dir("mesh-part", 0).exists()
+    assert before["verified"] is True
+    assert services.store.artifact_dir("mesh-part", 0).exists()
 
     services.store.apply_patch("mesh-part", IrPatch(
         base_version=0,
         ops=[IrPatchOp(op="update_feature", target_id="pad0", payload={"params": {"length": 20}})],
     ))
+    assert client.get("/models/mesh-part/mesh").json() == initial
+    assert client.get("/models/mesh-part/mesh?version=1").status_code == 404
+    result, report = asyncio.run(run_commit(services, "mesh-part", 1, "changed scene", str(REPO_ROOT), services.config.storage.data_dir))
+    assert report.passed, result.content
     changed = client.get("/models/mesh-part/mesh")
     assert changed.status_code == 200, changed.text
     assert changed.json()["version"] == 1
     assert changed.json()["mesh"]["volume"] == pytest.approx(48000)
     assert changed.json()["mesh"]["bbox"]["z"] == pytest.approx(20)
     assert client.get("/models/mesh-part/mesh?version=0").json() == initial
-    assert services.store.verdict("mesh-part", 1)["verified"] is False
-    assert list((Path(services.config.storage.data_dir) / ".preview-mesh").iterdir()) == []
+    assert services.store.verdict("mesh-part", 1)["verified"] is True
+    assert not (Path(services.config.storage.data_dir) / ".preview-mesh").exists()
+    # Default previews and snapshots stay available without a geometry worker.
+    original = services.worker.request
+    def forbidden(*args, **kwargs):
+        raise AssertionError("viewer or snapshot rebuilt geometry")
+    services.worker.request = forbidden
+    try:
+        assert client.get("/models/mesh-part/mesh?force=true").status_code == 200
+        image = client.get("/models/mesh-part/render?force=true")
+        assert image.status_code == 200, image.text
+        assert image.headers["x-artifact-id"] == changed.json()["artifact_id"]
+        assert image.content.startswith(b"\x89PNG")
+    finally:
+        services.worker.request = original
 
 
 def test_empty_and_unbuildable_real_models_never_return_partial_mesh(client):
     services = client.services
     services.store.create("mesh-empty", IrDocument(model_id="mesh-empty"))
     response = client.get("/models/mesh-empty/mesh")
-    assert response.status_code == 422, response.text
+    assert response.status_code == 404, response.text
     assert "mesh" not in response.json()
 
     ir = make_ir(model_id="mesh-broken")
@@ -97,7 +119,7 @@ def test_empty_and_unbuildable_real_models_never_return_partial_mesh(client):
     ))
     services.store.create("mesh-broken", ir)
     response = client.get("/models/mesh-broken/mesh")
-    assert response.status_code == 422, response.text
+    assert response.status_code == 404, response.text
     assert "mesh" not in response.json()
     assert services.store.verdict("mesh-broken", 0)["verified"] is False
 

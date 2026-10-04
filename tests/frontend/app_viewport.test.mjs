@@ -6,7 +6,8 @@ import { readFile } from 'node:fs/promises';
 const source = (await readFile(new URL('../../tcad/server/ui/app.js', import.meta.url),'utf8'))
   .replace(/^import .*;$/m,'').replace(/\nboot\(\);\s*$/,'');
 const deferred = () => { let resolve; const promise = new Promise((r)=>{resolve=r;}); return {promise,resolve}; };
-const response = (body,status=200) => ({ok:status===200,status,statusText:'Error',json:async()=>body,blob:async()=>({})});
+const response = (body,status=200) => ({ok:status===200,status,statusText:'Error',json:async()=>body.model_id
+  ? {artifact_id:'sha256:'+'f'.repeat(64),status:'verified',...body} : body,blob:async()=>({})});
 function harness(fetch) {
   const nodes = new Map(), tabs = ['iso','front','back','left','right','top','bottom'].map((view)=>({dataset:{view},classList:{toggle:()=>{}},setAttribute:()=>{}}));
   const node = (id) => {
@@ -86,4 +87,35 @@ test('busy mesh admission never bypasses limits through PNG fallback',async()=>{
   await h.loadView(true);
   assert.equal(calls,1);assert.equal(h.viewer.hasMesh,true);
   assert.match(h.node('viewStatus').textContent,/仍显示此前几何/);
+});
+
+test('viewer displays the saved build verification status',async()=>{
+  const h=harness(async()=>response({model_id:'model-A',version:3,mesh:{id:'saved'},status:'verified'}));
+  await h.loadView(false);
+  assert.match(h.node('viewStatus').textContent,/构建 v3 · 几何已验证/);
+  assert.doesNotMatch(h.node('viewStatus').textContent,/IR v/);
+});
+
+test('PNG fallback stays pinned to the mesh artifact when GPU loading fails',async()=>{
+  const id='sha256:'+'a'.repeat(64),urls=[];
+  const h=harness(async(url)=>{
+    urls.push(url);
+    if(url.includes('/mesh?')) return response({model_id:'model-A',version:3,artifact_id:id,mesh:{id:'saved'}});
+    return {...response({}),headers:{get:(name)=>({'X-Artifact-ID':id,'X-Artifact-Version':'3','X-Artifact-Status':'verified'}[name]??null)}};
+  });
+  h.viewer.setMesh=()=>{throw new Error('GPU allocation failed');};
+  await h.loadView(false);
+  assert.match(urls[1],/artifact_id=sha256%3A/);
+  assert.equal(h.node('viewImage').src,'blob:test');
+  assert.match(h.node('viewStatus').textContent,/静态预览 · 构建 v3 · 几何已验证/);
+});
+
+test('PNG fallback refuses a different artifact identity',async()=>{
+  const h=harness(async(url)=>url.includes('/mesh?')
+    ?response({model_id:'model-A',version:3,mesh:{id:'saved'}})
+    :{...response({}),headers:{get:()=> 'sha256:'+'b'.repeat(64)}});
+  h.viewer.setMesh=()=>{throw new Error('GPU allocation failed');};
+  await h.loadView(false);
+  assert.equal(h.node('viewImage').src,undefined);
+  assert.match(h.node('viewPlaceholder').textContent,/身份不匹配/);
 });

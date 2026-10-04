@@ -32,7 +32,14 @@ class ArtifactReader:
         elif version is not None:
             root = ArtifactStore(self.data_dir).dir_for(model_id, version)
         else:
-            raise ArtifactReadError("a version or artifact_id is required")
+            # Latest published artifact is a query-side index. Never consult
+            # current IR: a pending edit must not change the displayed build.
+            model_root = ArtifactStore(self.data_dir).dir_for(model_id, 0).parent
+            versions = sorted((int(p.name[1:]) for p in model_root.glob("v*")
+                               if p.name[1:].isdigit() and (p / "manifest.json").is_file()), reverse=True)
+            if not versions:
+                raise FileNotFoundError("no published artifact; call ir_commit first")
+            root = ArtifactStore(self.data_dir).dir_for(model_id, versions[0])
         try:
             manifest = ArtifactSet.model_validate_json((root / "manifest.json").read_text(encoding="utf-8"))
         except FileNotFoundError as exc:
@@ -50,6 +57,13 @@ class ArtifactReader:
             if hashlib.sha256(source).hexdigest() != manifest.ir_sha256:
                 raise ArtifactReadError("artifact source does not match its build input hash")
             self.gate_report(manifest, root)
+        # Version directories are compatibility aliases. Render from the
+        # retained immutable set when present, so concurrent retries cannot
+        # replace scene bytes between manifest and geometry reads.
+        if artifact_id is None:
+            retained = self.object_dir(manifest.artifact_id)
+            if retained.is_dir():
+                return self.resolve(model_id, version, manifest.artifact_id)
         return manifest, root
 
     def read_file(self, manifest: ArtifactSet, root: Path, name: str) -> bytes:
@@ -73,6 +87,20 @@ class ArtifactReader:
         if digest.model_id != manifest.model_id or digest.ir_version != manifest.ir_version:
             raise ArtifactReadError("artifact measurements belong to a different model/version")
         return digest
+
+    def scene(self, manifest: ArtifactSet, root: Path):
+        from tcad.render.scene import SceneModel
+
+        try:
+            scene = SceneModel.model_validate_json(self.read_file(manifest, root, "scene.json"))
+        except (ValueError, TypeError) as exc:
+            raise ArtifactReadError(f"invalid artifact scene: {exc}; commit again to generate a scene") from exc
+        digest = self.digest(manifest, root)
+        if (abs(scene.mesh.volume - digest.volume) > max(1e-6, abs(digest.volume) * 1e-6)
+                or any(abs(getattr(scene.mesh.bbox, k) - getattr(digest.bbox, k)) > 1e-5
+                       for k in ("x", "y", "z", "x_min", "y_min", "z_min"))):
+            raise ArtifactReadError("artifact scene geometry disagrees with its measurements")
+        return scene
 
     def gate_report(self, manifest: ArtifactSet, root: Path) -> GateReport:
         try:

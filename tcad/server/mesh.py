@@ -1,17 +1,13 @@
-"""Bounded, version-specific geometry previews for the human viewport.
+"""Bounded artifact scene responses for the human viewport.
 
-This is deliberately independent of the commit/Gate path. Tessellating a part
-does not verify it, and preview work must not write into a published build.
-The cache is ephemeral: its key includes the exact IR bytes, not only a version
-number, so replacing/restoring a snapshot cannot resurrect stale geometry.
+Mesh serialization is cached by immutable artifact identity. Every query reads
+the saved scene, including integrity checks; no source or live worker is used.
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
-import tempfile
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -21,10 +17,9 @@ from fastapi import HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, ValidationError
 
-from tcad.core.ids import InvalidIdentifier, contained_path, ensure_safe_id
+from tcad.core.ids import InvalidIdentifier, ensure_safe_id
 from tcad.core.types import Mesh
 from tcad.ir.schema import RotaryMotionSpec
-from tcad.worker.protocol import M_TESSELLATE
 
 MIN_TOLERANCE = 0.1
 MAX_TOLERANCE = 5.0
@@ -32,7 +27,7 @@ MAX_VERTICES = 100_000
 MAX_FACETS = 200_000
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 # Keep preview callers from occupying every shared ASGI worker thread while
-# waiting for the serialized build cache. Admission itself runs on the event loop.
+# waiting for scene serialization. Admission itself runs on the event loop.
 MAX_ACTIVE_MESH_REQUESTS = 4
 
 
@@ -52,8 +47,11 @@ class PreviewMotion(RotaryMotionSpec):
 class MeshPreviewResponse(BaseModel):
     model_id: str
     version: int
+    artifact_id: str
+    status: str
     mesh: PreviewMesh
     motion: list[PreviewMotion] = Field(default_factory=list)
+    animation: dict | None = None
 
 
 def _checked_animation(result: dict, ir_data: dict, vertex_count: int) -> dict:
@@ -115,10 +113,10 @@ def _checked_motion(raw: Any, ir_data: dict, vertex_count: int) -> list[dict]:
 
 
 class MeshPreviewCache:
-    """A small byte-bounded LRU, with one tessellation in flight at a time.
+    """A small byte-bounded LRU, with one serialization in flight at a time.
 
-    Separate locks keep cached reads available while another model is building.
-    The worker itself is serial; coalescing misses here avoids queueing identical
+    Separate locks keep cached reads available while another model is encoding.
+    Coalescing misses here avoids queueing identical
     expensive requests. No client-controlled, unbounded per-key lock registry.
     """
 
@@ -197,80 +195,44 @@ def _checked_mesh(raw: Any) -> dict:
 
 
 def mesh_preview(
-    services: Any,
+    data_dir: str | Path,
     cache: MeshPreviewCache,
     model_id: str,
     *,
     version: int | None,
     tolerance: float,
     force: bool,
+    artifact_id: str | None = None,
 ) -> Response:
-    """Load, tessellate and encode off the event loop (the endpoint is sync)."""
+    """Encode the saved scene; never consult source IR or drive FreeCAD."""
+    from tcad.inspect.artifact import ArtifactReader
+
     try:
         ensure_safe_id(model_id, kind="model_id")
-        ir = services.store.load(model_id, version)
+        reader = ArtifactReader(data_dir)
+        manifest, root = reader.resolve(model_id, version, artifact_id)
+        # Read and validate before using a cache hit: corrupted evidence must
+        # not be hidden behind an earlier successful response.
+        scene = reader.scene(manifest, root)
     except InvalidIdentifier as exc:
         raise HTTPException(400, str(exc)) from exc
     except FileNotFoundError as exc:
-        raise HTTPException(404, f"no such model/version: {model_id}") from exc
+        raise HTTPException(404, str(exc)) from exc
     except (OSError, ValueError) as exc:
-        # A corrupt/inaccessible snapshot is not an empty model or a 404.
-        raise HTTPException(500, "could not read the model snapshot") from exc
-
-    actual_version = int(ir.version)
-    if ir.model_id != model_id or actual_version < 0 or (
-        version is not None and actual_version != version
-    ):
-        raise HTTPException(500, "stored model snapshot identity does not match the request")
-    ir_data = ir.model_dump(mode="json")
-    try:
-        fingerprint = hashlib.sha256(
-            json.dumps(ir_data, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
-        ).hexdigest()
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(500, "stored model snapshot has invalid numeric data") from exc
-    key = (model_id, actual_version, fingerprint, tolerance)
+        raise HTTPException(409, str(exc)) from exc
+    if not math.isclose(tolerance, scene.mesh.tolerance):
+        raise HTTPException(409, f"saved scene tolerance is {scene.mesh.tolerance}; requested {tolerance}")
+    key = (manifest.artifact_id, 1)
 
     def build() -> bytes:
-        try:
-            root = contained_path(Path(services.config.storage.data_dir), ".preview-mesh")
-            root.mkdir(parents=True, exist_ok=True)
-            # Never write into the Gate's published version directory. Future
-            # worker-side build side effects remain isolated and are cleaned up.
-            with tempfile.TemporaryDirectory(prefix="mesh-", dir=root) as workdir:
-                res = services.worker.request(
-                    ("simulate_assembly" if ir.assembly.drivers else "solve_assembly") if ir.assembly is not None else M_TESSELLATE,
-                    {"ir": ir_data, "out_dir": workdir, "tolerance": tolerance},
-                    timeout_s=180.0,
-                )
-        except InvalidIdentifier as exc:
-            raise HTTPException(400, str(exc)) from exc
-        except TimeoutError as exc:
-            raise HTTPException(504, "mesh tessellation timed out") from exc
-        except (OSError, RuntimeError) as exc:
-            raise HTTPException(503, "mesh worker or preview workspace is unavailable") from exc
-        if not isinstance(res, dict):
-            raise HTTPException(502, "worker returned an invalid response")
-        result = res.get("result")
-        if not res.get("ok") or (isinstance(result, dict) and result.get("ok") is False):
-            nested_error = result.get("error") if isinstance(result, dict) else None
-            error = res.get("error") or nested_error or {}
-            kind = error.get("kind") if isinstance(error, dict) else None
-            message = error.get("message") if isinstance(error, dict) else str(error)
-            status = 504 if kind == "timeout" else 503 if kind == "runtime" else 422
-            raise HTTPException(status, f"cannot tessellate model: {message or 'tessellate failed'}")
-        mesh = _checked_mesh(result.get("mesh") if isinstance(result, dict) else None)
-        animation = _checked_animation(result, ir_data, mesh["vertex_count"]) if ir.assembly is not None else None
-        motion = [] if animation else _checked_motion(result.get("motion"), ir_data, mesh["vertex_count"])
-        payload = {"model_id": model_id, "version": actual_version, "mesh": mesh}
-        if motion:
-            payload["motion"] = motion
-        if animation:
-            payload["animation"] = animation
-        body = json.dumps(
-            payload,
-            ensure_ascii=False, allow_nan=False, separators=(",", ":"),
-        ).encode("utf-8")
+        mesh = _checked_mesh(scene.mesh.model_dump(mode="json"))
+        payload = {"model_id": manifest.model_id, "version": manifest.ir_version,
+                   "artifact_id": manifest.artifact_id, "status": manifest.status.value, "mesh": mesh}
+        if scene.motion:
+            payload["motion"] = [part.model_dump(mode="json") for part in scene.motion]
+        if scene.animation:
+            payload["animation"] = scene.animation
+        body = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
         if len(body) > MAX_RESPONSE_BYTES:
             raise HTTPException(413, "mesh response exceeds the viewport size limit")
         return body
