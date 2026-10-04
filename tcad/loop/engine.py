@@ -9,10 +9,10 @@ LoopEngine.run_turn drives one Turn:
 
 Two non-negotiable invariants enforced here (design §4.1, §9, §10):
 
-  1. The ONLY success condition is a green Gate. ``GateReport.passed == True``.
-     A model that merely *says* it is done is not a termination (§4.1 decision 2);
-     the model's only "claim completion" action is ``ir_commit``, after which the
-     Gate independently judges. Budget survival (EXHAUSTED) is NOT success.
+  1. Success requires a current passed Gate and, in production, a validated
+     design_review backed by user-sourced measured constraints. Missing evidence
+     is a draft pending acceptance. Model narration and budget survival are not
+     proof of functional completion.
 
   2. The model never touches FreeCAD. Writes flow only through ir_patch /
      ir_commit (which mutate the IR and trigger the compile pipeline in the
@@ -44,6 +44,7 @@ from tcad.core.types import (
     TurnKind,
     TurnState,
 )
+from tcad.ir.schema import IrPatch, IrPatchOp
 from tcad.loop.budget import Budget, BudgetLimits
 from tcad.loop.recovery import RepeatedFailures
 from tcad.loop.strategies import LoopUntilDoneStrategy, make_strategy
@@ -82,6 +83,7 @@ class TurnResult(BaseModel):
     tokens_in: int = 0
     tokens_out: int = 0
     error: str | None = None
+    completion_review: dict | None = None
 
 
 class LoopConfig(BaseModel):
@@ -97,6 +99,9 @@ class LoopConfig(BaseModel):
     llm_max_retries: int = 2
     context_window_tokens: int = Field(default=128_000, gt=0)
     repeated_tool_failure_limit: int | None = Field(default=3, ge=2)
+    # Embedded geometry-only callers retain the old contract. Production wiring
+    # explicitly enables review from YAML (default true).
+    require_design_review: bool = False
     allow_privileged: bool = False
     visual_checkpoints: tuple[str, ...] = ("first_compile", "major_change", "final")
     artifact_exports: tuple[str, ...] = ("step", "stl")
@@ -171,7 +176,7 @@ def _is_mutating(tool_name: str, spec: Any) -> bool:
     graded IR. Everything else at write or privileged tier mutates the design,
     so a pass that predates it no longer describes the current state.
     """
-    if tool_name == "ir_commit":
+    if tool_name in ("ir_commit", "design_review"):
         return False
     tier = getattr(spec, "tier", None)
     return tier in (ToolTier.WRITE, ToolTier.PRIVILEGED)
@@ -226,6 +231,19 @@ class LoopEngine:
         self.registry = registry
         self.budget_limits = budget_limits
         self.config = config or LoopConfig()
+        if self.config.require_design_review:
+            self.config = self.config.model_copy(update={"system_prompt": self.config.system_prompt + (
+                " Respond in the user's language. Before modeling, state the complete feature plan and "
+                "the acceptance criteria for EVERY requested function. Preserve the original request. "
+                "Do not label guessed dimensions as user-confirmed. A passed ir_commit is an intermediate "
+                "BUILD checkpoint, NOT a terminal result. Continue all planned features (for a box, a "
+                "solid base is not a cavity; an opening is not a cutting mechanism). After the final commit, "
+                "call design_review in a separate step and map each objective to real Gate evidence. "
+                "Record genuine user-stated measurable requirements via update_requirement. Unknown dimensions "
+                "may be draft assumptions. List unresolved work and physical tests honestly; unsupported "
+                "functional claims remain a draft pending user acceptance. Never claim unmeasured functionality. "
+                "Every ir_patch op must contain reason. Send complete JSON and small patches."
+            )})
         self.budget = Budget(budget_limits)
         self.strategy = make_strategy(self.config.default_strategy)
         self._candidate_reports: list[GateReport] = []
@@ -237,6 +255,8 @@ class LoopEngine:
         self._trace_start = 0
         self._current_user_message: UserMessage | None = None
         self._pinned_history: list[dict] = []
+        self._completion_review: dict | None = None
+        self._request_text: str | None = None
         self._observer = observer
         self._stop_requested = stop_requested
         # Budgeted context build (design §4.3). When absent the engine keeps the
@@ -343,6 +363,8 @@ class LoopEngine:
         self._candidate_reports = []
         self._repeated_failures = RepeatedFailures(self.config.repeated_tool_failure_limit)
         self._current_user_message = user_msg
+        self._completion_review = None
+        self._request_text = None
         self._pinned_history = []
         messages = await self._build_messages(user_msg, turn)
         self._trace_start = len(messages)
@@ -387,6 +409,28 @@ class LoopEngine:
             return result
 
         try:
+            if self.config.require_design_review and turn.kind != TurnKind.INSPECT:
+                ir = self.services.store.load(turn.model_id)
+                text = ir.requirements.raw_text
+                if not text:
+                    # Upgrade old sessions whose first user request was never
+                    # recorded in the IR. Ignore model narration as provenance.
+                    text = "\n\n".join(message.content for message in
+                        self._load_history(turn.thread_id, user_msg.text)
+                        if message.role == "user" and message.content.strip())
+                original_text = ir.requirements.raw_text
+                if user_msg.text.strip() and user_msg.text not in text:
+                    text = (text + "\n\n用户追加需求：\n" if text else "") + user_msg.text
+                if text != original_text:
+                    self.services.store.apply_patch(turn.model_id, IrPatch(
+                        base_version=ir.version, ops=[IrPatchOp(
+                            op="update_requirement", payload={"raw_text": text},
+                            reason="Preserve the user's original request for acceptance provenance",
+                        )],
+                    ))
+                self._request_text = text
+                messages = await self._build_messages(user_msg, turn)
+                self._trace_start = len(messages)
             try:
                 result = await self.strategy.run(self, turn, messages, allowed)
             except Exception:
@@ -555,6 +599,16 @@ class LoopEngine:
         if not reply.tool_calls:
             self._idle_steps += 1
             if self._idle_steps > MAX_IDLE_STEPS:
+                if self.config.require_design_review and self.build_is_current(turn, self._last_gate_report):
+                    turn.state = TurnState.DRAFT
+                    self._completion_review = {
+                        "verified": False, "scope": "recorded_constraints",
+                        "summary": "构建已通过，但模型没有提交最终需求复核。",
+                        "checklist": [], "remaining_work": ["缺少最终需求清单与测量证据，功能仍待验收。"],
+                        "ir_version": self._last_gate_report.ir_version,
+                        "note": "实际机械功能和需求完整性仍需用户验收。",
+                    }
+                    return StepYield(gate_report=self._last_gate_report)
                 turn.state = TurnState.FAILED
                 turn.error = (
                     f"no progress: {self._idle_steps} consecutive steps without a tool call. "
@@ -573,6 +627,7 @@ class LoopEngine:
                 # The most recent attempted commit owns the verification state.
                 # A failed recommit cannot reuse an earlier green report.
                 self._last_commit_passed = False
+                self._completion_review = None
             if spec is None:
                 outcome = ToolOutcome(
                     result=ToolResult(
@@ -675,6 +730,29 @@ class LoopEngine:
                         args = hook_res.mutated_args if hook_res.mutated_args is not None else tc.args
                         outcome = await execute_tool(spec, args, ctx, allowed_tiers=allowed)
 
+            if tc.name == "design_review" and outcome.result.ok:
+                if not self.config.require_design_review:
+                    outcome.result = ToolResult(ok=False, error=ToolError(
+                        kind=ToolErrorKind.DENIED, message="design_review requires review-enabled mode"))
+                elif not self.build_is_current(turn, self._last_gate_report):
+                    outcome.result = ToolResult(ok=False, error=ToolError(
+                        kind=ToolErrorKind.SEMANTIC,
+                        message="Commit and verify the current IR before reviewing it; old Gate evidence is invalid."))
+                elif len(reply.tool_calls) != 1:
+                    outcome.result = ToolResult(ok=False, error=ToolError(
+                        kind=ToolErrorKind.SEMANTIC,
+                        message="Call design_review alone, after the final build, in a separate step."))
+                else:
+                    from tcad.loop.completion import DesignReview, validate_review
+                    self._completion_review = validate_review(
+                        DesignReview.model_validate(tc.args), self.services.store.load(turn.model_id),
+                        self._last_gate_report, self._request_text or "",
+                    )
+                    outcome.result = ToolResult(ok=True, content=json.dumps(self._completion_review, ensure_ascii=False))
+                    gate_report = self._last_gate_report
+                    if not self._completion_review["verified"]:
+                        turn.state = TurnState.DRAFT
+
             # ── everything below must run for EVERY tool call, including one that
             # did not resolve to a registered tool. This block used to sit inside
             # the `else:` above, which meant an unknown tool produced no `tool`
@@ -712,6 +790,7 @@ class LoopEngine:
                             "kind": getattr(outcome.result.error.kind, "value", str(outcome.result.error.kind)),
                             "message": outcome.result.error.message,
                             "feature_id": outcome.result.error.feature_id,
+                            "hint": outcome.result.error.hint,
                         }
                         if outcome.result.error is not None
                         else None
@@ -745,6 +824,7 @@ class LoopEngine:
                 and _is_mutating(tc.name, spec)
             ):
                 self._last_commit_passed = False
+                self._completion_review = None
                 self._repeated_failures.clear()
 
             gate_failed = outcome.gate_report is not None and not outcome.gate_report.passed
@@ -880,6 +960,8 @@ class LoopEngine:
     def _init_messages(self, user_msg: UserMessage, turn: Turn) -> list[dict]:
         return [
             {"role": "system", "content": self.config.system_prompt},
+            *([{"role": "system", "content": "Authoritative user requirements:\n" + self._request_text}]
+              if self._request_text else []),
             {"role": "user", "content": user_msg.text},
         ]
 
@@ -1060,6 +1142,7 @@ class LoopEngine:
             worker=getattr(self.services, "worker", None),
             hooks=self._hooks,
             visual_ok=False,
+            request_text=self._request_text,
         )
 
     def _request_approval(
@@ -1101,7 +1184,7 @@ class LoopEngine:
         if turn.state == TurnState.SUCCEEDED and not current_pass:
             turn.state = TurnState.FAILED
             turn.error = "the current IR version has no valid passed Gate; commit and verify it again"
-        if gate_report is not None and gate_report.passed and not current_pass:
+        if gate_report is not None and gate_report.passed and not self.build_is_current(turn, gate_report):
             # Keep historical reports for diagnostics/context, but do not send a
             # green completion card for an unverified or approval-blocked turn.
             gate_report = None
@@ -1115,11 +1198,18 @@ class LoopEngine:
             tokens_in=self.budget.tokens_in,
             tokens_out=self.budget.tokens_out,
             error=turn.error,
+            completion_review=self._completion_review,
         )
 
     def gate_is_current(self, turn: Turn, report: GateReport | None) -> bool:
-        """One success predicate shared by strategies and finalization."""
-        if (turn.state not in (TurnState.RUNNING, TurnState.SUCCEEDED)
+        """A build pass cannot finish a review-enabled design turn."""
+        reviewed = (not self.config.require_design_review or turn.kind == TurnKind.INSPECT
+                    or bool(self._completion_review and self._completion_review["verified"]))
+        return reviewed and self.build_is_current(turn, report)
+
+    def build_is_current(self, turn: Turn, report: GateReport | None) -> bool:
+        """Geometry verification is separate from requirement acceptance."""
+        if (turn.state not in (TurnState.RUNNING, TurnState.SUCCEEDED, TurnState.DRAFT)
                 or not self._last_commit_passed or report is None or not report.passed
                 or self._last_gate_report is not report or report.model_id != turn.model_id):
             return False

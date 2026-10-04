@@ -51,6 +51,8 @@ loop:
   max_compile_retries: null
   # Stall detector, not a total work ceiling. Successful IR changes reset it.
   repeated_tool_failure_limit: 3
+  # A build pass is a checkpoint; review recorded requirements before finishing.
+  require_design_review: true
   default_strategy: "loop_until_done"
   strategies:
     loop_until_done: {}

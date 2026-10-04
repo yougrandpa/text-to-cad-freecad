@@ -24,7 +24,8 @@ from tcad.core.types import TurnKind, TurnState
 from tcad.server.app import ChatRequest, HookEventTap, run_turn_request
 
 _STATE_MARK = {
-    TurnState.SUCCEEDED: "✓ SUCCEEDED",
+    TurnState.SUCCEEDED: "✓ SUCCEEDED (recorded constraints accepted; physical use still needs validation)",
+    TurnState.DRAFT: "△ DRAFT (build passed; functional acceptance pending)",
     TurnState.EXHAUSTED: "✗ EXHAUSTED (budget ran out — this is NOT success)",
     TurnState.FAILED: "✗ FAILED",
     TurnState.ABORTED: "✗ ABORTED",
@@ -122,6 +123,11 @@ def _one_turn(svc, args, text: str) -> int:
     print(f"  steps={result.steps}  tokens_in={result.tokens_in}  tokens_out={result.tokens_out}")
     if result.error:
         print(f"  error: {result.error}")
+    if result.completion_review:
+        print(f"  review: {result.completion_review['summary']}")
+        for item in result.completion_review['remaining_work']:
+            print(f"  pending: {item}")
+        print(f"  scope: {result.completion_review['note']}")
     if result.gate_report is not None:
         rep = result.gate_report
         print(f"  gate: passed={rep.passed}  "

@@ -291,11 +291,13 @@ def test_the_model_never_sees_a_raw_traceback_in_tool_content(session):
 # ══════════════════════════════════════════════════════════════════════════
 
 
-def test_the_run_recovers_and_the_gate_ends_green(session):
+def test_the_run_recovers_and_reports_a_passed_build_pending_acceptance(session):
     result = session.result
-    assert result["state"] == TurnState.SUCCEEDED.value, (
+    assert result["state"] == TurnState.DRAFT.value, (
         f"state={result['state']} error={result.get('error')}"
     )
+    assert result["completion_review"]["verified"] is False
+    assert result["completion_review"]["remaining_work"]
     report = result["gate_report"]
     assert report["passed"] is True
     assert report["blocking_failures"] == []

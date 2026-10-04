@@ -96,14 +96,14 @@ def _format_report(report: GateReport, ir: Any = None) -> str:
             f"{len(report.advisory_findings)} advisory finding(s)."
         )
         if ir is None:
-            return text + " Build succeeded — you may stop."
+            return text + " Build checks passed; continue unfinished objectives and call design_review after the final build."
 
         judged = len(_confirmed_constraints(ir))
         if judged:
             return (
                 text
                 + f" Judged against {judged} confirmed requirement(s)."
-                " Build succeeded — you may stop."
+                " Build checks passed; continue unfinished objectives and call design_review after the final build."
             )
 
         # A green Gate with nothing to judge against is the most misleading
@@ -122,6 +122,7 @@ def _format_report(report: GateReport, ir: Any = None) -> str:
             " verified that the part matches what was asked for. If the user named"
             " any size, count or position, record it with update_requirement"
             ' ("confirmed": true) and commit again — otherwise nothing checks it.'
+            ' Complete all requested features, then call design_review; unsupported functions remain pending acceptance.'
         )
     lines = [f"GATE FAILED (ir_version={report.ir_version}). {len(report.blocking_failures)} blocking failure(s):"]
     for r in report.results:

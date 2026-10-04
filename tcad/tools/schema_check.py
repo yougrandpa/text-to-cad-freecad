@@ -25,6 +25,7 @@ from typing import Any
 #: Keywords this checker understands.
 SUPPORTED: frozenset[str] = frozenset({
     "type", "required", "properties", "items", "enum",
+    "minLength", "maxLength", "minItems", "maxItems",
     "anyOf", "oneOf", "$ref", "$defs", "additionalProperties",
     # annotations: carried in the schema, no constraint to enforce
     "title", "description", "default",
@@ -110,6 +111,15 @@ def check(args: Any, schema: dict, *, path: str = "arguments", root: dict | None
     enum = schema.get("enum")
     if isinstance(enum, list) and args not in enum:
         return [f"{path}: {_describe(args)} is not one of {enum}"]
+
+    bounds = (("minLength", "maxLength") if isinstance(args, str) else
+              ("minItems", "maxItems") if isinstance(args, list) else None)
+    if bounds:
+        minimum, maximum = bounds
+        if minimum in schema and len(args) < schema[minimum]:
+            problems.append(f"{path}: length {len(args)} is below {minimum}={schema[minimum]}")
+        if maximum in schema and len(args) > schema[maximum]:
+            problems.append(f"{path}: length {len(args)} exceeds {maximum}={schema[maximum]}")
 
     if isinstance(args, dict):
         for name in schema.get("required") or []:

@@ -270,9 +270,10 @@ class SketchFullyConstrainedCheck:
         d = ctx.digest
         if d is None or not d.measurements_available:
             return _r(self, "skip", "no valid geometry measurements available")
-        for sketch in ctx.ir.all_sketches():
-            if not sketch.require_fully_constrained:
-                continue
+        required = [sketch for sketch in ctx.ir.all_sketches() if sketch.require_fully_constrained]
+        if not required:
+            return _r(self, "skip", "no sketches require full constraint verification")
+        for sketch in required:
             fc = d.key_dimensions.get(f"{sketch.id}__fully_constrained")
             dof = d.key_dimensions.get(f"{sketch.id}__dof")
             if fc is None:

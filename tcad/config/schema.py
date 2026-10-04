@@ -89,6 +89,7 @@ class LoopConfig(BaseModel):
     turn_wall_clock_s: float | None = None
     max_compile_retries: int | None = None
     repeated_tool_failure_limit: int | None = Field(default=3, ge=2)
+    require_design_review: bool = True
     default_strategy: Literal[
         "loop_until_done", "fork_join", "adversarial"
     ] = "loop_until_done"

@@ -197,7 +197,6 @@
         "op": "update_requirement",
         "reason": "record the stated size and volume so the Gate can check them independently",
         "payload": {
-         "raw_text": "安装底板 80x50x8，中间 40x20 通槽",
          "constraints": [
           {
            "kind": "bbox",
@@ -733,8 +732,26 @@
    ]
   },
   {
-   "text": "完成：80×50×8 安装底板，中间 40×20 通槽。体积 25600 mm³，两个草图全约束，STEP 往返一致。",
-   "calls": []
+   "text": "构建和导出通过；尺寸与功能的验收范围逐项列出，通槽完整验收仍有待补充。",
+   "calls": [
+    {
+     "name": "design_review",
+     "args": {
+      "summary": "80×50×8 底板与通槽已构建，独立需求验收仍有缺项。",
+      "checklist": [
+       {
+        "source_text": "一个 80x50 的安装底板，厚度 8mm，中间开一个 40x20 的通槽",
+        "check_ids": [
+         "bbox_spec"
+        ]
+       }
+      ],
+      "remaining_work": [
+       "通槽尺寸与居中位置需独立需求测量；体积约束是计算得到的值，不能冒充用户原话。"
+      ]
+     }
+    }
+   ]
   }
  ]
 }

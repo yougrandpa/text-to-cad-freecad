@@ -100,3 +100,49 @@ def test_empty_and_unbuildable_real_models_never_return_partial_mesh(client):
     assert response.status_code == 422, response.text
     assert "mesh" not in response.json()
     assert services.store.verdict("mesh-broken", 0)["verified"] is False
+
+
+def test_review_enabled_chat_builds_cavity_after_first_pass_and_returns_draft(client):
+    """Real FreeCAD/Gate/HTTP: the initial green box is not the final turn."""
+    from tcad.llm.client import LlmReply, ToolCall
+    from tests.unit.test_loop_engine import ScriptedLlm
+    services = client.services
+    model_id = "review-box"
+    services.store.create(model_id, IrDocument(model_id=model_id))
+    def patch(id, payload):
+        return LlmReply(tool_calls=[ToolCall(id=id, name="ir_patch", args={
+            "base_version":"current", "ops":[{"op":"add_feature", "reason":id, "payload":payload}]
+        })])
+    def commit(id):
+        return LlmReply(tool_calls=[ToolCall(id=id,name="ir_commit",args={"message":id})])
+    original = services.llm
+    services.llm = ScriptedLlm([
+        patch("base", {"id":"box", "op":"additive_box", "params":{"length":90,"width":45,"height":35}}),
+        commit("base-build"),
+        patch("cavity", {"id":"cavity", "op":"subtractive_box", "params":{"length":84,"width":39,"height":32},
+                         "placement":{"position":{"x":3,"y":3,"z":3}}}),
+        commit("final-build"),
+        LlmReply(tool_calls=[ToolCall(id="review",name="design_review",args={
+            "summary":"已生成箱体草稿，刀片和实际切削性能待验收", "checklist":[
+                {"source_text":"削铅笔工具箱","check_ids":[]}],
+            "remaining_work":["刀片和实际削铅笔性能尚未验证"]})]),
+    ])
+    try:
+        response = client.post("/chat",json={"model_id":model_id,"thread_id":"review-box-thread",
+                                            "text":"创建一个削铅笔工具箱"})
+        assert response.status_code == 200
+        import json
+        results = [json.loads(frame.split("data: ",1)[1]) for frame in response.text.split("\n\n")
+                   if frame.startswith("event: result")]
+        assert len(results) == 1, response.text
+        result=results[0]
+        assert result["state"] == "draft", result
+        assert result["steps"] == 5
+        assert result["gate_report"]["passed"]
+        assert not result["completion_review"]["verified"]
+        assert services.store.load(model_id).find_feature("cavity") is not None
+        mesh = client.get(f"/models/{model_id}/mesh").json()["mesh"]
+        assert mesh["volume"] == pytest.approx(90*45*35 - 84*39*32)
+        assert services.store.load(model_id).requirements.raw_text == "创建一个削铅笔工具箱"
+    finally:
+        services.llm=original

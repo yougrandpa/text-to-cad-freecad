@@ -59,7 +59,7 @@
     <div class="stream" id="stream">
       <div class="welcome" id="welcome">
         <h2>说一句话，生成一个零件</h2>
-        <p>模型通过修改 IR 来设计，FreeCAD 只负责编译几何。是否完成由 Gate 判定 —— 模型自称完成不算数。</p>
+        <p>模型通过修改 IR 来设计，FreeCAD 负责编译几何。构建检查通过后，还需核对需求约束；实际使用功能需进一步验收。</p>
         <div class="samples">
           <button class="sample" data-text="一个 80x50 的安装底板，厚度 8mm，中间开一个 40x20 的通槽">80×50 底板 + 40×20 通槽</button>
           <button class="sample" data-text="一个 60x60 的方形法兰，厚度 12mm，中心一个直径 20mm 的通孔">60×60 法兰 + Ø20 通孔</button>
@@ -195,6 +195,6 @@
   </div>
 </div>
 
-<script type="module" src="./app.js"></script>
+<script type="module" src="./app.js?v=20261004-acceptance"></script>
 </body>
 </html>

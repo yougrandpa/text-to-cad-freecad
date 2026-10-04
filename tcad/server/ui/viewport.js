@@ -145,6 +145,7 @@ export function prepareMesh(mesh) {
 }
 
 const VERTEX = `
+precision highp float;
 attribute vec3 aPosition;
 attribute vec3 aNormal;
 uniform vec3 uTarget, uRight, uUp, uLook;
@@ -156,7 +157,7 @@ void main() {
   vNormal = aNormal;
 }`;
 const FRAGMENT = `
-precision mediump float;
+precision highp float;
 varying vec3 vNormal;
 uniform vec3 uLook, uUp, uRight;
 uniform bool uLines;

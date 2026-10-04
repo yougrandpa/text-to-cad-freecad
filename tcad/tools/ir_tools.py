@@ -6,8 +6,8 @@ write tier: ir_patch (mutate IR), ir_commit (compile + gate)
 The model never touches FreeCAD here. ``ir_patch`` validates through the
 injected store validator, then persists via ``store.apply_patch``. ``ir_commit``
 triggers the compile pipeline and returns the :class:`GateReport` — but it does
-**not** declare success: the engine alone decides SUCCEEDED from
-``GateReport.passed`` (design §4.1).
+**not** declare success: the engine requires a current passed Gate and, in
+production, a validated design_review before accepting recorded constraints.
 """
 
 from __future__ import annotations
@@ -98,6 +98,12 @@ async def ir_patch_handler(services: "Any", args: dict, ctx: ToolContext) -> Too
     except Exception as e:  # malformed tool args
         return _err(ToolErrorKind.SCHEMA, f"invalid patch payload: {e}")
 
+    if ctx.request_text is not None:
+        for op in patch.ops:
+            if (op.op == "update_requirement" and "raw_text" in op.payload
+                    and op.payload["raw_text"] != ctx.request_text):
+                return _err(ToolErrorKind.SEMANTIC, "raw_text is the preserved user request; do not rewrite it",
+                            hint="Add measured constraints with constraints_append; leave raw_text unchanged.")
     ir = services.store.load(ctx.model_id)
     errors = services.store.validate_patch(ir, patch)
     if errors:
@@ -375,8 +381,10 @@ op names and their payload shapes:
                      self-consistent"; it does NOT mean the part is what was asked
                      for, and ir_commit will tell you so.
                      Only confirmed=true requirements may block the Gate.
-                     (`constraints_append` adds instead of replacing; `raw_text` sets
-                     the requirement text.)
+                     (`constraints_append` adds instead of replacing.) In review-enabled
+                     mode the engine preserves raw_text as the user's original request;
+                     leave it unchanged. Guessed or derived dimensions are not user-confirmed.
+                     Use source_text verbatim.
   rename             target_id = entity id; payload = {"name": "<new stable name>"}
                      Names must be unique — an ambiguous name cannot be referenced later.
 
@@ -437,8 +445,32 @@ def _ir_patch_schema() -> dict:
 # ─── spec factory ──────────────────────────────────────────────────────────
 
 
+async def design_review_handler(services, args, ctx):
+    # The engine, which owns the current Gate, validates the evidence and decides
+    # the terminal state after this schema-checked call. This handler grants no writes.
+    from tcad.loop.completion import DesignReview
+    try:
+        DesignReview.model_validate(args)
+    except ValueError as exc:
+        return _err(ToolErrorKind.SCHEMA, f"invalid design review: {exc}")
+    return _ok("Review received; the engine will validate current measured evidence.")
+
+
 def build_ir_tools(services: "Any") -> dict[str, ToolSpec]:
+    from tcad.loop.completion import DesignReview
     return {
+        "design_review": ToolSpec(
+            name="design_review", tier=ToolTier.WRITE,
+            description=("After completing ALL requested geometry and committing it, review EVERY user objective. "
+                         "A passed ir_commit is only a build checkpoint. Supply a checklist with verbatim user "
+                         "source_text and actual Gate check_ids that measure each objective. Generic solid/export "
+                         "checks are not functional evidence. Use empty check_ids for unmeasurable objectives. "
+                         "List all missing work, ambiguities and physical tests in remaining_work. Missing evidence "
+                         "ends as a draft pending acceptance, never as verified functionality. Never invent user "
+                         "dimensions or confirmed requirements. The engine validates the evidence."),
+            params_schema=DesignReview.model_json_schema(),
+            handler=functools.partial(design_review_handler, services), concurrency_safe=True,
+        ),
         "ir_get": ToolSpec(
             name="ir_get",
             tier=ToolTier.READ,
@@ -477,7 +509,8 @@ def build_ir_tools(services: "Any") -> dict[str, ToolSpec]:
             tier=ToolTier.WRITE,
             description=(
                 "Compile the current IR and run the Gate. Returns the GateReport. "
-                "You may ONLY consider the build done when the report says passed=true. "
+                "passed=true verifies the build, not completion of the full user request. "
+                "Continue missing features after intermediate commits, then call design_review. "
                 "If it fails, repair the named feature(s) and call ir_patch + ir_commit again."
             ),
             params_schema={

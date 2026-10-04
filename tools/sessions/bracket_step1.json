@@ -45,7 +45,6 @@
       {"op": "update_requirement",
        "reason": "record the stated size and volume so the Gate can check them independently",
        "payload": {
-         "raw_text": "安装底板 80x50x8，中间 40x20 通槽",
          "constraints": [
            {"kind": "bbox", "value": {"x": 80.0, "y": 50.0, "z": 8.0},
             "tol": 0.05, "source_text": "底板 80x50x8", "confirmed": true},

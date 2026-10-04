@@ -6,7 +6,7 @@ deterministic Gate decides whether it is actually done. FreeCAD is used as a
 *geometry compiler backend* — the model never touches a FreeCAD document.
 
 > 用一句话描述零件，拿到一个**可继续编辑**的参数化模型 + 可导出的 STEP/STL。
-> 包名 `tcad`。成功的定义只有一个：**Gate 全绿**。模型说"我做完了"不算数。
+> 包名 `tcad`。构建通过与需求验收分开：**当前版本 Gate 通过 + 需求复核**。模型说"我做完了"不算数。
 
 ```
 Python 3.11+ · pydantic v2 · FastAPI + SSE · SQLite(WAL) · 前端零依赖零构建（原生 ES module）
@@ -65,7 +65,7 @@ Gate 只读磁盘快照与导出产物，让"校验"与"生成"不共享内存�
 
 | # | 不变量 | 含义 |
 |---|---|---|
-| 1 | **成功定义唯一** | 只有 `GateReport.passed == true` 才是完成。模型自称完成不是终止条件。全 blocking 检查都 SKIP 也**不算**通过（fail-closed）。 |
+| 1 | **成功定义唯一** | `GateReport.passed == true` 只代表构建通过。生产默认还必须经过 `design_review`，没有需求测量证据则返回 `draft`（待验收）。模型自称完成不是终止条件。全 blocking 检查都 SKIP 也**不算**通过（fail-closed）。 |
 | 2 | **单写入口** | IR 只能经 `ir_patch` / `ir_commit` 变更。事件流 append-only 是单一真相源，**先写事件再写快照**。 |
 | 3 | **Hook fail-closed** | Hook 抛异常/超时一律 `DENY`，永不 fail-open。 |
 | 4 | **无头优先** | 一切能力必须在 `FreeCADCmd`（无 GUI）下可用。FreeCAD 的渲染在 `src/Gui` 层，无头用不了 —— 所以渲染走"worker 回传网格 + supervisor 侧软件光栅化"。 |
@@ -218,7 +218,7 @@ python -m venv .venv
 
 ### 不用模型，自己当模型：`agent_driver`
 
-验证"工具面是否可发现、失败是否可行动、Gate 是否是唯一判据"，不需要任何 LLM：
+验证"工具面是否可发现、失败是否可行动、构建 Gate 是否使用独立证据"，不需要任何 LLM：
 
 ```bash
 # 模型实际看到的工具面与 schema
@@ -345,7 +345,7 @@ segfault，见「已知限制」）。
    │
    ▼
 TurnResult{state, steps, tokens_in/out, gate_report}
-    终态只有四种：SUCCEEDED（Gate 全绿）/ FAILED / AWAITING_APPROVAL / EXHAUSTED
+    终态：SUCCEEDED（已记录约束验收通过）/ DRAFT（草稿待验收）/ FAILED / AWAITING_APPROVAL / EXHAUSTED / ABORTED
     外加一种来自人的终态：ABORTED —— 被「停止」打断。它不是成功，也不是失败：
     它是「你叫停了它，此后没有任何东西经过 Gate 验证」。
 ```
@@ -371,6 +371,12 @@ TurnResult{state, steps, tokens_in/out, gate_report}
 ---
 
 ## Gate 到底判什么
+
+生产默认启用 `loop.require_design_review: true`。首次构建通过后引擎继续运行，
+模型完成全部计划特征后，单独调用 `design_review` 逐项关联用户原话与 Gate 检查证据。
+缺少证据或存在待做项时返回 `draft`；已记录约束通过时也只证明这些约束，
+实际切削、机构运动或安全性能仍需人工/实物验收。
+完整流程与限制见 [功能验收说明](docs/functional-acceptance.md)。
 
 Gate 从磁盘重新加载 IR 快照与导出产物（CQRS：**不碰生成路径的内存对象**），
 按 fail-closed 规则聚合：

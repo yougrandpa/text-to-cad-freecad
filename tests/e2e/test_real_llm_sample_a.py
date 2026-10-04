@@ -25,7 +25,7 @@ cannot serve is an environment condition, so it is a SKIP that names the cause.
 
 What proves the chain (each item corresponds to one test):
 
-  1. the turn itself SUCCEEDED and the Gate (not the model) passed it;
+  1. the build Gate passed and the engine exposes its requirement-review scope;
   2. real artefacts — .step/.stl/.FCStd — exist and are downloadable;
   3. the delivered STEP, re-imported and measured by FreeCAD, has the sample-A
      volume 25600 mm³ (rel 1e-6, the same tolerance as the kernel-layer test).
@@ -132,12 +132,18 @@ def _result(session) -> dict:
     return next(d for k, d in session["frames"] if k == "result")
 
 
-def test_the_turn_succeeded_and_the_gate_passed(session):
+def test_the_build_passed_and_requirement_review_is_explicit(session):
     """The verdict is the engine's, not the model's."""
     result = _result(session)
-    assert result["state"] == TurnState.SUCCEEDED.value, (
+    assert result["state"] in (TurnState.SUCCEEDED.value, TurnState.DRAFT.value), (
         f"state={result['state']} error={result.get('error')}"
     )
+    review = result["completion_review"]
+    assert review is not None and review["scope"] == "recorded_constraints"
+    if result["state"] == TurnState.SUCCEEDED.value:
+        assert review["verified"] and not review["remaining_work"]
+    else:
+        assert not review["verified"] and review["remaining_work"]
     report = result["gate_report"]
     assert report["passed"] is True, report["blocking_failures"]
     assert report["blocking_failures"] == []

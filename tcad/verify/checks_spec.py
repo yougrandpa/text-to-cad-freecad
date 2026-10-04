@@ -144,10 +144,10 @@ class RequirementCoverageCheck:
     check the Gate could run had passed; there was simply nothing to check the
     *request* against, and nothing said so.
 
-    ADVISORY on purpose. The harness's success rule is "a green Gate", and making
-    this blocking would refuse to finish any part described only in prose — which
-    is most first drafts. The honest move is to state what was and was not
-    proven, not to manufacture a failure.
+    ADVISORY on purpose: a prose-only draft can still be valid geometry and
+    exportable. Production completion separately requires design_review against
+    measured, user-sourced constraints. Without that evidence the turn is a
+    draft pending acceptance, never verified functionality.
     """
 
     id = "requirement_coverage"

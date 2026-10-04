@@ -31,6 +31,7 @@ class TurnState(str, Enum):
     RUNNING = "running"
     AWAITING_APPROVAL = "awaiting_approval"
     SUCCEEDED = "succeeded"
+    DRAFT = "draft"
     EXHAUSTED = "exhausted"
     FAILED = "failed"
     ABORTED = "aborted"
@@ -223,6 +224,7 @@ class ToolContext(BaseModel):
     #: used to live on the shared services bundle, so one session's commit could
     #: open the visual checkpoint for another session's inspect step.
     visual_ok: bool = False
+    request_text: str | None = None  # authoritative user text; model cannot rewrite it
 
 
 ToolHandler = Any  # Callable[[dict, ToolContext], Awaitable[ToolResult]]

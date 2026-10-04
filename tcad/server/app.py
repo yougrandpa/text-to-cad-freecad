@@ -1312,7 +1312,18 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
         from fastapi.responses import RedirectResponse
         from fastapi.staticfiles import StaticFiles
 
-        app.mount("/ui", StaticFiles(directory=str(ui_dir), html=True), name="ui")
+        class LiveUIFiles(StaticFiles):
+            # No build manifest exists to version native modules. Serve current
+            # assets after a server update, including on conditional reloads.
+            def is_not_modified(self, response_headers, request_headers):
+                return False
+
+            async def get_response(self, path, scope):
+                response = await super().get_response(path, scope)
+                response.headers["Cache-Control"] = "no-store"
+                return response
+
+        app.mount("/ui", LiveUIFiles(directory=str(ui_dir), html=True), name="ui")
 
         @app.get("/", include_in_schema=False)
         def index_redirect() -> Any:

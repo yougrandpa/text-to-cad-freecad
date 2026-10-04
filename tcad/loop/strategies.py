@@ -8,7 +8,7 @@
 
 A strategy raising must degrade to M1 and never kill the turn (the engine wraps
 strategy.run in a fallback). All three share the engine's invariant: a Turn only
-SUCCEEDS when the Gate is green.
+SUCCEEDS with a current passed build and, in production, a validated design review.
 """
 
 from __future__ import annotations

@@ -837,3 +837,16 @@ def test_the_front_end_parses(tmp_path):
                           input=(UI_DIR / "app.js").read_text(encoding="utf-8"),
                           capture_output=True, text=True, timeout=30)
     assert proc.returncode == 0, proc.stderr
+
+
+def test_ui_reload_serves_current_modules_even_with_conditional_headers():
+    from fastapi.testclient import TestClient
+    from tcad.server.app import create_app
+    with TestClient(create_app()) as client:
+        first = client.get("/ui/app.js")
+        assert first.status_code == 200
+        assert first.headers["cache-control"] == "no-store"
+        second = client.get("/ui/app.js", headers={"If-None-Match":first.headers["etag"]})
+        assert second.status_code == 200
+        assert second.text == first.text
+        assert "功能待验收" in second.text

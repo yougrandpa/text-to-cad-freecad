@@ -4,7 +4,9 @@
 
 原记录把可恢复运行和完整会话管理写成已交付，但当前仓库没有
 `tcad/server/runs.py`、RunHub、运行重连路由或这些会话管理接口。
-本文按当前代码纠正状态；完整交付范围见 [DELIVERY.md](DELIVERY.md)。
+本文按当前代码纠正状态；完整交付范围见 [DELIVERY.md](DELIVERY.md)。后续需求复核新增 `draft` 终态与
+`completion_review` 结果，构建通过后不会自动停止；原始需求保存和旧会话回填
+经回归覆盖。该功能不等同于运行重连或恢复，见 [功能验收说明](docs/functional-acceptance.md)。
 
 ## 已实现
 

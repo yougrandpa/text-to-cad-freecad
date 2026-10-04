@@ -1,6 +1,6 @@
 # 交付说明：当前 CAD 工作台
 
-更新日期：2026-10-04。代码基线：`9bf00e0`。
+更新日期：2026-10-04。原交互预览代码基线：`9bf00e0`；当前工作区已增加需求复核，见下文。
 
 本文以当前仓库代码和可核查测试为准。此前版本包含超出当前仓库实现的交付描述：
 可恢复运行、完整会话管理、参数表单、对象选择和像素级浏览器验收，
@@ -11,7 +11,9 @@
 ## 当前实现
 
 - 对话通过工具修改 IR，经 FreeCAD 编译、导出，再由 Gate 判定；
-  最新版本没有有效的通过报告时不能宣布成功。
+  最新版本没有有效的通过报告时不能宣布成功。生产默认还要求 `design_review`
+  关联用户原话与当前测量证据；缺少证据则返回待验收草稿。构建通过不会自动结束建模。
+  已记录约束通过也不代表实际机械功能已经验证，见 [功能验收说明](docs/functional-acceptance.md)。
 - 中央视口使用 `tcad/server/ui/viewport.js` 的本地 WebGL 渲染器绘制真实网格。
   支持旋转、缩放、平移、七个预设视角、适配模型、坐标轴和触摸操作。
   同模型版本更新保留相机，会话切换重置相机；过期响应不能覆盖新视口。
@@ -45,7 +47,9 @@
 
 另有 `/health`、`/settings/*`、`/approvals*`。SSE 使用 `start / progress / agent /
 result / error` 事件，没有可重放的 `seq` 游标协议。完整字段约束以
-`tcad/server/app.py` 的请求模型和路由为准。
+`tcad/server/app.py` 的请求模型和路由为准。最终 `result` 新增 `completion_review`，
+包含 `verified / scope / summary / checklist / remaining_work / ir_version / note`。
+`draft` 表示构建通过但需求待验收；`/verdict` 的 `verified` 仍只表示构建验证。
 
 网格预览限制：容差 0.1–5mm、100k 顶点、200k 面片、16MiB 响应、
 16 项 / 32MiB 缓存、最多四个活跃预览作业。取消 HTTP 请求后，实际工作完成前

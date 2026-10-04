@@ -682,6 +682,7 @@ def build_services(cfg: Config, *, start_worker: bool = True):
         llm_max_retries=int(rs.max_retries),
         context_window_tokens=int(rs.resolved_context_window()),
         repeated_tool_failure_limit=cfg.loop.repeated_tool_failure_limit,
+        require_design_review=cfg.loop.require_design_review,
         allow_privileged=bool(cfg.policy.allow_privileged),
         visual_checkpoints=tuple(cfg.context.visual_checkpoints),
         artifact_exports=tuple(cfg.storage.artifact_exports),

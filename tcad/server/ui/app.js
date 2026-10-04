@@ -13,7 +13,7 @@
  *     real decisions.
  */
 
-import { MeshViewport } from "./viewport.js";
+import { MeshViewport } from "./viewport.js?v=20261004-acceptance";
 
 const $ = (id) => document.getElementById(id);
 
@@ -292,13 +292,14 @@ function pushToolCard(data) {
   assistantBody = null;   // the next model text starts a new bubble
 
   const gateNote = data.gate && data.gate.passed
-    ? el("span", { class: "badge", text: "GATE PASS" })
+    ? el("span", { class: "badge", text: "构建检查通过" })
     : null;
 
   const body = [];
   if (data.error) {
     body.push(el("pre", { text: `[${data.error.kind}] ${data.error.message}` +
-      (data.error.feature_id ? `\n(feature_id=${data.error.feature_id})` : "") }));
+      (data.error.feature_id ? `\n(feature_id=${data.error.feature_id})` : "") +
+      (data.error.hint ? `\n修复建议：${data.error.hint}` : "") }));
   } else if (data.content) {
     body.push(el("pre", { text: data.content }));
   }
@@ -341,6 +342,7 @@ function applyToolImages(data) {
 }
 
 function pushHookLine(ev) {
+  if (ev.decision === "allow" && ev.hook === "<no-hooks>") return;
   append(el("div", { class: "hookline" }, [
     el("span", { text: ev.event }),
     el("span", { class: `dec-${ev.decision}`, text: ev.decision }),
@@ -367,9 +369,10 @@ function pushVerdict(kind, title, detail) {
 }
 
 function checkRow(row) {
+  const advisory = row.severity === "advisory" && ["fail", "error"].includes(row.status);
   const cls = row.status === "pass" ? "pass"
-    : row.status === "skip" ? "skip" : "fail";
-  const mark = row.status === "pass" ? "✓"
+    : row.status === "skip" || advisory ? "skip" : "fail";
+  const mark = advisory ? "⚠" : row.status === "pass" ? "✓"
     : row.status === "skip" ? "–"
     : row.status === "error" ? "!" : "✗";
   return el("div", { class: `checkrow ${cls}` }, [
@@ -388,7 +391,7 @@ function pushGateCard(report, turnState) {
 
   const card = el("div", { class: `gatecard ${passed ? "pass" : "fail"}` }, [
     el("div", { class: "head" }, [
-      el("span", { text: passed ? "✓ Gate 通过" : "✗ Gate 未通过" }),
+      el("span", { text: passed ? "✓ 构建检查通过" : "✗ 构建检查未通过" }),
       el("span", { class: "muted small", text: `IR v${report.ir_version}` }),
       el("span", { class: "grow" }),
       turnState ? el("span", { class: "muted small", text: turnState }) : null,
@@ -425,9 +428,10 @@ async function handleResult(result) {
   const verdicts = {
     succeeded: [
       "ok",
-      "✓ 完成 —— Gate 全绿",
-      "这是「完成」的唯一含义。产物已导出，可在下方下载。",
+      result.completion_review?.verified ? "✓ 已记录的需求约束验收通过" : "✓ 构建通过 · 功能待验收",
+      "产物已导出。构建通过仅说明几何与导出检查通过；实际功能和需求完整性仍需验收。",
     ],
+    draft: ["warn", "草稿已生成 · 功能待验收", "当前构建通过，但需求仍有未验证项，不能据此认定功能完成。"],
     exhausted: [
       "warn",
       "⚠ 预算耗尽，回合结束",
@@ -457,6 +461,14 @@ async function handleResult(result) {
     result.error || "",
   ];
   pushVerdict(verdict[0], verdict[1], verdict[2]);
+  if (result.completion_review) {
+    pushNotice("info", result.completion_review.summary);
+    for (const item of result.completion_review.checklist || []) {
+      pushNotice("info", `需求复核：${item.source_text} · ${(item.check_ids || []).join(", ") || "无客观测量证据"}`);
+    }
+    for (const item of result.completion_review.remaining_work || []) pushNotice("warn", `待验收：${item}`);
+    pushNotice("info", result.completion_review.note);
+  }
 
   if (result.error && result.state !== "FAILED") pushNotice("bad", result.error);
 
@@ -470,7 +482,9 @@ async function handleResult(result) {
   // A stopped turn is neither success nor fault: it is a deliberate outcome, so
   // it gets neither the green "完成" nor the red "未完成" that a failure gets.
   const stopped = result.state === "aborted";
-  setStatus(ok ? "ok" : stopped ? "" : "bad", ok ? "完成" : stopped ? "已打断" : "未完成");
+  const draft = result.state === "draft";
+  setStatus(ok ? "ok" : draft || stopped ? "" : "bad",
+    ok ? (result.completion_review?.verified ? "约束验收通过" : "构建通过") : draft ? "草稿 · 待验收" : stopped ? "已打断" : "未完成");
 
   // Await the inspector so `state.version` is current before the artefacts and
   // the viewport are read — otherwise the UI can describe a version it has not
@@ -928,7 +942,7 @@ async function renderVerdict(box, token) {
     el("span", {
       class: "v",
       style: `color:${v.verified ? "var(--ok)" : "var(--bad)"}`,
-      text: v.verified ? "已验证" : "未验证",
+      text: v.verified ? "构建已验证 · 功能待验收" : "构建未验证",
     }),
   ]));
   if (v.graded_version !== null && v.graded_version !== undefined) {
@@ -1432,7 +1446,7 @@ function renderBudgetBadge(budget) {
       ? "本次运行不限制步数、token、时长与编译重试。"
       : "以下维度未设上限：" + budget.unbounded.join(", "),
     "",
-    "回合只会在三种情况下结束：Gate 全绿、FAILED、或等待审批。",
+    "构建通过后还要复核需求；缺少功能证据会生成待验收草稿，不能视为功能完成。",
     "单次请求的活性仍受保护：LLM 请求超时、工具自身超时、worker 传输超时。",
     ...(bounded.length ? ["", "在效的上限：", ...bounded] : []),
   ].join("\n");

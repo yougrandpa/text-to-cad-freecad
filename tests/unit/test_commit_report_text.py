@@ -83,7 +83,8 @@ def test_a_pass_with_a_confirmed_requirement_reports_what_it_was_judged_on():
     text = _format_report(_report(passed=True), _ir(constraints=[_bbox()]))
     assert "Judged against 1 confirmed requirement(s)" in text
     assert "NOT JUDGED" not in text
-    assert "you may stop" in text
+    assert "you may stop" not in text
+    assert "design_review" in text
 
 
 def test_an_unconfirmed_requirement_does_not_count_as_a_judgement():
