@@ -19,6 +19,7 @@ results under explicit, fail-closed rules:
 from __future__ import annotations
 
 import inspect
+from pathlib import Path
 
 from tcad.core.types import (
     CheckContext,
@@ -63,6 +64,20 @@ class Gate:
         self.config = config or VerifyConfig()
         self._solid_checks = solid_checks
         self._loader_takes_dir = _loader_accepts_artifact_dir(context_loader)
+
+    def evaluate_artifact(self, artifact_dir: str | Path) -> GateReport:
+        """Grade a manifested attempt without consulting a current IR version.
+
+        The version-addressed entry point remains for old stored builds and
+        embedders. New commits use this artifact-only entry point.
+        """
+        from tcad.artifacts.manifest import ArtifactSet
+
+        if not self._loader_takes_dir:
+            raise TypeError("artifact evaluation requires an artifact-aware context loader")
+        root = Path(artifact_dir)
+        manifest = ArtifactSet.model_validate_json((root / "manifest.json").read_text(encoding="utf-8"))
+        return self.evaluate(manifest.model_id, manifest.ir_version, artifact_dir=str(root))
 
     def evaluate(
         self, model_id: str, ir_version: int, *, artifact_dir: str | None = None

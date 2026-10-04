@@ -97,7 +97,6 @@ async def _ticks_during(coro):
 
 
 @pytest.mark.parametrize("handler, args", [
-    (geo_measure_handler, {"what": ["volume"]}),
     (asset_export_handler, {"fmt": "step", "name": "out"}),
     (asset_import_handler, {}),
     (geo_view_handler, {"views": ["iso"]}),
@@ -124,7 +123,23 @@ async def test_a_geo_tool_still_reports_worker_failure(tmp_path):
     services.worker.request = lambda method, params=None, *, timeout_s=30.0: {
         "ok": False, "error": {"kind": "runtime", "message": "no solid to tessellate"},
     }
-    out = await geo_measure_handler(services, {"what": ["volume"]}, _ctx(tmp_path))
+    out = await geo_view_handler(services, {"views": ["iso"]}, _ctx(tmp_path))
     assert out.ok is False
     assert out.error.kind == ToolErrorKind.RUNTIME
     assert "no solid" in out.error.message
+
+
+async def test_measurement_disk_read_leaves_event_loop_free(tmp_path, monkeypatch):
+    from tcad.inspect.artifact import ArtifactReader
+    from tests.unit.test_geo_tools import _services as artifact_services
+    from tests.unit.test_geo_tools import _digest
+    services = artifact_services(_digest(), tmp_path)
+    original = ArtifactReader.digest
+
+    def slow_read(self, *args):
+        time.sleep(SLOW_S)
+        return original(self, *args)
+
+    monkeypatch.setattr(ArtifactReader, "digest", slow_read)
+    ticks = await _ticks_during(geo_measure_handler(services, {}, _ctx(tmp_path)))
+    assert ticks >= 15

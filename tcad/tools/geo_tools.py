@@ -33,7 +33,6 @@ from tcad.core.types import (
 from tcad.worker.protocol import (
     M_EXPORT,
     M_IMPORT_ASSET,
-    M_INTROSPECT,
     M_TESSELLATE,
 )
 
@@ -109,24 +108,23 @@ async def geo_view_handler(services: "Any", args: dict, ctx: ToolContext) -> Too
 
 async def geo_measure_handler(services: "Any", args: dict, ctx: ToolContext) -> ToolResult:
     what = args.get("what") or ["volume", "bbox", "faces", "edges", "solids"]
-    version = services.store.current_version(ctx.model_id)
-    ir = services.store.load(ctx.model_id, version)
-    res = await _ask_worker(
-        services, M_INTROSPECT,
-        {"ir": ir.model_dump(), "out_dir": _artifact_dir(ctx, version), "what": list(what)},
-        timeout_s=60.0,
-    )
-    if not res.get("ok"):
-        e = res.get("error", {}) or {}
-        return _err(
-            ToolErrorKind(e.get("kind", "runtime")),  # type: ignore[arg-type]
-            e.get("message", "introspect failed"),
-            feature_id=e.get("feature_id"),
-        )
+    from tcad.inspect.artifact import ArtifactReader
+
+    def read_measurements():
+        reader = ArtifactReader(ctx.data_dir)
+        artifact_id = args.get("artifact_id")
+        version = None if artifact_id else services.store.current_version(ctx.model_id)
+        manifest, root = reader.resolve(ctx.model_id, version, artifact_id)
+        return reader.digest(manifest, root).model_dump(mode="json")
+
+    try:
+        digest = await asyncio.to_thread(read_measurements)
+    except (OSError, ValueError) as exc:
+        return _err(ToolErrorKind.RUNTIME, str(exc),
+                    hint="Commit this version first, or supply the artifact_id of an existing build.")
     # introspect_document returns a GeometryDigest-shaped dict — there is no
     # "measurements" key. Map each requested item onto the digest's real
     # fields; an unmeasured build must error, not report "{}".
-    digest = res.get("result") or {}
     if not digest.get("measurements_available"):
         return _err(
             ToolErrorKind.RUNTIME,
@@ -365,10 +363,13 @@ def build_geo_tools(services: "Any") -> dict[str, ToolSpec]:
         "geo_measure": ToolSpec(
             name="geo_measure",
             tier=ToolTier.READ,
-            description="Return geometric measurements (volume/bbox/faces/edges/solids/holes) of the current model. 'holes' are measured on the BRep (diameter, axis, centre, depth, through-or-blind) and are the only hole evidence that counts; they can disagree with the IR.",
+            description="Read geometric measurements (volume/bbox/faces/edges/solids/holes) from a committed artifact. Optional artifact_id pins an earlier build; otherwise this IR version must already have an artifact. Never rebuilds the current IR. 'holes' are measured on the BRep and can disagree with the IR.",
             params_schema={
                 "type": "object",
-                "properties": {"what": {"type": "array", "items": {"type": "string"}}},
+                "properties": {
+                    "what": {"type": "array", "items": {"type": "string"}},
+                    "artifact_id": {"type": "string", "description": "sha256:<64 hex digits>"},
+                },
             },
             handler=functools.partial(geo_measure_handler, services),
             concurrency_safe=True,

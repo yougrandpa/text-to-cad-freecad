@@ -20,14 +20,18 @@ If ``digest.json`` is missing we raise a typed error and fabricate nothing.
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import os
+from pathlib import Path
 from typing import Any, Callable
 
 from pydantic import BaseModel, ConfigDict
 
 from tcad.core.types import BuildStamp, CheckContext, GeometryDigest, IrDocument
+from tcad.artifacts.manifest import ArtifactSet
+from tcad.inspect.artifact import ArtifactReader
 from tcad.store.artifacts import read_build_stamp
 from tcad.worker.protocol import M_IMPORT_ASSET
 
@@ -142,9 +146,30 @@ def build_check_context(
     if not os.path.isdir(artifact_dir):
         raise CheckContextError(f"artifact_dir does not exist: {artifact_dir}")
 
-    ir = _load_ir(ir_path)
+    manifest_path = os.path.join(artifact_dir, "manifest.json")
+    manifest = None
+    if os.path.isfile(manifest_path):
+        try:
+            reader = ArtifactReader(".")
+            manifest = ArtifactSet.model_validate_json(Path(manifest_path).read_text(encoding="utf-8"))
+            if manifest.model_id != model_id or manifest.ir_version != ir_version:
+                raise ValueError("artifact identity does not match the Gate request")
+            for name in manifest.files:
+                reader.read_file(manifest, Path(artifact_dir), name)
+            source = reader.read_file(manifest, Path(artifact_dir), "ir.json")
+            if hashlib.sha256(source).hexdigest() != manifest.ir_sha256:
+                raise ValueError("artifact source does not match its build input hash")
+        except (OSError, ValueError) as exc:
+            raise CheckContextError(f"artifact integrity check failed: {exc}") from exc
+
+    # New builds carry their own frozen input. ir_path remains a compatibility
+    # path for older artifacts; it cannot override a bundled build snapshot.
+    bundled_ir = os.path.join(artifact_dir, "ir.json")
+    ir = _load_ir(bundled_ir if os.path.isfile(manifest_path) else ir_path)
     digest = _load_digest(artifact_dir)
     exports = _discover_exports(artifact_dir, model_id)
+    if manifest is not None:
+        exports = {fmt: path for fmt, path in exports.items() if Path(path).name in manifest.files}
 
     return CheckContext(
         model_id=model_id,

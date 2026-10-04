@@ -481,10 +481,24 @@ def build_context_loader(
             #
             # A missing IR *snapshot* still propagates: `store.load` below raises,
             # and at that point there is genuinely nothing to grade.
-            ir = store.load(model_id, ir_version)
-            digest = ContextServiceAdapter(store).digest(
-                model_id, ir_version, artifact_dir=str(artifact_dir)
-            )
+            bundled_ir = Path(artifact_dir) / "ir.json"
+            if (Path(artifact_dir) / "manifest.json").exists():
+                # Stay within the attempted artifact, including on the failure
+                # path. A broken artifact must never borrow source evidence.
+                from tcad.verify.context import _load_ir
+                try:
+                    ir = _load_ir(str(bundled_ir))
+                except CheckContextError:
+                    # An absent/corrupt bundled input is also a failed build,
+                    # not permission to consult the authoring store.
+                    ir = IrDocument(model_id=model_id, version=ir_version)
+                digest = GeometryDigest(model_id=model_id, ir_version=ir_version,
+                                        measurements_available=False)
+            else:
+                ir = store.load(model_id, ir_version)
+                digest = ContextServiceAdapter(store).digest(
+                    model_id, ir_version, artifact_dir=str(artifact_dir)
+                )
             return CheckContext(
                 model_id=model_id,
                 ir_version=ir_version,

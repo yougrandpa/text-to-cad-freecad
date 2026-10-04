@@ -221,15 +221,43 @@ def test_gate_reads_the_digest_from_disk_not_from_the_pipeline(services):
     payload["volume"] = 1.0
     digest_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    # round_trip compares the digest against the STEP re-read from disk, so a
-    # tampered digest must show up as a mismatch.
+    # The manifest now rejects altered bytes before measurements reach the
+    # checks. A tampered digest cannot attest this artifact at all.
     report2 = services.gate.evaluate(model_id, version)
-    rt = next(r for r in report2.results if r.check_id == "round_trip")
-    assert rt.status.value == "fail", (
+    assert "gate:cannot_attest_no_measurements" in report2.blocking_failures, (
         "editing digest.json on disk did not change the verdict — the Gate is "
         "reading from memory, not from disk"
     )
     assert report2.passed is False
+
+
+def test_committed_measurement_reads_the_artifact_without_rebuilding(services):
+    from types import SimpleNamespace
+    from tcad.core.types import ToolContext
+    from tcad.inspect.artifact import ArtifactReader
+    from tcad.tools.geo_tools import geo_measure_handler
+
+    model_id = "wired_measure_artifact"
+    version, result, report = _commit(services, model_id)
+    assert report.passed, result.content
+    reader = ArtifactReader(services.store.data_dir)
+    manifest, _ = reader.resolve(model_id, version)
+    assert manifest.artifact_id in result.content
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("artifact query attempted to rebuild/read current source")
+
+    query_services = SimpleNamespace(
+        store=SimpleNamespace(load=forbidden, current_version=forbidden),
+        worker=SimpleNamespace(request=forbidden))
+    ctx = ToolContext(thread_id="t", turn_id="turn", model_id=model_id,
+                      data_dir=str(services.store.data_dir))
+    result = asyncio.run(geo_measure_handler(query_services,
+        {"artifact_id": manifest.artifact_id, "what": ["volume", "faces"]}, ctx))
+    assert result.ok, result.error
+    measured = json.loads(result.content)
+    assert measured["volume"] == pytest.approx(GOLD_VOLUME)
+    assert measured["faces"] == 6
 
 
 def test_missing_digest_cannot_attest_and_does_not_explode(services):

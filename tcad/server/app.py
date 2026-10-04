@@ -630,6 +630,36 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
 
     # ── models ────────────────────────────────────────────────────────────
 
+    @app.get("/artifact-sets/{artifact_id}")
+    def get_artifact_set(artifact_id: str, model_id: str) -> dict:
+        """Pinned build metadata; independent of the current source version."""
+        from tcad.inspect.artifact import ArtifactReader
+
+        reader = ArtifactReader(cfg().storage.data_dir)
+        try:
+            manifest, root = reader.resolve(model_id, artifact_id=artifact_id)
+            report = reader.gate_report(manifest, root)
+            return {**manifest.model_dump(mode="json"), "gate_report": report.model_dump(mode="json")}
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.get("/artifact-sets/{artifact_id}/measurements")
+    def get_artifact_measurements(artifact_id: str, model_id: str) -> dict:
+        from tcad.inspect.artifact import ArtifactReader
+
+        reader = ArtifactReader(cfg().storage.data_dir)
+        try:
+            manifest, root = reader.resolve(model_id, artifact_id=artifact_id)
+            return {"artifact_id": manifest.artifact_id, "status": manifest.status.value,
+                    "model_id": manifest.model_id, "ir_version": manifest.ir_version,
+                    "digest": reader.digest(manifest, root).model_dump(mode="json")}
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
     @app.post("/models")
     def create_model(req: CreateModelRequest) -> dict:
         s = svc()
@@ -672,8 +702,19 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
             if d.exists()
             else []
         )
+        artifact_meta = {}
+        if (d / "manifest.json").is_file():
+            try:
+                from tcad.artifacts.manifest import ArtifactSet
+                manifest = ArtifactSet.model_validate_json((d / "manifest.json").read_text(encoding="utf-8"))
+                artifact_meta = {"artifact_id": manifest.artifact_id, "status": manifest.status.value}
+            except (OSError, ValueError):
+                # Legacy listings remain available; pinned queries validate the
+                # full schema and report unreadable evidence explicitly.
+                pass
         return {
             "model_id": model_id, "version": v, "dir": str(d), "files": files,
+            **artifact_meta,
             # Artifacts alone say "files exist"; the verdict says whether THIS
             # version was graded green. A client must not have to infer the
             # second from the first.

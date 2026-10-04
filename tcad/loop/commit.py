@@ -36,6 +36,7 @@ import logging
 import os
 import time
 import uuid
+from pathlib import Path
 
 from tcad.core.types import (
     BuildStamp,
@@ -315,9 +316,12 @@ async def run_commit(
         ir_sha256=hashlib.sha256(ir.model_dump_json().encode("utf-8")).hexdigest(),
     )
     write_build_stamp(artifact_dir, stamp)
+    # Freeze the exact build input alongside its outputs. Gate requirement and
+    # provenance reads must not depend on a source snapshot later being edited.
+    (Path(artifact_dir) / "ir.json").write_text(ir.model_dump_json(), encoding="utf-8")
 
     try:
-        return await _build_and_grade(
+        result, report = await _build_and_grade(
             services,
             ir=ir,
             model_id=model_id,
@@ -328,11 +332,18 @@ async def run_commit(
             stamp=stamp,
             dispatch=dispatch,
         )
+        if report is None and staging_dir:
+            _discard_staging(services, staging_dir)
+        return result, report
     except asyncio.CancelledError:
         # Someone stopped this turn. Only a full pass turns staging into the
         # version's artifacts, so an abandoned attempt is pure residue — and it
         # would accumulate one directory per stopped build. Discard it here, in
         # the one place that knows this attempt owns it.
+        if staging_dir:
+            _discard_staging(services, staging_dir)
+        raise
+    except Exception:
         if staging_dir:
             _discard_staging(services, staging_dir)
         raise
@@ -416,7 +427,17 @@ async def _build_and_grade(
     # With staging, the Gate is pointed at *this attempt's* directory. That is
     # what makes "old files must not fill in for a failed export" structural
     # rather than a timestamp heuristic.
-    if staging_dir:
+    manifest_writer = getattr(services.store, "write_manifest", None)
+    if callable(manifest_writer):
+        manifest_writer(artifact_dir, model_id=model_id, version=ir_version,
+                        attempt_id=attempt_id, ir_sha256=stamp.ir_sha256,
+                        status="verifying")
+    artifact_evaluator = getattr(services.gate, "evaluate_artifact", None)
+    if callable(manifest_writer) and callable(artifact_evaluator):
+        report = await _off_loop(
+            services, artifact_evaluator, artifact_dir, label="gate.evaluate_artifact",
+        )
+    elif staging_dir:
         report = await _off_loop(
             services, services.gate.evaluate, model_id, ir_version,
             artifact_dir=staging_dir, label="gate.evaluate",
@@ -432,7 +453,7 @@ async def _build_and_grade(
     published = False
     if staging_dir:
         if report.passed:
-            published = _publish(services, model_id, ir_version, staging_dir, attempt_id, stamp)
+            published = _publish(services, model_id, ir_version, staging_dir, attempt_id, stamp, report)
             if not published:
                 # The Gate passed but the result is not the version's artifacts.
                 # Saying nothing here would let a green report imply a delivery
@@ -458,6 +479,12 @@ async def _build_and_grade(
     )
 
     text = _format_report(report, ir)
+    if published and callable(getattr(services.store, "artifact_dir", None)):
+        path = Path(services.store.artifact_dir(model_id, ir_version)) / "manifest.json"
+        if path.is_file():
+            from tcad.artifacts.manifest import ArtifactSet
+            manifest = ArtifactSet.model_validate_json(path.read_text(encoding="utf-8"))
+            text += f"\nPublished artifact_id={manifest.artifact_id}."
     if pipeline_notes:
         text += "\n\nUpstream failures that hid the geometry from the Gate:\n" + "\n".join(
             f"  - {n}" for n in pipeline_notes
@@ -552,6 +579,7 @@ def _publish(
     staging_dir: str,
     attempt_id: str,
     stamp: BuildStamp,
+    report: GateReport,
 ) -> bool:
     """Write the artifact list and promote the verified build. Never raises.
 
@@ -560,6 +588,7 @@ def _publish(
     producing a green Gate over artifacts that are not actually the version's.
     """
     try:
+        (Path(staging_dir) / "gate_report.json").write_text(report.model_dump_json(), encoding="utf-8")
         manifest = getattr(services.store, "write_manifest", None)
         if callable(manifest):
             manifest(
@@ -568,6 +597,7 @@ def _publish(
                 version=ir_version,
                 attempt_id=attempt_id,
                 ir_sha256=stamp.ir_sha256,
+                status="verified",
             )
         publisher = getattr(services.store, "publish", None)
         if not callable(publisher):

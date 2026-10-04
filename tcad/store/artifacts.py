@@ -26,6 +26,7 @@ import hashlib
 import json
 import os
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -187,6 +188,7 @@ class ArtifactStore:
     def write_manifest(
         self, staging_dir: str | Path, *, model_id: str, version: int,
         attempt_id: str, ir_sha256: str, extra: dict[str, Any] | None = None,
+        status: str = "draft",
     ) -> Path:
         """Write the build's artifact list — every file with its hash and size.
 
@@ -203,7 +205,12 @@ class ArtifactStore:
                 "sha256": hashlib.sha256(data).hexdigest(),
                 "bytes": len(data),
             }
+        from tcad.artifacts.manifest import ArtifactSet, artifact_identity
+
         manifest: dict[str, Any] = {
+            "schema_version": 1,
+            "artifact_id": artifact_identity(model_id, int(version), attempt_id, ir_sha256, files),
+            "status": status,
             "model_id": model_id,
             "ir_version": int(version),
             "attempt_id": attempt_id,
@@ -212,9 +219,52 @@ class ArtifactStore:
         }
         if extra:
             manifest.update(extra)
+        manifest = ArtifactSet.model_validate(manifest).model_dump(mode="json")
         path = d / "manifest.json"
         path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
         return path
+
+    def _retain_artifact_set(self, staging: Path) -> None:
+        """Retain a verified set independently of the mutable version alias.
+
+        Existing manifest-less fixtures/legacy builds keep their old layout.
+        New sets are copied before the version swap, so artifact_id queries
+        survive a retry or a later consumer writing derived files to the alias.
+        """
+        manifest_path = staging / "manifest.json"
+        if not manifest_path.is_file():
+            return
+        from tcad.artifacts.manifest import PublishedArtifact
+        from tcad.inspect.artifact import ArtifactReader
+
+        manifest = PublishedArtifact.model_validate_json(manifest_path.read_text(encoding="utf-8"))
+        reader = ArtifactReader(self.data_dir)
+        reader.gate_report(manifest, staging)
+        source = reader.read_file(manifest, staging, "ir.json")
+        if hashlib.sha256(source).hexdigest() != manifest.ir_sha256:
+            raise ValueError("artifact source does not match its build input hash")
+        root = reader.object_dir(manifest.artifact_id)
+        root.parent.mkdir(parents=True, exist_ok=True)
+        if root.exists():
+            existing, _ = reader.resolve(manifest.model_id, artifact_id=manifest.artifact_id)
+            for name in existing.files:
+                reader.read_file(existing, root, name)
+            return
+        with tempfile.TemporaryDirectory(prefix=".set-", dir=root.parent) as scratch:
+            candidate = Path(scratch) / "artifact"
+            candidate.mkdir()
+            for name in manifest.files:
+                (candidate / name).write_bytes(reader.read_file(manifest, staging, name))
+            shutil.copyfile(manifest_path, candidate / "manifest.json")
+            try:
+                os.rename(candidate, root)
+            except OSError:
+                # Another publisher may have installed this exact identity.
+                if not root.is_dir():
+                    raise
+                existing, _ = reader.resolve(manifest.model_id, artifact_id=manifest.artifact_id)
+                for name in existing.files:
+                    reader.read_file(existing, root, name)
 
     def publish(self, model_id: str, version: int, staging_dir: str | Path) -> Path:
         """Make a verified attempt the version's artifacts.
@@ -230,6 +280,8 @@ class ArtifactStore:
         staging = Path(staging_dir)
         if not staging.is_dir() or not any(staging.iterdir()):
             raise FileNotFoundError(f"nothing to publish: {staging} is missing or empty")
+
+        self._retain_artifact_set(staging)
 
         canonical = self.dir_for(model_id, version)
         canonical.parent.mkdir(parents=True, exist_ok=True)
