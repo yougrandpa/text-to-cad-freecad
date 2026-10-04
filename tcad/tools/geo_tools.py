@@ -25,7 +25,6 @@ from tcad.core.types import (
     ImageRef,
     Mesh,
     ToolContext,
-    ToolError,
     ToolErrorKind,
     ToolResult,
     ToolSpec,
@@ -80,11 +79,14 @@ async def geo_view_handler(services: "Any", args: dict, ctx: ToolContext) -> Too
     version = services.store.current_version(ctx.model_id)
     ir = services.store.load(ctx.model_id, version)
     out_dir = _artifact_dir(ctx, version)
+    angle = args.get("driver_angle_deg", 0)
+    if angle:
+        out_dir = os.path.join(out_dir, f"motion_{angle:g}")
     os.makedirs(out_dir, exist_ok=True)
 
     mesh_res = await _ask_worker(
         services, M_TESSELLATE,
-        {"ir": ir.model_dump(), "views": views, "out_dir": out_dir},
+        {"ir": ir.model_dump(), "views": views, "out_dir": out_dir, "driver_angle_deg": angle},
         timeout_s=60.0,
     )
     if not mesh_res.get("ok"):
@@ -99,7 +101,10 @@ async def geo_view_handler(services: "Any", args: dict, ctx: ToolContext) -> Too
         mesh, out_dir=out_dir, views=list(views), style=style, width=768, height=576
     )
     rendered = ", ".join(i.view for i in images) or "(no views)"
-    return _ok(f"Rendered {len(images)} view(s): {rendered}.", images=images)
+    poses = {b.id: angle * b.motion.ratio for b in ir.bodies if b.motion}
+    detail = (f" Prescribed kinematic preview at input {angle:g} degrees; body angles: "
+              f"{json.dumps(poses)}. Contact, collisions and cutting are not verified.") if poses else ""
+    return _ok(f"Rendered {len(images)} view(s): {rendered}.{detail}", images=images)
 
 
 async def geo_measure_handler(services: "Any", args: dict, ctx: ToolContext) -> ToolResult:
@@ -240,12 +245,16 @@ def build_geo_tools(services: "Any") -> dict[str, ToolSpec]:
         "geo_view": ToolSpec(
             name="geo_view",
             tier=ToolTier.READ,
-            description="Render orthographic views (iso/front/top/right) of the current model as images. Only call at a declared visual checkpoint.",
+            description=("Render orthographic views (iso/front/top/right) at a visual checkpoint. "
+                         "Optional driver_angle_deg poses bodies using their motion pivot/axis/ratio "
+                         "and reports each body angle. This previews rigid kinematics, not collision, "
+                         "contact or material removal. Default 0 shows the static CAD/export pose."),
             params_schema={
                 "type": "object",
                 "properties": {
                     "views": {"type": "array", "items": {"type": "string"}},
                     "style": {"type": "string"},
+                    "driver_angle_deg": {"type": "number", "minimum": -720, "maximum": 720},
                 },
             },
             handler=functools.partial(geo_view_handler, services),

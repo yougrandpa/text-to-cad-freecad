@@ -13,7 +13,7 @@
  *     real decisions.
  */
 
-import { MeshViewport } from "./viewport.js?v=20261004-acceptance";
+import { MeshViewport } from "./viewport.js?v=20261004-motion";
 
 const $ = (id) => document.getElementById(id);
 
@@ -840,7 +840,7 @@ async function loadView(force, { version = null } = {}) {
       if (!current()) return;
       if (body.model_id !== token.modelId || !Number.isInteger(body.version) || body.version < 0 ||
           (version != null && body.version !== version)) throw new Error("网格响应与当前模型版本不匹配");
-      const count = meshViewer.setMesh(body.mesh);
+      const count = meshViewer.setMesh(body.mesh, body.motion || []);
       clearViewImage();
       placeholder.hidden = true;
       setViewMode(true, `IR v${body.version} · ${count.toLocaleString()} 三角面 · 拖动旋转，滚轮缩放`);
@@ -1414,6 +1414,7 @@ function wire() {
   });
   meshViewer = new MeshViewport($("viewCanvas"), {
     axes: $("viewAxes"),
+    motionControls: { root: $("motionControls"), input: $("crankAngle"), output: $("crankAngleValue") },
     onChange: ({ view }) => selectView(view),
     onError: () => loadView(false),
   });

@@ -124,12 +124,12 @@ def test_only_proven_ops_are_claimed_verified():
     than a drift.
     """
     verified, experimental = capability.ops_by_tier()
-    assert verified == ["additive_box", "additive_cylinder", "additive_sphere",
+    assert verified == ["additive_box", "additive_cone", "additive_cylinder", "additive_sphere",
                         "chamfer", "draft", "fillet", "groove", "linear_pattern",
                         "mirrored", "pad", "pocket", "polar_pattern",
-                        "revolution", "subtractive_box", "subtractive_cylinder",
+                        "revolution", "subtractive_box", "subtractive_cone", "subtractive_cylinder",
                         "subtractive_sphere", "thickness"]
-    assert len(experimental) == len(capability.all_ops()) - 17
+    assert len(experimental) == len(capability.all_ops()) - 19
 
 
 # ── the model reads the same facts ──────────────────────────────────────────

@@ -198,9 +198,11 @@ def _require_mapping(value: object, *, field: str) -> dict:
 #: handwritten list would start refusing valid payloads the day a field is added,
 #: which is the failure mode that makes people delete whitelists.
 _PAYLOAD_FIELDS: dict[str, frozenset[str]] = {
-    "add_sketch": frozenset(SketchSpec.model_fields) | {"geometry_append", "constraints_append"},
+    "add_body": frozenset({"id", "name", "motion"}),
+    "update_body": frozenset({"name", "motion"}),
+    "add_sketch": frozenset(SketchSpec.model_fields) | {"body_id", "geometry_append", "constraints_append"},
     "update_sketch": frozenset(SketchSpec.model_fields) | {"geometry_append", "constraints_append"},
-    "add_feature": frozenset(FeatureSpec.model_fields),
+    "add_feature": frozenset(FeatureSpec.model_fields) | {"body_id"},
     "update_feature": frozenset(FeatureSpec.model_fields) | {"refs_append"},
     "remove_feature": frozenset({"cascade"}),
     "update_requirement": frozenset({"raw_text", "constraints", "constraints_append"}),
@@ -382,6 +384,29 @@ def _merge_feature(f: FeatureSpec, payload: dict) -> None:
 
 # ── op handlers ───────────────────────────────────────────────────────────────
 
+def _op_add_body(ir: IrDocument, op: IrPatchOp, out: PatchOutcome) -> None:
+    _reject_unknown_payload_keys("add_body", op.payload)
+    ids = {b.id for b in ir.bodies} | set.union(*_all_ids(ir))
+    bid = op.payload.get("id") or naming.unique_name(ids, "body")
+    if bid in ids:
+        _reject(ToolErrorKind.SEMANTIC, f"body id '{bid}' already exists")
+    body = BodySpec(id=bid, name=op.payload.get("name") or bid,
+                    motion=op.payload.get("motion"))
+    ir.bodies.append(body)
+    out.created_ids.append(bid)
+    out.changes.append(f"add_body '{body.name}' (id={bid}): {op.reason or '-'}")
+
+
+def _op_update_body(ir: IrDocument, op: IrPatchOp, out: PatchOutcome) -> None:
+    _reject_unknown_payload_keys("update_body", op.payload)
+    body = next((b for b in ir.bodies if b.id == op.target_id), None)
+    if body is None:
+        _reject(ToolErrorKind.NOT_FOUND, f"body '{op.target_id}' not found")
+    updated = BodySpec.model_validate({**body.model_dump(), **op.payload})
+    ir.bodies[ir.bodies.index(body)] = updated
+    out.changes.append(f"update_body '{body.id}': {op.reason or '-'}")
+
+
 def _op_add_sketch(ir: IrDocument, op: IrPatchOp, out: PatchOutcome) -> None:
     p = op.payload
     sk_ids, _ = _all_ids(ir)
@@ -459,7 +484,7 @@ def _op_add_feature(ir: IrDocument, op: IrPatchOp, out: PatchOutcome) -> None:
     # and the rejection that followed told the model to "set base_feature and
     # sub_elements", which it had just done. Sharing one mapping means the two
     # ops cannot drift apart again.
-    _merge_feature(f, p)
+    _merge_feature(f, {k: v for k, v in p.items() if k != "body_id"})
     body.features.append(f)
     out.created_ids.append(fid)
     out.changes.append(f"add_feature '{name}' (op={f.op}, id={fid}) to body '{body.id}': {op.reason or '-'}")
@@ -577,6 +602,8 @@ def _op_rename(ir: IrDocument, op: IrPatchOp, out: PatchOutcome) -> None:
 
 
 _HANDLERS = {
+    "add_body": _op_add_body,
+    "update_body": _op_update_body,
     "add_sketch": _op_add_sketch,
     "update_sketch": _op_update_sketch,
     "add_feature": _op_add_feature,

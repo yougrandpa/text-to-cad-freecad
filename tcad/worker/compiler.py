@@ -27,7 +27,6 @@ from __future__ import annotations
 import os
 import re
 import tempfile
-import traceback
 
 import FreeCAD
 import Part
@@ -56,9 +55,11 @@ FEATURE_TYPE_MAP = {
     "additive_box": "PartDesign::AdditiveBox",
     "additive_cylinder": "PartDesign::AdditiveCylinder",
     "additive_sphere": "PartDesign::AdditiveSphere",
+    "additive_cone": "PartDesign::AdditiveCone",
     "subtractive_box": "PartDesign::SubtractiveBox",
     "subtractive_cylinder": "PartDesign::SubtractiveCylinder",
     "subtractive_sphere": "PartDesign::SubtractiveSphere",
+    "subtractive_cone": "PartDesign::SubtractiveCone",
 }
 
 # Ops whose result accumulates into a body tip and that reference a profile sketch.
@@ -1260,12 +1261,16 @@ def _build(ir: dict, out_dir: str):
 
     # Collect resulting solids from every body.
     body_shapes = []
+    body_results = []
+    body_ids = { _obj_name(b.get("id"), b.get("name")): b.get("id")
+                 for b in ir.get("bodies") or [] }
     for obj in doc.Objects:
         if getattr(obj, "TypeId", "") == "PartDesign::Body":
             try:
                 sh = obj.Shape
                 if sh is not None and not sh.isNull():
                     body_shapes.append(sh)
+                    body_results.append({"id": body_ids[obj.Name], "shape": sh})
             except Exception:  # noqa: BLE001
                 pass
 
@@ -1279,6 +1284,7 @@ def _build(ir: dict, out_dir: str):
     return {
         "doc": doc,
         "result_shape": result_shape,
+        "body_results": body_results,
         "sketches": sketches,
         "feature_chain": feature_chain,
         "errors": errors,

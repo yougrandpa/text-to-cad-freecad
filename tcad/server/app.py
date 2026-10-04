@@ -65,7 +65,7 @@ from typing import Any, AsyncIterator, get_args
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, field_validator
 from starlette.concurrency import run_in_threadpool
 from tcad.core.access import AccessMode
 

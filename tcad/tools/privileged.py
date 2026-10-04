@@ -57,7 +57,6 @@ from tcad.core.types import (
     HookDecision,
     HookEvent,
     ToolContext,
-    ToolError,
     ToolErrorKind,
     ToolResult,
     ToolSpec,

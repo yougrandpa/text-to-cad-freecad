@@ -52,7 +52,6 @@ from tcad.loop.budget import Budget, BudgetLimits
 from tcad.loop.recovery import RepeatedFailures
 from tcad.loop.strategies import LoopUntilDoneStrategy, make_strategy
 from tcad.tools.base import Services, ToolOutcome, execute_tool
-from tcad.worker.protocol import WORKER_METHODS  # noqa: F401  (ensures worker contract imported)
 
 
 @dataclass

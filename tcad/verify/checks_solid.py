@@ -18,6 +18,7 @@ Honesty rules baked in here:
 from __future__ import annotations
 
 import os
+import math
 
 from pydantic import BaseModel, ConfigDict
 
@@ -162,6 +163,15 @@ class SolidCountCheck:
         actual = d.topology.solids
         expect = self.config.solid_count_expect
         fid = ctx.ir.bodies[0].id if ctx.ir.bodies else None
+        if len(ctx.ir.bodies) > 1 and expect == 1:
+            # Count every body's independently measured shape; a total alone can
+            # hide one missing part and another disconnected, multi-solid part.
+            invalid = [b.id for b in ctx.ir.bodies if d.body_solids.get(b.id) != 1]
+            expect = len(ctx.ir.bodies)
+            if invalid or actual != expect:
+                return _r(self, "fail", "assembly requires one measured solid per body: "
+                          + ", ".join(invalid), measurements={"solids": actual},
+                          expected={"solids": expect}, feature_id=invalid[0] if invalid else fid)
         if actual == expect:
             return _r(self, "pass", f"solid count == {expect}",
                       measurements={"solids": actual}, expected={"solids": expect},
@@ -337,6 +347,25 @@ class RoundTripCheck:
         vol_ok = rel <= tol
         faces_ok = int(summary["faces"]) == d.topology.faces
         edges_ok = int(summary["edges"]) == d.topology.edges
+        if len(ctx.ir.bodies) > 1 and vol_ok and faces_ok and not edges_ok:
+            # STEP sewing may merge coincident seam edges in an assembly.
+            # Require independent geometric evidence before accepting this.
+            area = summary.get("area")
+            bbox = summary.get("bbox") or {}
+            geometry_ok = (
+                summary.get("is_valid") is True
+                and summary.get("solids") == d.topology.solids
+                and isinstance(area, (float, int)) and math.isfinite(area)
+                and abs(area - d.area) / max(abs(d.area), 1e-12) <= tol
+                and all(isinstance(bbox.get(k), (int, float)) and math.isfinite(bbox[k])
+                        and abs(bbox[k] - v) <= self.config.bbox_tol_mm
+                        for k, v in d.bbox.model_dump().items()))
+            if geometry_ok:
+                return _r(self, "pass", "STEP geometry consistent; assembly seam edge count changed",
+                          measurements={"step_volume": summary["volume"], "step_area": area,
+                                        "step_faces": summary["faces"], "step_edges": summary["edges"],
+                                        "reference_edges": d.topology.edges, "topology_changed": True},
+                          evidence=[step_path])
         if vol_ok and faces_ok and edges_ok:
             return _r(self, "pass", "STEP round-trip consistent",
                       measurements={"step_volume": summary["volume"],

@@ -19,17 +19,6 @@ from tcad.core.types import GateReport, TurnState
 from tcad.loop.budget import BudgetExhausted
 
 
-def score_candidate(report: GateReport) -> tuple[int, int]:
-    """Lower is better: (blocking_failures, advisory_findings)."""
-    return (len(report.blocking_failures), len(report.advisory_findings))
-
-
-def best_candidate(reports: list[GateReport]) -> GateReport | None:
-    if not reports:
-        return None
-    return min(reports, key=score_candidate)
-
-
 @runtime_checkable
 class Strategy(Protocol):
     async def run(
@@ -70,7 +59,7 @@ class LoopUntilDoneStrategy:
         return engine._finalize(turn, messages, last_report)
 
 
-class ForkJoinStrategy:
+class ForkJoinStrategy(LoopUntilDoneStrategy):
     """M2 — fork & join.
 
     Runs the same main loop, but records every candidate GateReport the model
@@ -82,14 +71,6 @@ class ForkJoinStrategy:
     def __init__(self, candidates: int = 3) -> None:
         self.candidates = candidates
 
-    async def run(self, engine: Any, turn: Any, messages: list[dict], allowed: set) -> Any:
-        last_report = await _drive(engine, turn, messages, allowed)
-        if turn.state == TurnState.SUCCEEDED:
-            return engine._finalize(turn, messages, last_report)
-        # Scoring a historical candidate does not restore its IR/artifacts.
-        # Only _drive's current-version Gate may succeed; in particular do not
-        # turn FAILED/AWAITING_APPROVAL into success with an older candidate.
-        return engine._finalize(turn, messages, last_report)
 
 
 class AdversarialStrategy:

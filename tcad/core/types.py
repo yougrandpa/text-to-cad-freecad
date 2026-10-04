@@ -467,6 +467,7 @@ class GeometryDigest(BaseModel):
     #: Edges, so a model can name one for ``base_feature`` + ``sub_elements``.
     edges: list[EdgeInfo] = Field(default_factory=list)
     measurements_available: bool = True  # False -> digest is structure-only
+    body_solids: dict[str, int] = Field(default_factory=dict)
     text: str = ""  # rendered, <= ~2000 tokens
 
 

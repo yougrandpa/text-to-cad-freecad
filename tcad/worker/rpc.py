@@ -16,7 +16,7 @@ from tcad.worker.protocol import (
     first_error, no_detail_message,
 )
 
-from tcad.worker.compiler import compile_ir
+from tcad.worker.compiler import compile_ir, _measure
 from tcad.worker.introspect import introspect_document
 from tcad.worker.mesh import tessellate
 from tcad.worker.exporters import export_artifacts
@@ -52,12 +52,7 @@ def _import_asset(path=None, fmt=None, out_dir=None, **_extra) -> dict:
     try:
         sh = __import__("Part").Shape()
         sh.read(path)
-        summary = {
-            "solids": len(sh.Solids), "faces": len(sh.Faces),
-            "edges": len(sh.Edges), "vertexes": len(sh.Vertexes),
-            "volume": float(sh.Volume), "is_valid": bool(sh.isValid()),
-            "shape_type": str(sh.ShapeType),
-        }
+        summary = _measure(sh)
         return {"ok": True, "shape_summary": summary}
     except Exception as exc:  # noqa: BLE001
         return {"ok": False, "error": f"import failed: {type(exc).__name__}: {exc}",

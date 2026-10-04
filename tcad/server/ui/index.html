@@ -6,7 +6,7 @@
 <title>tcad · 对话式 CAD</title>
 <link rel="icon" type="image/svg+xml" href="./favicon.svg">
 <link rel="icon" type="image/png" sizes="64x64" href="./favicon.png">
-<link rel="stylesheet" href="./styles.css?v=20261004-permission-menu">
+<link rel="stylesheet" href="./styles.css?v=20261004-motion">
 </head>
 <body>
 
@@ -140,6 +140,11 @@
       </details>
     </div>
     <div class="view-status" id="viewStatus" role="status" aria-live="polite">真实网格 · 自由旋转 / 缩放 / 平移</div>
+    <div class="motion-controls" id="motionControls" hidden>
+      <label for="crankAngle">摇杆转角 <output id="crankAngleValue">0°</output></label>
+      <input id="crankAngle" type="range" min="0" max="720" step="1" value="0">
+      <div class="muted small">按声明的传动比演示 · 未验证碰撞、齿面接触或实际切削</div>
+    </div>
     <div class="filebar" id="fileBar"></div>
   </section>
 
@@ -224,6 +229,6 @@
   </div>
 </div>
 
-<script type="module" src="./app.js?v=20261004-permission-menu"></script>
+<script type="module" src="./app.js?v=20261004-motion"></script>
 </body>
 </html>

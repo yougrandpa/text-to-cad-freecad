@@ -14,15 +14,11 @@ talk to a worker that returns *copies* of geometry, never the live document.
 from __future__ import annotations
 
 import asyncio
-import functools
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
-from pydantic import BaseModel, Field
-
 from tcad.core.types import (
     GateReport,
-    HookDecision,
     HookEvent,
     HookResult,
     ImageRef,
@@ -38,7 +34,6 @@ from tcad.core.types import (
     ToolTier,
     TurnKind,
 )
-from tcad.ir.schema import IrPatch as _IrPatch  # noqa: F401  (re-export for handlers)
 from tcad.tools.schema_check import validate_tool_args
 from tcad.core.access import AccessMode, READ_ONLY_TOOLS
 

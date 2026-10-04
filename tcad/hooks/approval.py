@@ -21,9 +21,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Protocol, runtime_checkable
 
-from pydantic import BaseModel, Field
-
-from tcad.core.types import HookSpec  # noqa: F401  (kept for symmetry of imports)
+from pydantic import BaseModel
 
 
 #: How much of the digest is kept. 16 hex chars = 64 bits is plenty to bind one

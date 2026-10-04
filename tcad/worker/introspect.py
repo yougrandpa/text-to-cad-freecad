@@ -443,6 +443,7 @@ def introspect_document(ir: dict | None = None, out_dir: str = "", **_extra) -> 
         "edges": edges,
         "spec_deviation": {},
         "measurements_available": shape is not None and not shape.isNull(),
+        "body_solids": {b["id"]: len(b["shape"].Solids) for b in built["body_results"]},
         "text": "",
     }
     digest["text"] = _render_text(

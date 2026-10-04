@@ -19,10 +19,11 @@ from typing import Any, Callable
 
 from fastapi import HTTPException
 from fastapi.responses import Response
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from tcad.core.ids import InvalidIdentifier, contained_path, ensure_safe_id
 from tcad.core.types import Mesh
+from tcad.ir.schema import RotaryMotionSpec
 from tcad.worker.protocol import M_TESSELLATE
 
 MIN_TOLERANCE = 0.1
@@ -42,10 +43,43 @@ class PreviewMesh(Mesh):
     facet_count: int
 
 
+class PreviewMotion(RotaryMotionSpec):
+    body_id: str
+    vertex_start: int = Field(ge=0)
+    vertex_count: int = Field(gt=0)
+
+
 class MeshPreviewResponse(BaseModel):
     model_id: str
     version: int
     mesh: PreviewMesh
+    motion: list[PreviewMotion] = Field(default_factory=list)
+
+
+def _checked_motion(raw: Any, ir_data: dict, vertex_count: int) -> list[dict]:
+    """Accept only measured ranges corresponding to the stored declarations."""
+    declared = {b["id"]: b["motion"] for b in ir_data["bodies"] if b.get("motion")}
+    if raw is None:
+        raw = []
+    if not isinstance(raw, list) or len(raw) != len(declared):
+        raise HTTPException(502, "worker returned incomplete body motion ranges")
+    out, seen, ranges = [], set(), []
+    for value in raw:
+        try:
+            item = PreviewMotion.model_validate(value)
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(502, "worker returned invalid body motion") from exc
+        spec = {k: item.model_dump()[k] for k in ("pivot", "axis", "ratio")}
+        start, end = item.vertex_start, item.vertex_start + item.vertex_count
+        if (item.body_id in seen or declared.get(item.body_id) != spec or end > vertex_count
+                or math.hypot(*item.axis.as_tuple()) <= 1e-12
+                or not all(math.isfinite(v) for v in (*item.pivot.as_tuple(), *item.axis.as_tuple()))
+                or any(start < hi and end > lo for lo, hi in ranges)):
+            raise HTTPException(502, "worker motion does not match the stored model")
+        seen.add(item.body_id)
+        ranges.append((start, end))
+        out.append(item.model_dump(mode="json"))
+    return out
 
 
 class MeshPreviewCache:
@@ -194,8 +228,12 @@ def mesh_preview(
             status = 504 if kind == "timeout" else 503 if kind == "runtime" else 422
             raise HTTPException(status, f"cannot tessellate model: {message or 'tessellate failed'}")
         mesh = _checked_mesh(result.get("mesh") if isinstance(result, dict) else None)
+        motion = _checked_motion(result.get("motion"), ir_data, mesh["vertex_count"])
+        payload = {"model_id": model_id, "version": actual_version, "mesh": mesh}
+        if motion:
+            payload["motion"] = motion
         body = json.dumps(
-            {"model_id": model_id, "version": actual_version, "mesh": mesh},
+            payload,
             ensure_ascii=False, allow_nan=False, separators=(",", ":"),
         ).encode("utf-8")
         if len(body) > MAX_RESPONSE_BYTES:

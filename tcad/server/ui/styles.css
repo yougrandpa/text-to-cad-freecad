@@ -659,3 +659,8 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); 
 .field .row #modelInput { flex: 1; min-width: 0; }
 .field .row #modelOptions { width: 125px; flex-shrink: 0; }
 #fetchModels { flex-shrink: 0; white-space: nowrap; }
+/* The motion control appears only for an assembly with declared rotating parts. */
+.motion-controls { padding: 8px 14px; border-top: 1px solid var(--line); }
+.motion-controls[hidden] { display: none; }
+.motion-controls label { display: flex; justify-content: space-between; }
+.motion-controls input { width: 100%; }

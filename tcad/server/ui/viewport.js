@@ -47,6 +47,32 @@ export function meshBounds(vertices) {
   return { min, max, center, radius, corners };
 }
 
+/** Prescribed rigid kinematics; always transform the original zero-angle mesh. */
+export function poseMesh(mesh, motion, angle) {
+  if (!Number.isFinite(angle)) throw new Error("摇杆角度必须是有限数值");
+  const vertices = mesh.vertices.map(p => [...p]);
+  const ranges = [];
+  for (const part of motion) {
+    const start = part.vertex_start, end = start + part.vertex_count;
+    const pivot = [part.pivot?.x, part.pivot?.y, part.pivot?.z];
+    const axis = [part.axis?.x, part.axis?.y, part.axis?.z];
+    const norm = length(axis);
+    if (!Number.isInteger(start) || !Number.isInteger(part.vertex_count) || start < 0 ||
+        part.vertex_count <= 0 || end > vertices.length || !pivot.every(Number.isFinite) ||
+        !axis.every(Number.isFinite) || !(norm > 1e-12) || !Number.isFinite(part.ratio) ||
+        ranges.some(([lo, hi]) => start < hi && end > lo)) throw new Error("零件运动参数无效");
+    ranges.push([start, end]);
+    const u = axis.map(v => v / norm), theta = angle * Math.PI / 180 * part.ratio;
+    if (!Number.isFinite(theta)) throw new Error("零件转角超出范围");
+    const c = Math.cos(theta), s = Math.sin(theta);
+    for (let i = start; i < end; i++) {
+      const p = sub(mesh.vertices[i], pivot), w = cross(u, p), d = dot(u, p);
+      vertices[i] = p.map((v, j) => pivot[j] + v*c + w[j]*s + u[j]*d*(1-c));
+    }
+  }
+  return { ...mesh, vertices };
+}
+
 export class OrbitCamera {
   constructor() { this.reset(); }
   reset() {
@@ -170,9 +196,12 @@ void main() {
 }`;
 
 export class MeshViewport {
-  constructor(canvas, { axes = null, onChange = () => {}, onError = () => {} } = {}) {
+  constructor(canvas, { axes = null, motionControls = null, onChange = () => {}, onError = () => {} } = {}) {
     this.canvas = canvas;
     this.axes = axes;
+    this.motionControls = motionControls;
+    this.motion = [];
+    this.motionSource = null;
     this.onChange = onChange;
     this.onError = onError;
     this.camera = new OrbitCamera();
@@ -181,6 +210,12 @@ export class MeshViewport {
     this.pointers = new Map();
     this.listeners = [];
     this.frame = null;
+    if (motionControls) this.listen(motionControls.input, "input", () => {
+      if (!this.hasMesh || !this.motion.length) return;
+      const angle = Number(motionControls.input.value);
+      this._uploadMesh(poseMesh(this.motionSource, this.motion, angle));
+      motionControls.output.textContent = `${angle}°`;
+    });
     try {
       this.gl = canvas.getContext("webgl", { antialias: true, alpha: true }) || canvas.getContext("experimental-webgl");
       if (!this.gl) throw new Error("浏览器未启用 WebGL");
@@ -227,7 +262,19 @@ export class MeshViewport {
     finally { for (const shader of shaders) gl.deleteShader(shader); }
   }
   get aspect() { return Math.max(this.canvas.clientWidth, 1) / Math.max(this.canvas.clientHeight, 1); }
-  setMesh(mesh) {
+  setMesh(mesh, motion = []) {
+    poseMesh(mesh, motion, 0); // Validate before replacing the displayed model.
+    const count = this._uploadMesh(mesh);
+    this.motionSource = mesh;
+    this.motion = motion;
+    if (this.motionControls) {
+      this.motionControls.root.hidden = motion.length === 0;
+      this.motionControls.input.value = "0";
+      this.motionControls.output.textContent = "0°";
+    }
+    return count;
+  }
+  _uploadMesh(mesh) {
     if (!this.available) throw new Error(this.error || "WebGL 不可用");
     const data = prepareMesh(mesh), gl = this.gl;
     gl.bindBuffer(gl.ARRAY_BUFFER, this.triangleBuffer);
@@ -250,6 +297,9 @@ export class MeshViewport {
   }
   clear({ resetCamera = false } = {}) {
     this.hasMesh = false;
+    this.motion = [];
+    this.motionSource = null;
+    if (this.motionControls) this.motionControls.root.hidden = true;
     this.pointers.clear();
     this.canvas.classList.remove("dragging");
     this.canvas.hidden = true;

@@ -21,11 +21,13 @@ validation stays where it already lives (``IrPatch.model_validate`` inside
 from __future__ import annotations
 
 from typing import Any
+import math
 
 #: Keywords this checker understands.
 SUPPORTED: frozenset[str] = frozenset({
     "type", "required", "properties", "items", "enum",
     "minLength", "maxLength", "minItems", "maxItems",
+    "minimum", "maximum",
     "anyOf", "oneOf", "$ref", "$defs", "additionalProperties",
     # annotations: carried in the schema, no constraint to enforce
     "title", "description", "default",
@@ -111,6 +113,14 @@ def check(args: Any, schema: dict, *, path: str = "arguments", root: dict | None
     enum = schema.get("enum")
     if isinstance(enum, list) and args not in enum:
         return [f"{path}: {_describe(args)} is not one of {enum}"]
+
+    if isinstance(args, (int, float)) and not isinstance(args, bool):
+        if not math.isfinite(args):
+            return [f"{path}: number must be finite"]
+        if "minimum" in schema and args < schema["minimum"]:
+            problems.append(f"{path}: {args} is below minimum={schema['minimum']}")
+        if "maximum" in schema and args > schema["maximum"]:
+            problems.append(f"{path}: {args} exceeds maximum={schema['maximum']}")
 
     bounds = (("minLength", "maxLength") if isinstance(args, str) else
               ("minItems", "maxItems") if isinstance(args, list) else None)

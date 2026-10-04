@@ -43,13 +43,10 @@ from tcad.core.types import (
     GeometryDigest,
     HookDecision,
     HookEvent,
-    Mesh,
-    ToolError,
     ToolErrorKind,
     ToolResult,
 )
 from tcad.store.artifacts import write_build_stamp
-from tcad.tools.base import ToolOutcome
 from tcad.worker.protocol import M_COMPILE_IR, M_EXPORT, M_INTROSPECT
 
 from tcad.tools.ir_tools import _err, _ok  # shared helpers
@@ -118,7 +115,7 @@ def _format_report(report: GateReport, ir: Any = None) -> str:
             text
             + " ⚠ NOT JUDGED AGAINST ANY REQUEST: no confirmed requirement was"
             " recorded, so the Gate verified only that the geometry is"
-            " self-consistent (one solid, exportable, STEP round-trip). It has NOT"
+            " self-consistent (solid/body structure, exportable, STEP round-trip). It has NOT"
             " verified that the part matches what was asked for. If the user named"
             " any size, count or position, record it with update_requirement"
             ' ("confirmed": true) and commit again — otherwise nothing checks it.'

@@ -35,7 +35,7 @@ import threading
 from pathlib import Path
 
 from tcad.core.ids import contained_path, ensure_safe_id
-from tcad.core.types import IrEvent, ToolError, ToolErrorKind
+from tcad.core.types import IrEvent
 from tcad.ir.patch import PatchOutcome, apply_patch
 from tcad.ir.schema import IrDocument, IrPatch
 from tcad.store.event_log import EventLog

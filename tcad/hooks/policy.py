@@ -16,7 +16,7 @@ import re
 from datetime import datetime, timezone
 from typing import Callable, Optional, Protocol, runtime_checkable
 
-from tcad.core.types import HookDecision, HookEvent, HookResult, HookSpec
+from tcad.core.types import HookDecision, HookEvent, HookResult
 from tcad.hooks.approval import args_fingerprint
 
 # A tool name is "privileged" only when the payload explicitly says so. The gate

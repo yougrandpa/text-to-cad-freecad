@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field
 
 from tcad.config.providers import get_provider
 from tcad.config.settings import LlmSettings
-from tcad.llm.client import LlmReply, TokenUsage
+from tcad.llm.client import LlmReply
 
 # ══════════════════════════════════════════════════════════════════════════
 # probing

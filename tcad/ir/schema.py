@@ -179,17 +179,19 @@ FEATURE_TYPE_MAP: dict[str, str] = {
     "additive_box": "PartDesign::AdditiveBox",
     "additive_cylinder": "PartDesign::AdditiveCylinder",
     "additive_sphere": "PartDesign::AdditiveSphere",
+    "additive_cone": "PartDesign::AdditiveCone",
     "subtractive_box": "PartDesign::SubtractiveBox",
     "subtractive_cylinder": "PartDesign::SubtractiveCylinder",
     "subtractive_sphere": "PartDesign::SubtractiveSphere",
+    "subtractive_cone": "PartDesign::SubtractiveCone",
 }
 
 FeatureOp = Literal[
     "pad", "pocket", "revolution", "groove", "fillet", "chamfer", "draft",
     "thickness", "hole", "mirrored", "linear_pattern", "circular_pattern",
     "polar_pattern", "multi_transform", "datum_plane",
-    "additive_box", "additive_cylinder", "additive_sphere",
-    "subtractive_box", "subtractive_cylinder", "subtractive_sphere",
+    "additive_box", "additive_cylinder", "additive_sphere", "additive_cone",
+    "subtractive_box", "subtractive_cylinder", "subtractive_sphere", "subtractive_cone",
 ]
 
 
@@ -233,11 +235,21 @@ class FeatureSpec(BaseModel):
     placement: PlacementSpec | None = None
 
 
+class RotaryMotionSpec(BaseModel):
+    """Prescribed rigid rotation for previews, not a dynamics/cutting solver."""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    pivot: Vec3
+    axis: Vec3
+    ratio: float = 1.0  # body angle = input crank angle * ratio
+
+
 class BodySpec(BaseModel):
     id: str
     name: str
     sketches: list[SketchSpec] = Field(default_factory=list)
     features: list[FeatureSpec] = Field(default_factory=list)  # list order = build order
+    motion: RotaryMotionSpec | None = None
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -311,6 +323,7 @@ class IrDocument(BaseModel):
 # ══════════════════════════════════════════════════════════════════════════
 
 PatchOpName = Literal[
+    "add_body", "update_body",
     "add_sketch", "update_sketch", "add_feature", "update_feature",
     "remove_feature", "update_requirement", "rename",
 ]

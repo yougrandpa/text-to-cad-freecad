@@ -238,3 +238,13 @@ def test_real_tools_accept_their_documented_minimal_call():
         spec = registry.get(name)
         assert spec is not None, name
         assert validate_tool_args(args, spec) == [], name
+
+
+@pytest.mark.parametrize("value", [-721, 721, float("nan"), float("inf")])
+def test_motion_angle_numeric_bounds_are_enforced(value):
+    assert check(value, {"type": "number", "minimum": -720, "maximum": 720})
+
+
+@pytest.mark.parametrize("value", [-720, 0, 720])
+def test_motion_angle_boundary_values_are_allowed(value):
+    assert check(value, {"type": "number", "minimum": -720, "maximum": 720}) == []

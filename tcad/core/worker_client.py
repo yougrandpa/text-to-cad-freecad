@@ -37,11 +37,6 @@ from tcad.core.types import RpcError, RpcRequest, RpcResponse, ToolErrorKind
 from tcad.worker.protocol import (
     DEFAULT_REQUEST_TIMEOUT_S,
     ERROR_KINDS,
-    K_ERROR,
-    K_KIND,
-    K_MESSAGE,
-    K_OK,
-    K_RESULT,
     M_API_SELFTEST,
     M_PING,
     WORKER_METHODS,

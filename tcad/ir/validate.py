@@ -247,8 +247,8 @@ _PLANE_OPS: dict[str, str] = {"mirrored": "MirrorPlane", "draft": "NeutralPlane"
 #: them a placement would be a second, contradictory answer to the same question.
 #: Measured on the real kernel in ``tests/contract/test_primitive_placement.py``.
 _PLACEMENT_OPS: frozenset[str] = frozenset({
-    "additive_box", "additive_cylinder", "additive_sphere",
-    "subtractive_box", "subtractive_cylinder", "subtractive_sphere",
+    "additive_box", "additive_cylinder", "additive_sphere", "additive_cone",
+    "subtractive_box", "subtractive_cylinder", "subtractive_sphere", "subtractive_cone",
 })
 
 #: Ops that repeat features and therefore need ``params.axis`` to say along/about
@@ -259,8 +259,8 @@ _ORIGIN_PLANE_NAMES: frozenset[str] = frozenset({"XY", "XZ", "YZ"})
 
 _UNVERIFIED_OPS: frozenset[str] = frozenset({
     "multi_transform", "datum_plane",
-    "additive_box", "additive_cylinder", "additive_sphere",
-    "subtractive_box", "subtractive_cylinder", "subtractive_sphere",
+    "additive_box", "additive_cylinder", "additive_sphere", "additive_cone",
+    "subtractive_box", "subtractive_cylinder", "subtractive_sphere", "subtractive_cone",
 })
 
 
@@ -290,6 +290,19 @@ def validate_ir(ir: IrDocument) -> list[ValidationIssue]:
 
     # 1) Unique ids within the document (sketch<->feature clash included).
     seen: set[str] = set()
+    for body in ir.bodies:
+        if body.id in seen:
+            issues.append(ValidationIssue(code="dup_body_id", severity="error",
+                          message=f"duplicate body id '{body.id}'", target_id=body.id))
+        seen.add(body.id)
+        if body.motion is not None:
+            motion = body.motion
+            values = (*motion.pivot.as_tuple(), *motion.axis.as_tuple(), motion.ratio)
+            if not all(math.isfinite(v) for v in values):
+                issues.append(_finite_issue("body motion", body.id))
+            elif math.hypot(*motion.axis.as_tuple()) <= 1e-12:
+                issues.append(ValidationIssue(code="motion_axis_zero", severity="error",
+                              message="motion axis must be non-zero", target_id=body.id))
     for s in sketches:
         if s.id in seen:
             issues.append(ValidationIssue(

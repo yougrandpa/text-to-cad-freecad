@@ -173,7 +173,7 @@ class WorkerReadbackHandle(BaseModel):
 
     worker: Any
 
-    def read_step_summary(self, step_path: str) -> dict[str, float]:
+    def read_step_summary(self, step_path: str) -> dict:
         """Re-measure the on-disk STEP through the worker's import path.
 
         The Gate is synchronous, so we must use the worker's *blocking* entry
@@ -197,7 +197,7 @@ class WorkerReadbackHandle(BaseModel):
                 "provides request_sync) into CheckContext.worker"
             )
         summary = raw.get("shape_summary") or raw.get("result", {}) or raw
-        return {
+        return {**summary,
             "volume": float(summary.get("volume", 0.0)),
             "faces": float(summary.get("faces", 0.0)),
             "edges": float(summary.get("edges", 0.0)),

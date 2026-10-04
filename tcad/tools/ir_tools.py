@@ -16,8 +16,6 @@ import functools
 import json
 
 from tcad.core.types import (
-    GateReport,
-    ImageRef,
     IrPatch,
     ToolContext,
     ToolError,
@@ -27,7 +25,6 @@ from tcad.core.types import (
     ToolTier,
 )
 from tcad.ir import capability
-from tcad.ir.schema import IrDocument
 
 
 def _ok(content: str, **kw: object) -> ToolResult:
@@ -129,7 +126,8 @@ async def ir_commit_handler(services: "Any", args: dict, ctx: ToolContext) -> "A
     Returns a :class:`ToolOutcome` carrying the GateReport. The engine reads
     ``GateReport.passed`` to decide success — this handler never does.
     """
-    from tcad.loop.commit import ToolOutcome, run_commit  # local import keeps layers clean
+    from tcad.loop.commit import run_commit  # local import keeps layers clean
+    from tcad.tools.base import ToolOutcome
 
     message = args.get("message", "") if isinstance(args, dict) else ""
     version = services.store.current_version(ctx.model_id)
@@ -148,6 +146,26 @@ ops is a list of {"op": <name>, "target_id"?: <id>, "payload": {...}, "reason": 
 "move that hole" requests resolvable later).
 
 op names and their payload shapes:
+
+  add_body     payload = {"id": "crank", "name": "crank_assembly"}.
+               Creates an EMPTY independent solid body. Add sketches/features to it
+               with body_id. Use separate bodies for housing, shafts, gears, grip
+               and cutter; disconnected moving parts must not be fused into one body.
+               Each body must finish as exactly one valid solid before ir_commit.
+               For a toothed wheel, draw ONE closed profile sketch and pad it;
+               dozens of additive tooth primitives repeatedly fuse the BRep and
+               can time out. A polygon/toothed outline is only an approximate
+               wheel unless its tooth form and contact are independently verified.
+  update_body  target_id = body id; payload may set name and/or motion:
+               {"motion": {"pivot": {"x":30,"y":0,"z":40},
+                           "axis": {"x":0,"y":1,"z":0}, "ratio": 1.0}}.
+               The viewport rotates this body about the world pivot/axis by
+               input crank angle * ratio. Housing has motion=null. Bodies on the
+               same shaft share pivot/axis/ratio. An external gear pair uses
+               ratio = -driver_teeth / driven_teeth. Geometry is the zero-angle
+               pose. This is prescribed rigid kinematics only: it does NOT prove
+               tooth contact, collision clearance, torque or material removal.
+               Do not call star polygons verified gears or claim cutting simulation.
 
   add_sketch   payload is a sketch:
       {"id": "sk_base", "name": "base_outline",
@@ -287,6 +305,10 @@ op names and their payload shapes:
       size. Pass lowercase keys matching the object's properties, e.g.
       {"length": 30, "width": 10, "height": 10}. An unknown key comes back as
       "unsupported property" — read the object with ir_get rather than guessing.
+      Cone primitives (additive_cone/subtractive_cone): params
+      {"radius1": <base mm>, "radius2": <tip mm, may be 0>, "height": <mm>}.
+      Local +Z is the cone axis; use placement to rotate and position it.
+
       WHERE a primitive goes is the typed "placement" field, in WORLD mm:
         "placement": {"position": {"x": 20, "y": 30, "z": 0}}
         "placement": {"position": {"x": 40, "y": 25, "z": 8},
@@ -337,8 +359,10 @@ op names and their payload shapes:
             normal and centre — pick by intent ("the +Z face of area 4000") rather
             than guessing a number, which shifts when the model changes. The name
             is FreeCAD's 1-based `Face<N>`.
-            A face-attached sketch is interpreted in THAT face's frame, so the
-            profile coordinates are relative to the face, not to the world origin.
+            Face-attached geometry still uses WORLD x/y/z coordinates on that
+            face. The compiler maps these into the face's local frame; do not
+            supply local (u,v) in x/y. A Y-normal face at y=15 needs profile points
+            {"x":..,"y":15,"z":..}, not {"x":u,"y":v,"z":0}.
         (b) keep the sketch on an origin plane and write the profile's WORLD
             coordinates so it sits inside the torso's extent, overlapping it.
             Use coordinates for this, NOT `offset`: sketch coordinates are world
@@ -347,8 +371,8 @@ op names and their payload shapes:
             (measured on the real kernel — a 40x20 XY rectangle with
             offset=(10,10,0) pads to a body still at the origin). A non-zero
             offset now draws a warning saying exactly that.
-      (a) is usually less work: face attachment inherits that face's coordinate
-      system, so there is no mapping to work out by hand.
+      Face attachment inherits the face normal and support. Write the profile
+      on its measured world plane; do not guess the face's local axes.
 
       `refs` must stay acyclic.
 

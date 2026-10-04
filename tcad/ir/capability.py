@@ -45,6 +45,8 @@ class OpCapability(NamedTuple):
 
 
 _CAPABILITIES: dict[str, OpCapability] = {
+    "additive_cone": OpCapability(VERIFIED, "tests/contract/test_cone_assembly_motion.py (placed analytic cone volume and conical bore subtraction)"),
+    "subtractive_cone": OpCapability(VERIFIED, "tests/contract/test_cone_assembly_motion.py (placed analytic cone volume and conical bore subtraction)"),
     # ── verified on the real kernel ─────────────────────────────────────────
     "pad": OpCapability(
         VERIFIED,
