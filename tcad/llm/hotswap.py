@@ -46,6 +46,7 @@ class ProbeResult(BaseModel):
     base_url: str = ""
     model: str = ""
     latency_ms: float | None = None
+    free_models: list[str] = Field(default_factory=list)
     models: list[str] = Field(default_factory=list)
     """Live model list, when the provider exposes one. The UI prefers this over
     the preset's stale candidate names."""
@@ -156,7 +157,33 @@ async def probe_llm(
     errors: list[str] = []
     try:
         t0 = time.perf_counter()
-        listing = await client.models.list()
+        from urllib.parse import urlsplit
+
+        url = urlsplit(base)
+        if url.hostname == "opencode.ai" and url.path.rstrip("/") == "/inference/openai/v1":
+            from openai.pagination import SyncPage
+            from openai.types import Model
+
+            listing = await client.get(
+                f"{url.scheme}://{url.netloc}/inference/v1/models",
+                cast_to=SyncPage[Model],
+            )
+            # The gateway list includes models served through other protocols.
+            listing.data = [m for m in listing.data if not m.id.startswith(
+                ("gpt-", "claude-", "qwen", "gemini-")
+            )]
+        else:
+            listing = await client.models.list()
+        if url.hostname == "openrouter.ai":
+            for model in getattr(listing, "data", []):
+                pricing = getattr(model, "pricing", None)
+                if not isinstance(pricing, dict) or not {"prompt", "completion"} <= pricing.keys():
+                    continue
+                try:
+                    if all(float(cost) == 0 for cost in pricing.values()):
+                        result.free_models.append(model.id)
+                except (TypeError, ValueError):
+                    pass
         result.latency_ms = round((time.perf_counter() - t0) * 1000, 1)
         try:
             result.models = sorted(
@@ -170,6 +197,13 @@ async def probe_llm(
             return result
         errors.append("models.list 返回空列表")
     except Exception as exc:  # noqa: BLE001
+        from openai import APIStatusError
+
+        if isinstance(exc, APIStatusError) and exc.status_code in (401, 403):
+            result.error_type = "authentication" if exc.status_code == 401 else "permission_denied"
+            result.detail = "请检查 API Key、令牌分组及账号权限；模型列表被服务端拒绝。"
+            result.error = result.detail + " " + _describe_failure(settings, exc)
+            return result
         errors.append(_describe_failure(settings, exc))
 
     if not result.model:

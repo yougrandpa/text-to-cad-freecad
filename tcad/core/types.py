@@ -243,12 +243,17 @@ class ToolSpec(BaseModel):
     concurrency_safe: bool = False
 
     def as_openai_tool(self) -> dict[str, Any]:
+        # Some compatible gateways require an explicit required list, even
+        # when every argument is optional. Do not mutate the validation schema.
+        parameters = dict(self.params_schema)
+        if parameters.get("type") == "object":
+            parameters.setdefault("required", [])
         return {
             "type": "function",
             "function": {
                 "name": self.name,
                 "description": self.description,
-                "parameters": self.params_schema,
+                "parameters": parameters,
             },
         }
 

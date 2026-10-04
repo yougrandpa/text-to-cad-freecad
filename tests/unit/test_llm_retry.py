@@ -409,3 +409,29 @@ async def test_sdk_transport_has_no_hidden_retry_layer(sleeps):
 
     assert len(attempts) == 3
     assert sleeps == [1.0, 2.0]
+
+
+async def test_shared_pool_limit_waits_longer_and_preserves_request(make_client, sleeps):
+    error = _status_error(429, body={"error": {"metadata": {
+        "limit_source": "upstream_provider_shared_pool"}}})
+    client, create = make_client(error, error, _response())
+    await client.chat(messages=[])
+    assert sleeps == [10.0, 20.0]
+    assert create.await_count == 3
+
+
+async def test_shared_pool_retry_after_takes_precedence(make_client, sleeps):
+    error = _status_error(429, headers={"retry-after": "7"}, body={"error": {
+        "metadata": {"limit_source": "upstream_provider_shared_pool"}}})
+    client, _ = make_client(error, _response())
+    await client.chat(messages=[])
+    assert sleeps == [7.0]
+
+
+def test_shared_pool_failure_message_is_actionable():
+    from tcad.llm.client import describe_llm_failure
+    error = _status_error(429, body={"error": {"metadata": {
+        "limit_source": "upstream_provider_shared_pool"}}})
+    message = describe_llm_failure(error)
+    assert "429" in message and "继续" in message and "openrouter/free" in message
+    assert "user_id" not in message

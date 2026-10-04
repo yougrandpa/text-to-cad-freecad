@@ -1123,19 +1123,48 @@ function fillProviderSelect(providers, selected) {
   }
 }
 
+function syncProviderEndpoint() {
+  const preset = state.providers.find((p) => p.id === $("providerSelect").value);
+  const input = $("baseUrlInput");
+  input.disabled = Boolean(preset && preset.id !== "custom");
+  if (input.disabled) input.value = preset.base_url || "";
+}
+
+function bindSettingsDismissal() {
+  const modal = $("settingsModal");
+  let pressedBackdrop = false;
+  modal.addEventListener("pointerdown", (event) => {
+    pressedBackdrop = event.target === modal;
+  });
+  modal.addEventListener("pointercancel", () => { pressedBackdrop = false; });
+  modal.addEventListener("click", (event) => {
+    if (pressedBackdrop && event.target === modal) modal.hidden = true;
+    pressedBackdrop = false;
+  });
+}
+
 function applyProviderDefaults() {
   const id = $("providerSelect").value;
   const preset = state.providers.find((p) => p.id === id);
   if (!preset) return;
   $("baseUrlInput").value = preset.base_url || "";
+  syncProviderEndpoint();
   $("modelInput").value = preset.default_model || "";
   fillModelOptions(preset.models || [], "预设候选（点「列模型」获取实时列表）");
 }
 
-function fillModelOptions(models, hint) {
+function fillModelOptions(models, hint, freeModels = []) {
   const list = $("modelOptions");
-  list.replaceChildren();
-  for (const m of models) list.append(el("option", { value: m }));
+  list.replaceChildren(el("option", { value: "", text: "选择模型…" }));
+  const isOpenRouter = $("providerSelect").value === "openrouter";
+  const free = new Set(freeModels);
+  const isFree = (model) => isOpenRouter &&
+    (free.has(model) || model.endsWith(":free") || model === "openrouter/free");
+  const ordered = [...models].sort((a, b) => Number(isFree(b)) - Number(isFree(a)));
+  for (const m of ordered) list.append(el("option", {
+    value: m, text: isFree(m) ? `免费 · ${m}` : m,
+  }));
+  list.disabled = models.length === 0;
   if (hint !== undefined) $("modelsHint").textContent = hint;
 }
 
@@ -1168,6 +1197,7 @@ async function openSettings() {
     fillProviderSelect(providers, current.settings.provider);
     $("modelInput").value = current.settings.model || "";
     $("baseUrlInput").value = current.settings.base_url || "";
+    syncProviderEndpoint();
     $("apiKeyInput").value = "";
     $("tempInput").value = current.settings.temperature ?? 0.2;
     $("tempOut").textContent = Number(current.settings.temperature ?? 0.2).toFixed(2);
@@ -1283,13 +1313,16 @@ async function fetchModels() {
   btn.disabled = true;
   btn.textContent = "…";
   try {
-    const provider = $("providerSelect").value;
-    const body = await api(`/settings/models?provider=${encodeURIComponent(provider)}`);
+    const body = await api("/settings/models", {
+      method: "POST",
+      body: JSON.stringify(settingsPatch()),
+    });
     if (body.models?.length) {
       fillModelOptions(body.models,
         body.source === "live"
           ? `来自供应商的实时列表（${body.models.length} 个）`
-          : `供应商未返回列表，显示预设候选（${body.error || ""}）`);
+          : `供应商未返回列表，显示预设候选（${body.error || ""}）`,
+        body.free_models || []);
       if (!$("modelInput").value) $("modelInput").value = body.models[0];
     } else {
       fillModelOptions([], `没有拿到模型列表：${body.error || "未知原因"}`);
@@ -1470,6 +1503,10 @@ function wire() {
   $("probeBtn").addEventListener("click", probeSettings);
   $("fetchModels").addEventListener("click", fetchModels);
   $("providerSelect").addEventListener("change", applyProviderDefaults);
+  $("modelOptions").addEventListener("change", () => {
+    if ($("modelOptions").value) $("modelInput").value = $("modelOptions").value;
+    $("modelOptions").value = "";
+  });
   $("clearKey").addEventListener("click", async () => {
     // Explicit null, which the API reads as "clear" — distinct from omitting
     // the field, which means "leave the stored credential alone".
@@ -1487,9 +1524,7 @@ function wire() {
   $("tempInput").addEventListener("input", (e) => {
     $("tempOut").textContent = Number(e.target.value).toFixed(2);
   });
-  $("settingsModal").addEventListener("click", (e) => {
-    if (e.target === $("settingsModal")) $("settingsModal").hidden = true;
-  });
+  bindSettingsDismissal();
 }
 
 // A turn with no work ceiling can legitimately run for a long time, and nothing

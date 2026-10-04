@@ -230,3 +230,109 @@ async def test_probe_reflects_the_proxy_setting_in_its_result(models_server):
     # trust_env=True with no proxy configured must still succeed
     assert result.ok is True
     assert result.via_proxy is True
+
+
+@pytest.mark.asyncio
+async def test_opencode_uses_gateway_model_list_and_chat_route(monkeypatch):
+    import httpx
+    import tcad.llm.hotswap as module
+
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        if request.method == "GET":
+            assert str(request.url) == "https://opencode.ai/inference/v1/models"
+            return httpx.Response(200, json={"object": "list", "data": [
+                {"id": model, "object": "model", "created": 0, "owned_by": "opencode"}
+                for model in ["kimi-k2.6", "gpt-5.5", "claude-sonnet-4-6", "qwen3.6-plus", "gemini-3.1-pro"]
+            ]})
+        assert str(request.url) == "https://opencode.ai/inference/openai/v1/chat/completions"
+        body = json.loads(request.content)
+        assert body["model"] == "kimi-k2.6"
+        assert body["tools"][0]["function"]["name"] == "ir_get"
+        assert request.headers["authorization"] == "Bearer test-key"
+        return httpx.Response(200, json={"id": "test", "object": "chat.completion", "created": 0,
+            "model": "kimi-k2.6", "choices": [{"index": 0, "finish_reason": "tool_calls",
+            "message": {"role": "assistant", "content": None, "tool_calls": [{"id": "call1",
+            "type": "function", "function": {"name": "ir_get", "arguments": "{}"}}]}}]})
+
+    monkeypatch.setattr(module, "_transport", lambda *a, **kw: httpx.AsyncClient(
+        transport=httpx.MockTransport(handle)))
+    settings = LlmSettings(provider="opencode", base_url="https://opencode.ai/inference", api_key="test-key")
+    result = await probe_llm(settings)
+    assert result.ok
+    assert result.models == ["kimi-k2.6"]
+    client = build_client(settings)
+    reply = await client.chat(messages=[{"role": "user", "content": "test"}],
+        tools=[{"type": "function", "function": {"name": "ir_get", "parameters": {"type": "object"}}}])
+    assert reply.tool_calls[0].name == "ir_get"
+    await client._client.close()
+    assert len(requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_openrouter_lists_models_and_roundtrips_tool_calls(monkeypatch):
+    import httpx
+    import tcad.llm.hotswap as module
+
+    model = "vendor/tool-model"
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        assert request.headers["authorization"] == "Bearer router-test-key"
+        if request.method == "GET":
+            assert str(request.url) == "https://openrouter.ai/api/v1/models"
+            return httpx.Response(200, json={"data": [
+                {"id": model, "object": "model", "created": 0, "owned_by": "vendor",
+                 "pricing": {"prompt": "0", "completion": "0"}}
+            ]})
+        assert str(request.url) == "https://openrouter.ai/api/v1/chat/completions"
+        body = json.loads(request.content)
+        assert body["model"] == model
+        assert body["tools"][0]["function"]["name"] == "ir_get"
+        assert body["tool_choice"] == "auto"
+        assert body["provider"] == {"require_parameters": True, "allow_fallbacks": True}
+        return httpx.Response(200, json={"id": "reply", "object": "chat.completion", "created": 0,
+            "model": model, "choices": [{"index": 0, "finish_reason": "tool_calls",
+            "message": {"role": "assistant", "content": None, "tool_calls": [{"id": "call1",
+            "type": "function", "function": {"name": "ir_get", "arguments": "{}"}}]}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}})
+
+    monkeypatch.setattr(module, "_transport", lambda *a, **kw: httpx.AsyncClient(
+        transport=httpx.MockTransport(handle)))
+    settings = LlmSettings(provider="openrouter", model=model, api_key="router-test-key")
+    result = await probe_llm(settings)
+    assert result.ok and result.models == [model]
+    assert result.free_models == [model]
+    client = build_client(settings)
+    try:
+        reply = await client.chat(messages=[{"role": "user", "content": "test"}],
+            tools=[{"type": "function", "function": {"name": "ir_get", "parameters": {"type": "object"}}}],
+            tool_choice="auto")
+        assert reply.tool_calls[0].name == "ir_get"
+        assert reply.tool_calls[0].args == {}
+        assert reply.usage.prompt_tokens == 10
+    finally:
+        await client._client.close()
+    assert len(requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_model_listing_permission_denial_does_not_attempt_inference(monkeypatch):
+    import httpx
+    import tcad.llm.hotswap as module
+
+    requests = []
+    def handle(request):
+        requests.append(request)
+        assert request.method == 'GET'
+        return httpx.Response(403, json={'error': {'message': '无权访问 vip 分组', 'type': 'new_api_error'}})
+    monkeypatch.setattr(module, '_transport', lambda *a, **kw: httpx.AsyncClient(
+        transport=httpx.MockTransport(handle)))
+    result = await probe_llm(LlmSettings(provider='custom', base_url='https://gateway.example/v1', model='m', api_key='test'))
+    assert not result.ok
+    assert result.error_type == 'permission_denied'
+    assert 'vip 分组' in result.error
+    assert len(requests) == 1

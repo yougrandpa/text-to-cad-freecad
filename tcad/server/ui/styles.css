@@ -650,3 +650,12 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); 
 @keyframes access-reveal { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
 @media (prefers-reduced-motion: reduce) { .access-menu { animation: none; } .access-chevron { transition: none; } }
 @media (max-width: 680px) { .brand .tag { display: none; } .topbar { gap: 8px; } .access-trigger { padding: 0 9px; } }
+
+/* Preset endpoints are fixed; custom endpoints remain editable. */
+.field input:disabled, .field select:disabled {
+  color: var(--fg-dim); background: var(--panel); opacity: .6;
+  cursor: not-allowed;
+}
+.field .row #modelInput { flex: 1; min-width: 0; }
+.field .row #modelOptions { width: 125px; flex-shrink: 0; }
+#fetchModels { flex-shrink: 0; white-space: nowrap; }

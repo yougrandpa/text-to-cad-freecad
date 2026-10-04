@@ -47,6 +47,7 @@ from tcad.core.types import (
     TurnState,
 )
 from tcad.ir.schema import IrPatch, IrPatchOp
+from tcad.llm.client import describe_llm_failure
 from tcad.loop.budget import Budget, BudgetLimits
 from tcad.loop.recovery import RepeatedFailures
 from tcad.loop.strategies import LoopUntilDoneStrategy, make_strategy
@@ -473,7 +474,7 @@ class LoopEngine:
                 steps=self.budget.steps,
                 tokens_in=self.budget.tokens_in,
                 tokens_out=self.budget.tokens_out,
-                error=f"{type(e).__name__}: {e}",
+                error=describe_llm_failure(e),
             )
         finally:
             # post_turn ALWAYS fires — including when the LLM raised (design §4.5).

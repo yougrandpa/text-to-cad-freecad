@@ -141,7 +141,32 @@ python -m venv .venv
 
 ### 4. 接真实模型
 
-界面右上角 **⚙** 打开设置：选供应商（deepseek / openai / ollama / vllm / custom）、
+OpenRouter：选择 `openrouter`，固定 Base URL 为 `https://openrouter.ai/api/v1`。
+填写 OpenRouter API Key，或设置 `OPENROUTER_API_KEY`；点击「列模型」获取实时列表。
+模型名使用完整 slug，默认 `~openai/gpt-sol-latest`（官方 quickstart 的最新模型别名）。
+请选择支持工具调用的模型；需要查看 CAD 图像时还需图像输入能力。
+连通性探测能列出模型不代表密钥、余额和所选模型的推理已经验证。
+
+```bash
+export OPENROUTER_API_KEY=<openrouter-api-key>
+.venv/bin/python tools/serve.py --provider openrouter --model '~openai/gpt-sol-latest'
+```
+
+
+OpenCode：选择 `opencode`，默认 Base URL 为
+`https://opencode.ai/inference/openai/v1`，默认模型 `kimi-k2.6`。
+付费模型填写 Console 的 service account key，或设置 `OPENCODE_API_KEY`。
+也接受网关根地址、`/inference` 和完整 `/chat/completions` 地址，自动归一化。
+模型列表从 `/inference/v1/models` 获取，过滤 GPT、Claude/Qwen、Gemini；
+目前仅接入 Chat Completions，其他模型需要对应协议适配器。
+
+```bash
+export OPENCODE_API_KEY=<service-account-key>
+.venv/bin/python tools/serve.py --provider opencode --model kimi-k2.6
+```
+
+
+界面右上角 **⚙** 打开设置：选供应商（deepseek / openai / openrouter / opencode / ollama / vllm / custom）、
 模型名（可点「列模型」向供应商实时索取）、base_url、API Key、温度，然后「测试连通性」。
 保存即热切换 `HotSwapLlm` 内部的 client —— **不需要重建服务栈，更不重启 FreeCAD**。
 

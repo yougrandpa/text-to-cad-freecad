@@ -1217,6 +1217,26 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
         return {
             "provider": llm.provider,
             "models": result.models or fallback,
+            "free_models": result.free_models,
+            "source": "live" if result.models else "preset",
+            "ok": result.ok,
+            "error": result.error,
+            "latency_ms": result.latency_ms,
+        }
+
+    @app.post("/settings/models")
+    async def list_draft_models(patch: LlmSettingsPatch) -> dict:
+        """List models using the dialog's draft endpoint/key without saving."""
+        from tcad.config.providers import get_provider
+        from tcad.llm.hotswap import probe_llm
+
+        llm = _merge_llm(current_llm().llm, patch)
+        preset = get_provider(llm.provider)
+        result = await probe_llm(llm, timeout_s=12.0)
+        return {
+            "provider": llm.provider,
+            "models": result.models or (list(preset.models) if preset else []),
+            "free_models": result.free_models,
             "source": "live" if result.models else "preset",
             "ok": result.ok,
             "error": result.error,

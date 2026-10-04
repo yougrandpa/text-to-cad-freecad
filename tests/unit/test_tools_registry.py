@@ -102,3 +102,14 @@ def _ctx():
     from tcad.core.types import ToolContext
 
     return ToolContext(thread_id="t", turn_id="t", model_id="m")
+
+
+def test_wire_schemas_have_explicit_required_without_mutating_source():
+    registry = build_default_registry(_fake_services())
+    for spec in registry.tools_for(TurnKind.CREATE):
+        before = dict(spec.params_schema)
+        wire = spec.as_openai_tool()['function']['parameters']
+        assert wire['required'] == before.get('required', [])
+        assert spec.params_schema == before
+        assert wire is not spec.params_schema
+    assert registry.get('ir_patch').as_openai_tool()['function']['parameters']['required'] == ['base_version', 'ops']

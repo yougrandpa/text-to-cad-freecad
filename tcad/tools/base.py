@@ -238,7 +238,12 @@ async def execute_tool(
                         + "; ".join(problems[:4])
                         + (f" (+{len(problems) - 4} more)" if len(problems) > 4 else "")
                     ),
-                    hint="re-send the call with the declared argument types",
+                    hint=(
+                        "Nothing was applied. Call ir_get to obtain the current version, then "
+                        "re-send ir_patch with base_version (integer) and ops (array of actual "
+                        "patch operations). Do not send an empty object or invent operations."
+                        if spec.name == "ir_patch" else "re-send the call with the declared argument types"
+                    ),
                 ),
             )
         )

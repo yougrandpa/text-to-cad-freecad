@@ -604,3 +604,20 @@ def test_chat_can_continue_an_existing_thread(client):
 def test_unknown_thread_has_no_messages(client):
     body = client.get("/threads/does-not-exist/messages").json()
     assert body["messages"] == []
+
+
+def test_draft_model_listing_uses_unsaved_endpoint_and_key_without_persisting(client, monkeypatch):
+    from tcad.llm.hotswap import ProbeResult
+    import tcad.llm.hotswap as module
+
+    before = client.get('/settings/llm').json()
+    async def probe(settings, **kwargs):
+        assert settings.resolved_base_url() == 'https://draft.example/v1'
+        assert settings.resolved_api_key() == 'draft-test-key'
+        return ProbeResult(ok=True, models=['draft-model'], method='models.list')
+    monkeypatch.setattr(module, 'probe_llm', probe)
+    response = client.post('/settings/models', json={
+        'provider': 'custom', 'base_url': 'https://draft.example/v1', 'api_key': 'draft-test-key'})
+    assert response.status_code == 200
+    assert response.json()['models'] == ['draft-model']
+    assert client.get('/settings/llm').json() == before

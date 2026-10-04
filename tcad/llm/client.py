@@ -152,6 +152,31 @@ def _retry_after_delay(error: Exception) -> float | None:
     return None
 
 
+def _shared_pool_limit(error: Exception) -> bool:
+    from openai import APIStatusError
+
+    if not isinstance(error, APIStatusError) or error.status_code != 429:
+        return False
+    body = error.body
+    if not isinstance(body, dict):
+        return False
+    detail = body.get("error", body)
+    if not isinstance(detail, dict):
+        return False
+    metadata = detail.get("metadata", {})
+    return isinstance(metadata, dict) and metadata.get("limit_source") == "upstream_provider_shared_pool"
+
+
+def describe_llm_failure(error: Exception) -> str:
+    if _shared_pool_limit(error):
+        return (
+            "OpenRouter 免费模型的上游共享池暂时限流（429），重试后仍不可用。"
+            "已完成的建模修改仍保留；稍后发送‘继续’，或在设置中换一个支持工具调用的免费模型。"
+            "也可选择 openrouter/free 自动路由免费模型，或配置自己的供应商 Key。"
+        )
+    return f"{type(error).__name__}: {error}"
+
+
 class OpenAIClient:
     """Concrete OpenAI-compatible client with retry + backoff + hard timeout."""
 
@@ -183,6 +208,9 @@ class OpenAIClient:
             max_retries=0,
             **({"http_client": http_client} if http_client is not None else {}),
         )
+        from urllib.parse import urlsplit
+
+        self._is_openrouter = urlsplit(base_url).hostname == "openrouter.ai"
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
@@ -209,6 +237,8 @@ class OpenAIClient:
                     tool_choice=tool_choice,
                     temperature=temp,
                     max_tokens=self.max_tokens,
+                    **({"extra_body": {"provider": {"require_parameters": True, "allow_fallbacks": True}}}
+                       if self._is_openrouter and tools else {}),
                 )
             except Exception as e:
                 if not _is_retryable(e):
@@ -218,7 +248,8 @@ class OpenAIClient:
                     delay = _retry_after_delay(e)
                     # asyncio cancellation propagates through both the request
                     # and this wait; it must never become another attempt.
-                    await asyncio.sleep(backoff if delay is None else delay)
+                    local_delay = max(backoff, min(10.0 * (2 ** attempt), _MAX_RETRY_DELAY_S)) if _shared_pool_limit(e) else backoff
+                    await asyncio.sleep(local_delay if delay is None else delay)
                     backoff = min(backoff * 2, _MAX_RETRY_DELAY_S)
                 else:
                     raise

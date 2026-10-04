@@ -15,7 +15,7 @@ from tcad.config.providers import (
 
 
 def test_builtin_providers_are_addressable():
-    for pid in ("deepseek", "openai", "ollama", "vllm", "custom"):
+    for pid in ("deepseek", "openai", "openrouter", "opencode", "ollama", "vllm", "custom"):
         assert pid in PROVIDERS
         assert get_provider(pid) is not None
 
@@ -96,3 +96,30 @@ def test_get_provider_tolerates_unknown_and_empty():
     assert get_provider("nope") is None
     assert get_provider("") is None
     assert get_provider(None) is None
+
+
+@pytest.mark.parametrize("url", [
+    "https://opencode.ai", "https://opencode.ai/inference/",
+    "https://opencode.ai/inference/openai/v1",
+    "https://opencode.ai/inference/openai/v1/chat/completions",
+])
+def test_opencode_url_resolution(url):
+    from tcad.config.settings import LlmSettings
+
+    assert guess_provider(url) == "opencode"
+    settings = LlmSettings(provider="opencode", base_url=url)
+    assert settings.resolved_base_url() == "https://opencode.ai/inference/openai/v1"
+    assert settings.resolved_api_key_env() == "OPENCODE_API_KEY"
+    assert settings.resolved_model() == "kimi-k2.6"
+
+
+def test_openrouter_preset_resolves_endpoint_and_environment_key(monkeypatch):
+    from tcad.config.settings import LlmSettings
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-router-key")
+    settings = LlmSettings(provider="openrouter")
+    assert settings.resolved_base_url() == "https://openrouter.ai/api/v1"
+    assert settings.resolved_api_key() == "test-router-key"
+    assert settings.needs_key()
+    assert guess_provider("https://openrouter.ai/api/v1/") == "openrouter"
+    assert settings.resolved_model() == "~openai/gpt-sol-latest"

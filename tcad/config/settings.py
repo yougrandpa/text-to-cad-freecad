@@ -33,7 +33,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
-from tcad.config.providers import get_provider, guess_provider
+from tcad.config.providers import get_provider, guess_provider, opencode_chat_base_url
 from tcad.config.schema import Config
 
 SETTINGS_FILENAME = "settings.json"
@@ -85,7 +85,7 @@ class LlmSettings(BaseModel):
 
     def resolved_base_url(self) -> str:
         if self.base_url.strip():
-            return self.base_url.strip()
+            return opencode_chat_base_url(self.base_url)
         preset = get_provider(self.provider)
         return preset.base_url if preset else ""
 

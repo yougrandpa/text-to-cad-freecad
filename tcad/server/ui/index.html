@@ -183,8 +183,8 @@
       <label class="field">
         <span>模型</span>
         <div class="row">
-          <input id="modelInput" list="modelOptions" placeholder="模型名">
-          <datalist id="modelOptions"></datalist>
+          <input id="modelInput" placeholder="模型名" aria-label="模型名">
+          <select id="modelOptions" aria-label="选择模型" title="从完整模型列表中选择"></select>
           <button class="mini" id="fetchModels" title="向供应商索要模型列表">列模型</button>
         </div>
         <small class="muted" id="modelsHint">模型名会随代际变化，可点「列模型」实时获取。</small>

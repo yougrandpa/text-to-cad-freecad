@@ -133,6 +133,45 @@ VLLM = ProviderPreset(
     docs_url="",
 )
 
+OPENROUTER = ProviderPreset(
+    id="openrouter",
+    label="OpenRouter",
+    base_url="https://openrouter.ai/api/v1",
+    api_key_env="OPENROUTER_API_KEY",
+    needs_key=True,
+    default_model="~openai/gpt-sol-latest",
+    models=["~openai/gpt-sol-latest"],
+    docs_url="https://openrouter.ai/docs/quickstart",
+    notes="使用 OpenAI 兼容接口；模型名使用完整 slug。请选支持工具调用的模型，图像输入能力因模型而异。",
+)
+
+
+OPENCODE = ProviderPreset(
+    id="opencode",
+    label="OpenCode",
+    base_url="https://opencode.ai/inference/openai/v1",
+    api_key_env="OPENCODE_API_KEY",
+    needs_key=False,
+    default_model="kimi-k2.6",
+    models=["kimi-k2.6", "glm-5.1", "minimax-m2.7"],
+    docs_url="https://opencode.ai/v2/docs/console/inference",
+    notes="支持 Chat Completions 模型；付费模型需 service account key。GPT、Claude/Qwen、Gemini 需要其他协议，暂不支持。",
+)
+
+
+def opencode_chat_base_url(base_url: str) -> str:
+    """Accept the gateway root or a full Chat Completions endpoint."""
+    from urllib.parse import urlsplit
+
+    url = urlsplit(base_url.strip())
+    if url.hostname == "opencode.ai" and url.path.rstrip("/") in (
+        "", "/inference", "/inference/openai/v1",
+        "/inference/openai/v1/chat/completions",
+    ):
+        return f"{url.scheme}://{url.netloc}/inference/openai/v1"
+    return base_url.strip()
+
+
 CUSTOM = ProviderPreset(
     id="custom",
     label="自定义 (OpenAI 兼容)",
@@ -149,7 +188,7 @@ CUSTOM = ProviderPreset(
 )
 
 PROVIDERS: dict[str, ProviderPreset] = {
-    p.id: p for p in (DEEPSEEK, OPENAI, OLLAMA, VLLM, CUSTOM)
+    p.id: p for p in (DEEPSEEK, OPENAI, OPENROUTER, OPENCODE, OLLAMA, VLLM, CUSTOM)
 }
 
 CUSTOM_ID = CUSTOM.id
@@ -189,7 +228,7 @@ def guess_provider(base_url: str | None) -> str:
     """
     if not base_url:
         return CUSTOM_ID
-    host = _normalise_host(base_url)
+    host = _normalise_host(opencode_chat_base_url(base_url))
     for preset in PROVIDERS.values():
         if preset.base_url and _normalise_host(preset.base_url) == host:
             return preset.id
