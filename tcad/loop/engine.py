@@ -247,7 +247,17 @@ class LoopEngine:
                 "BUILD checkpoint, NOT a terminal result. Continue all planned features (for a box, a "
                 "solid base is not a cavity; an opening is not a cutting mechanism). After the final commit, "
                 "call design_review in a separate step and map each objective to real Gate evidence. "
-                "Record genuine user-stated measurable requirements via update_requirement. Unknown dimensions "
+                "Use cad_build_parts to batch ordinary shapes and polar copies; cad_wheel creates a connected "
+                "rim/spokes/hub in one call. These tools already carry complete argument schemas; use them "
+                "directly, without ir_help(topic=patch) or reading empty IR first. Do not hand-write primitive sketches. "
+                "For repeated hanging cabins use cad_cabins once and assembly_motion with hanging_body_ids; "
+                "do not calculate every cabin coordinate or build duplicated first/second drafts. "
+                "cad_wheel_support builds a connected rear A-frame and matching shaft; prefer it to manual disconnected braces. "
+                "Use assembly_motion for a horizontal rotor with gravity-hanging cabins, then ir_commit, "
+                "assembly_simulate and assembly_export. Use ir_help before unfamiliar low-level ir_patch fields. "
+                "Record genuine user-stated numeric geometry requirements via ir_requirements; never encode "
+                "qualitative goals as invented constraint kinds (note, motion, dimension). If no numeric "
+                "dimensions were stated, skip requirements tools and keep goals in the final review. Unknown dimensions "
                 "may be draft assumptions. List unresolved work and physical tests honestly; unsupported "
                 "functional claims remain a draft pending user acceptance. Never claim unmeasured functionality. "
                 "Every ir_patch op must contain reason. Send complete JSON and small patches."
@@ -281,8 +291,41 @@ class LoopEngine:
         self._hooks = hooks
         self._base_hooks = hooks if hooks is not None else getattr(services, "hooks", None)
         self._access_mode = None
+        self._authoring_topics = set()
 
     # ─── hook dispatch ────────────────────────────────────────────────────
+
+    def _authoring_surface(self, tools, model_id=None):
+        if not self.config.require_design_review:
+            return tools
+        import copy
+        scopes={'sketch':{'add_sketch','update_sketch'},
+                'feature':{'add_feature','update_feature'},
+                'requirements':{'update_requirement'}}
+        selected=set().union(*(scopes.get(t,set()) for t in self._authoring_topics))
+        if selected or 'patch' in self._authoring_topics:
+            selected.update({'add_body','update_body','remove_body','remove_feature','rename'})
+        result=[]
+        saved_animation=False
+        if model_id is not None:
+            try:
+                saved_animation=self.services.store.load(model_id).assembly is not None
+            except Exception:
+                pass
+        for tool in tools:
+            name=tool['function']['name']
+            if saved_animation and name=='geo_check_motion':
+                continue  # Saved frames use assembly_simulate(check_pairs), not crank angles.
+            if name=='assembly_configure' and not self._authoring_topics & {'assembly','patch'}:
+                continue
+            if name=='ir_patch':
+                if not selected:
+                    continue
+                tool=copy.deepcopy(tool)
+                items=tool['function']['parameters']['properties']['ops']['items']
+                items['anyOf']=[b for b in items['anyOf'] if b['properties']['op']['enum'][0] in selected]
+            result.append(tool)
+        return result
 
     def _dispatch(self, event: HookEvent, payload: dict) -> Any:
         """Dispatch through the per-turn hooks when set, else the shared bundle."""
@@ -397,6 +440,7 @@ class LoopEngine:
         # session total rather than the turn's. With no ceiling configured the
         # numbers are only cosmetic, which is why nothing caught it.
         self.budget = Budget(self.budget_limits)
+        self._authoring_topics = set()
 
         # pre_turn hook (quota / content-safety pre-check).
         #
@@ -547,6 +591,9 @@ class LoopEngine:
         tools = self.registry.as_openai_tools(
             turn.kind, include_privileged=ToolTier.PRIVILEGED in allowed
         )
+        # Detailed editing contracts are discoverable, not repeated on every
+        # primitive-building step. Keep the registry complete for existing clients.
+        tools = self._authoring_surface(tools,turn.model_id)
         if self._access_mode == AccessMode.READ_ONLY:
             tools = [tool for tool in tools if tool["function"]["name"] in READ_ONLY_TOOLS]
         await self._prepare_step_context(turn, messages, tools)
@@ -754,6 +801,8 @@ class LoopEngine:
                         args = hook_res.mutated_args if hook_res.mutated_args is not None else tc.args
                         outcome = await execute_tool(spec, args, ctx, allowed_tiers=allowed)
 
+            if tc.name == 'ir_help' and outcome.result.ok:
+                self._authoring_topics.add(tc.args.get('topic'))
             if tc.name == "design_review" and outcome.result.ok:
                 if not self.config.require_design_review:
                     outcome.result = ToolResult(ok=False, error=ToolError(

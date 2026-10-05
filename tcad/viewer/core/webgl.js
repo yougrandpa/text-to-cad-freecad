@@ -1,6 +1,6 @@
 import { TAU, clamp, dot, sub, cross, length } from "./math.js";
 import { OrbitCamera } from "./camera.js";
-import { poseMesh, poseAnimation, prepareMesh, prepareScene } from "./scene.js";
+import { poseMesh, poseAnimation, prepareMesh, prepareScene, motionScopeNote } from "./scene.js";
 import { VERTEX, FRAGMENT } from "./shaders.js";
 
 export class MeshViewport {
@@ -145,7 +145,7 @@ export class MeshViewport {
       if (this.motionControls.play) this.motionControls.play.disabled = animation?.frames.length === 1;
       this.motionControls.input.max = String(animation ? animation.frames.length-1 : 720);
       if (this.motionControls.label) this.motionControls.label.textContent = animation ? "仿真时间" : "摇杆转角";
-      if (this.motionControls.note) this.motionControls.note.textContent = animation ? "FreeCAD 原生关节求解 · 未验证接触力、碰撞或实际切削" : "按声明的传动比演示 · 未验证碰撞、齿面接触或实际切削";
+      if (this.motionControls.note) this.motionControls.note.textContent = motionScopeNote(animation);
       this.motionControls.input.value = "0";
       this.motionControls.output.textContent = "0°";
     }

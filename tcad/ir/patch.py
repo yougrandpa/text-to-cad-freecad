@@ -199,8 +199,9 @@ def _require_mapping(value: object, *, field: str) -> dict:
 #: which is the failure mode that makes people delete whitelists.
 _PAYLOAD_FIELDS: dict[str, frozenset[str]] = {
     "set_assembly": frozenset({"assembly"}),
-    "add_body": frozenset({"id", "name", "motion", "part_ref"}),
-    "update_body": frozenset({"name", "motion", "part_ref"}),
+    "add_body": frozenset({"id", "name", "motion", "part_ref", "suspension_pivot"}),
+    "update_body": frozenset({"name", "motion", "part_ref", "suspension_pivot"}),
+    "remove_body": frozenset(),
     "add_sketch": frozenset(SketchSpec.model_fields) | {"body_id", "geometry_append", "constraints_append"},
     "update_sketch": frozenset(SketchSpec.model_fields) | {"geometry_append", "constraints_append"},
     "add_feature": frozenset(FeatureSpec.model_fields) | {"body_id"},
@@ -392,7 +393,8 @@ def _op_add_body(ir: IrDocument, op: IrPatchOp, out: PatchOutcome) -> None:
     if bid in ids:
         _reject(ToolErrorKind.SEMANTIC, f"body id '{bid}' already exists")
     body = BodySpec(id=bid, name=op.payload.get("name") or bid,
-                    motion=op.payload.get("motion"), part_ref=op.payload.get("part_ref"))
+                    motion=op.payload.get("motion"), part_ref=op.payload.get("part_ref"),
+                    suspension_pivot=op.payload.get('suspension_pivot'))
     ir.bodies.append(body)
     out.created_ids.append(bid)
     out.changes.append(f"add_body '{body.name}' (id={bid}): {op.reason or '-'}")
@@ -610,10 +612,20 @@ def _op_set_assembly(ir: IrDocument, op: IrPatchOp, out: PatchOutcome) -> None:
     out.changes.append(f"set_assembly: {op.reason or '-'}")
 
 
+def _op_remove_body(ir: IrDocument, op: IrPatchOp, out: PatchOutcome) -> None:
+    _reject_unknown_payload_keys('remove_body', op.payload)
+    body=next((b for b in ir.bodies if b.id==op.target_id),None)
+    if body is None:
+        _reject(ToolErrorKind.NOT_FOUND,f'unknown body {op.target_id}')
+    ir.bodies.remove(body)
+    out.changes.append(f'remove_body {op.target_id}: {op.reason}')
+
+
 _HANDLERS = {
     "set_assembly": _op_set_assembly,
     "add_body": _op_add_body,
     "update_body": _op_update_body,
+    "remove_body": _op_remove_body,
     "add_sketch": _op_add_sketch,
     "update_sketch": _op_update_sketch,
     "add_feature": _op_add_feature,

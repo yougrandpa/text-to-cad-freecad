@@ -32,3 +32,13 @@ def pose_vertices(vertices, motion, angle):
             result[i] = [pivot[j] + p*c + cross[j]*s + u*dot*(1-c)
                          for j, (p, u) in enumerate(zip((a,b,d), (x,y,z)))]
     return result
+
+
+def rotate(vector, axis, angle):
+    norm = math.hypot(*axis)
+    if norm <= 1e-12:
+        raise ValueError('rotation axis must be nonzero')
+    u = [v/norm for v in axis]; c, s = math.cos(angle), math.sin(angle)
+    cross = [u[1]*vector[2]-u[2]*vector[1], u[2]*vector[0]-u[0]*vector[2], u[0]*vector[1]-u[1]*vector[0]]
+    dot = sum(a*b for a,b in zip(u, vector))
+    return [vector[i]*c + cross[i]*s + u[i]*dot*(1-c) for i in range(3)]

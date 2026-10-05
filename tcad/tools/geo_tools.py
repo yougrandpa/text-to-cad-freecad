@@ -228,7 +228,7 @@ async def assembly_simulate_handler(services, args, ctx):
         return _err(ToolErrorKind.SOLVER, str(exc))
     return _ok(json.dumps({"solver": result["solver"], "frames": len(result["frames"]),
         "bodies": [p["body_id"] for p in result["parts"]], "start": result["start"], "step": result["step"],
-        "animation": path, "fcstd": result["export"], "artifact_id": result["artifact_id"], "scope": result["scope"], "interferences": (result["interferences"][:10] if result.get("interferences") is not None else None), "interference_count": len(result.get("interferences") or []), "frames_checked": result.get("frames_checked", 0)}, ensure_ascii=False, separators=(",", ":")))
+        "animation": path, "fcstd": result["export"], "artifact_id": result["artifact_id"], "scope": result["scope"], "max_swing_deg": result.get('max_swing_deg'), "interferences": (result["interferences"][:10] if result.get("interferences") is not None else None), "interference_count": len(result.get("interferences") or []), "frames_checked": result.get("frames_checked", 0)}, ensure_ascii=False, separators=(",", ":")))
 
 
 async def assembly_solve_handler(services, args, ctx):
@@ -275,7 +275,7 @@ def build_geo_tools(services: "Any") -> dict[str, ToolSpec]:
         ),
         "assembly_simulate": ToolSpec(
             name="assembly_simulate", tier=ToolTier.READ,
-            description="Read the committed native Assembly motion frames. Returns compact frame summary and animation.json/FCStd paths, not large frame arrays. Optional check_pairs performs sampled BRep overlap checks on solved poses, with check_stride selecting frames. Returns saved artifact poses for playback/scrubbing; commit after assembly edits. Solver failures are reported; not contact force, collision or cutting verification, and not a geometry Gate pass.",
+            description="Read saved native Assembly or gravity-pendulum animation frames. Returns compact summary, solver scope and measured max_swing_deg, not large frame arrays. Optional check_pairs performs sampled BRep overlap checks on saved poses, check_stride selects frames. Commit after edits. A clear sample set does not prove continuous clearance or contact forces; this is separate from the geometry Gate.",
             params_schema={"type":"object", "additionalProperties":False, "properties":{"artifact_id":{"type":"string"},
                 "check_pairs":{"type":"array","minItems":1,"maxItems":100,"items":{"type":"array","minItems":2,"maxItems":2,"items":{"type":"string"}}},
                 "check_stride":{"type":"integer","minimum":1,"maximum":30}}},
@@ -319,7 +319,7 @@ def build_geo_tools(services: "Any") -> dict[str, ToolSpec]:
             params_schema={
                 "type": "object",
                 "properties": {
-                    "what": {"type": "array", "items": {"type": "string"}},
+                    "what": {"type": "array", "items": {"type": "string", "enum":["volume","area","bbox","faces","edges","solids","vertexes","shells","is_valid","shape_type","holes"]}},
                     "artifact_id": {"type": "string", "description": "sha256:<64 hex digits>"},
                 },
             },

@@ -1,6 +1,14 @@
 import { TAU, clamp, dot, sub, cross, length } from "./math.js";
 import CONTRACT from "./render-contract.json" with { type: "json" };
 
+export function motionScopeNote(animation) {
+  if (!animation) return "按声明的传动比演示 · 未验证碰撞、齿面接触或实际切削";
+  if (animation.solver === "Planar gravity pendulum / fixed-step RK4") {
+    return "重力吊舱仿真 · 匀速轮盘、平面摆与阻尼 · 未验证接触力或结构强度";
+  }
+  return "保存的关节运动帧 · 未验证接触力、碰撞或实际切削";
+}
+
 export function prepareScene(scene, { angle = 0, frame = 0 } = {}) {
   const motion = scene.motion || [], animation = scene.animation;
   if (animation && motion.length) throw new Error("原生动画与声明运动不能混用");

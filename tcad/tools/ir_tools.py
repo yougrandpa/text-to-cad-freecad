@@ -47,10 +47,13 @@ async def ir_get_handler(services: "Any", args: dict, ctx: ToolContext) -> ToolR
     ids = args.get("ids")
     if ids:
         objects = {obj.id: obj for body in ir.bodies for obj in (body, *body.sketches, *body.features)}
-        missing = [id for id in ids if id not in objects]
+        sections={'assembly':ir.assembly,'requirements':ir.requirements}
+        missing = [id for id in ids if id not in objects and id not in sections]
         if missing:
-            return _err(ToolErrorKind.NOT_FOUND, f"unknown IR IDs: {missing}")
-        data = {"version": ir.version, "objects": [objects[id].model_dump(mode="json", exclude_defaults=not args.get("include_defaults", False)) for id in ids]}
+            return _err(ToolErrorKind.NOT_FOUND, f"unknown IR IDs: {missing}",
+                        hint=f"Bodies: {[b.id for b in ir.bodies]}. Use ids=['assembly'] to read motion/rotating_body_ids; ir_list_features for feature IDs.")
+        data = {"version": ir.version, "objects": [objects[id].model_dump(mode="json", exclude_defaults=not args.get("include_defaults", False)) for id in ids if id in objects]}
+        data.update({id:sections[id].model_dump(mode='json') if sections[id] is not None else None for id in ids if id in sections and id not in objects})
     else:
         data = ir.model_dump(mode="json", exclude_defaults=not args.get("include_defaults", False))
     return _ok(json.dumps(data, ensure_ascii=False, separators=(",", ":")))
@@ -99,6 +102,8 @@ async def ir_patch_handler(services: "Any", args: dict, ctx: ToolContext) -> Too
                 hint="该模型尚未创建，或 ir_get 之前先调用 POST /models。",
             )
 
+    if isinstance(args.get('base_version'),str) and args['base_version'].isdigit():
+        args={**args,'base_version':int(args['base_version'])}
     try:
         patch = IrPatch.model_validate(args)
     except Exception as e:  # malformed tool args
@@ -461,42 +466,47 @@ _IR_PATCH_DESCRIPTION = _IR_PATCH_DESCRIPTION.replace(
 
 
 def _ir_patch_schema() -> dict:
-    """Model-facing schema for ir_patch.
-
-    ``IrPatch.model_json_schema()`` alone is misleading: ``ops`` has a default, so
-    pydantic does not mark it required and a model may reasonably call
-    ``ir_patch(base_version=0)`` with no operations at all. The generator also
-    emits ``payload`` as an untyped object, which for the one tool that does the
-    actual modelling is a black box — the model cannot guess what an add_sketch
-    payload should contain. So we take the generated schema and pin down the two
-    things the model actually needs: `ops` is required, and `payload` is described
-    in the tool description above.
-    """
-    schema = IrPatch.model_json_schema()
-    schema["required"] = ["base_version", "ops"]
-    # The declared type must match what the handler actually accepts. `ir_patch`
-    # resolves the literal string "current" to the latest version before building
-    # the IrPatch, so declaring `base_version: integer` would make the enforced
-    # schema reject a documented, supported call.
-    schema["properties"]["base_version"] = {
-        "anyOf": [{"type": "integer"}, {"type": "string", "enum": ["current"]}],
-        "title": "Base Version",
-        "description": "The integer IR version you last read, or \"current\".",
-    }
-    op_def = schema.get("$defs", {}).get("IrPatchOp", {})
-    if isinstance(op_def, dict):
-        op_def["required"] = ["op", "payload", "reason"]
-        props = op_def.setdefault("properties", {})
-        if "payload" in props:
-            props["payload"]["description"] = (
-                "Op-specific. See the tool description for the exact shape of each op."
-            )
-        if "reason" in props:
-            props["reason"]["description"] = (
-                "Why this change is being made. Mandatory; it is recorded in the audit "
-                "log and is how earlier intents stay referable in later turns."
-            )
-    return schema
+    """Expose op-specific payloads, rather than asking the model to guess a bag."""
+    from tcad.ir.schema import BodySpec, SketchSpec, FeatureSpec, RequirementSpec
+    from tcad.ir.assembly import AssemblySpec
+    from tcad.tools.authoring import inline_schema
+    schemas = {name: inline_schema(model.model_json_schema()) for name,model in
+               [('body',BodySpec),('sketch',SketchSpec),('feature',FeatureSpec),
+                ('requirements',RequirementSpec),('assembly',AssemblySpec)]}
+    def payload(name, *, partial=False, fields=None):
+        import copy
+        result=copy.deepcopy(schemas[name])
+        result['additionalProperties']=False
+        if fields is not None:
+            result['properties']={k:v for k,v in result['properties'].items() if k in fields}
+        result['required']=[] if partial else [k for k in result.get('required',[]) if k not in ('id','name')]
+        return result
+    body=payload('body',partial=True,fields={'id','name','motion','part_ref','suspension_pivot'})
+    sketch=payload('sketch'); sketch['properties']['body_id']={'type':'string'}
+    feature=payload('feature'); feature['properties']['body_id']={'type':'string'}
+    update_sketch=payload('sketch',partial=True)
+    for field in ('geometry','constraints'):
+        update_sketch['properties'][field+'_append']=update_sketch['properties'][field]
+    update_feature=payload('feature',partial=True)
+    update_feature['properties']['refs_append']=update_feature['properties']['refs']
+    requirements=payload('requirements',partial=True,fields={'constraints'})
+    requirements['properties']['constraints_append']=requirements['properties']['constraints']
+    declarations={'add_body':body,'update_body':payload('body',partial=True,fields={'name','motion','part_ref','suspension_pivot'}),
+        'add_sketch':sketch,'update_sketch':update_sketch,'add_feature':feature,'update_feature':update_feature,
+        'update_requirement':requirements,
+        'set_assembly':{'type':'object','additionalProperties':False,'required':['assembly'],'properties':{'assembly':{'anyOf':[schemas['assembly'],{'type':'null'}]}}},
+        'remove_feature':{'type':'object','additionalProperties':False,'properties':{'cascade':{'type':'boolean'}}},
+        'remove_body':{'type':'object','additionalProperties':False,'properties':{}},
+        'rename':{'type':'object','additionalProperties':False,'required':['name'],'properties':{'name':{'type':'string'}}}}
+    branches=[]
+    for op,shape in declarations.items():
+        required=['op','payload','reason']
+        if op in ('update_body','remove_body','update_sketch','update_feature','remove_feature','rename'): required.append('target_id')
+        branches.append({'type':'object','additionalProperties':False,'required':required,'properties':{
+            'op':{'type':'string','enum':[op]},'target_id':{'type':'string'},'payload':shape,'reason':{'type':'string','minLength':1}}})
+    return {'type':'object','additionalProperties':False,'required':['base_version','ops'],'properties':{
+        'base_version':{'anyOf':[{'type':'integer'},{'type':'string','enum':['current']},{'type':'string','pattern':'^[0-9]+$'}]},
+        'ops':{'type':'array','minItems':1,'items':{'anyOf':branches}},'summary':{'type':'string'}}}
 
 
 # ─── spec factory ──────────────────────────────────────────────────────────
@@ -516,7 +526,9 @@ async def design_review_handler(services, args, ctx):
 def build_ir_tools(services: "Any") -> dict[str, ToolSpec]:
     from tcad.loop.completion import DesignReview
     from tcad.ir.assembly import AssemblySpec
+    from tcad.tools.authoring import build_authoring_tools
     return {
+        **build_authoring_tools(services),
         "assembly_configure": ToolSpec(
             name="assembly_configure", tier=ToolTier.WRITE,
             description="Configure native FreeCAD Assembly: grounded body IDs, all 13 joint types, world connector positions/axes/roll, limits and time drivers. Replaces assembly declaration; null clears it. Clear prescribed body.motion first. Angular drivers target Revolute/Cylindrical; Linear target Slider/Cylindrical. Formula is native math in time (seconds); Angular uses radians (e.g. pi/2*time for 90 degrees/s), Linear mm, initialValue is supported. Gears/Belt distance and distance2 are positive pitch radii; RackPinion distance=pitch radius; Screw distance=native pitch. Native constraints must make the mechanism solvable; grounding graph alone does not prove solvability. Then ir_commit to build and save actual solver frames; assembly_simulate reads them. ir_commit still grades zero-pose part geometry separately.",
@@ -555,7 +567,7 @@ def build_ir_tools(services: "Any") -> dict[str, ToolSpec]:
         "ir_get": ToolSpec(
             name="ir_get",
             tier=ToolTier.READ,
-            description="Read current IR, omitting reconstructible defaults. Prefer ids to fetch only needed bodies/sketches/features; ir_digest for measured geometry. include_defaults=true returns all fields.",
+            description="Read current IR, omitting defaults. ids selects body/sketch/feature IDs; ids=['assembly'] reads motion configuration, ids=['requirements'] reads recorded requirements. A field such as rotating_body_ids is inside assembly, not an entity ID. Empty args reads all IR; prefer selective reads to save tokens. include_defaults=true returns all fields.",
             params_schema={"type": "object", "additionalProperties": False, "properties": {"ids": {"type": "array", "minItems": 1, "items": {"type": "string"}}, "include_defaults": {"type": "boolean"}}},
             handler=functools.partial(ir_get_handler, services),
             concurrency_safe=True,
@@ -581,7 +593,7 @@ def build_ir_tools(services: "Any") -> dict[str, ToolSpec]:
         "ir_patch": ToolSpec(
             name="ir_patch",
             tier=ToolTier.WRITE,
-            description=_IR_PATCH_DESCRIPTION,
+            description="Advanced atomic IR edits with typed op-specific payloads. Prefer cad_build_parts for primitives. Call ir_help for sketch/feature examples before unfamiliar operations. Every op needs reason; update operations need target_id. World sketch coordinates: XY x/y, XZ x/z, YZ y/z. Requirements are arrays of measured ConstraintExpr, never notes or motion; use ir_requirements. raw_text is preserved automatically. base_version=integer detects stale edits; current reads latest. One body must be one connected solid. Commit after batching related features.",
             params_schema=_ir_patch_schema(),
             handler=functools.partial(ir_patch_handler, services),
         ),

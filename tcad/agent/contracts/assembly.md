@@ -9,6 +9,13 @@ also contain local sketches/features. Pin immutable IDs; never refer to a live
 document or a mutable source version as built geometry.
 
 Configure native joints/drivers through `assembly_configure`, then `ir_commit`.
+For a horizontal rotor and hanging cabins, prefer `assembly_motion`: declare
+rotating body IDs, center, axis, speed and suspension body IDs/world pivots.
+Build cabins upright with their COM below the pivot. The compiler measures
+uniform-density BRep mass properties and integrates planar gravity pendulums
+including moving-hinge acceleration and damping. Saved frames include small
+physical swings; counter-rotating a cabin by exactly the wheel angle is only a
+quasi-static approximation. This model does not solve contact or structural loads.
 `assembly_solve` and `assembly_simulate` read saved solutions/frames; edits need a
 new commit. Prescribed `body.motion` and native assembly drivers cannot be mixed.
 Use `frame_index` for native snapshot frames and `driver_angle_deg` for prescribed

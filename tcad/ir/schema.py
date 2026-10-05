@@ -260,6 +260,7 @@ class BodySpec(BaseModel):
     features: list[FeatureSpec] = Field(default_factory=list)  # list order = build order
     motion: RotaryMotionSpec | None = None
     part_ref: PartRef | None = None
+    suspension_pivot: Vec3 | None = None  # world hinge declared by a generated upright cabin
 
     @model_validator(mode="after")
     def reference_or_features(self):
@@ -343,7 +344,7 @@ class IrDocument(BaseModel):
 # ══════════════════════════════════════════════════════════════════════════
 
 PatchOpName = Literal[
-    "add_body", "update_body", "set_assembly",
+    "add_body", "update_body", "remove_body", "set_assembly",
     "add_sketch", "update_sketch", "add_feature", "update_feature",
     "remove_feature", "update_requirement", "rename",
 ]

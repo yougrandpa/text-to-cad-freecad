@@ -111,6 +111,7 @@ class SceneModel(BaseModel):
             if result.get("start") != assembly["start"] or result.get("step") != assembly["step"]:
                 raise ValueError("scene animation timing does not match the build input")
             animation = {k: result[k] for k in ("parts", "frames", "start", "step", "solver")}
+            animation.update({k: result[k] for k in ('scope','suspension_angles_deg','max_swing_deg') if k in result})
         scene = cls(mesh=result["mesh"], body_ids=[body["id"] for body in ir.get("bodies", [])],
                     motion=[] if assembly else result.get("motion", []), animation=animation)
         if assembly is None:

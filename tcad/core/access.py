@@ -10,4 +10,4 @@ class AccessMode(str, Enum):
 
 # Some legacy READ tools write exports or import documents. Only offer these
 # inspection tools in read-only mode; previews may create disposable caches.
-READ_ONLY_TOOLS = frozenset({"ir_get", "ir_digest", "ir_list_features", "geo_view", "geo_measure"})
+READ_ONLY_TOOLS = frozenset({"ir_get", "ir_digest", "ir_list_features", "ir_help", "geo_view", "geo_measure"})

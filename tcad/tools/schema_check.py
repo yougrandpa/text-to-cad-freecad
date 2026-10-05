@@ -22,12 +22,13 @@ from __future__ import annotations
 
 from typing import Any
 import math
+import re
 
 #: Keywords this checker understands.
 SUPPORTED: frozenset[str] = frozenset({
     "type", "required", "properties", "items", "enum",
     "minLength", "maxLength", "minItems", "maxItems",
-    "minimum", "maximum",
+    "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "pattern", "const",
     "anyOf", "oneOf", "$ref", "$defs", "additionalProperties",
     # annotations: carried in the schema, no constraint to enforce
     "title", "description", "default",
@@ -92,6 +93,12 @@ def check(args: Any, schema: dict, *, path: str = "arguments", root: dict | None
     for branch_key in ("anyOf", "oneOf"):
         branches = schema.get(branch_key)
         if isinstance(branches, list) and branches:
+            if isinstance(args, dict):
+                for discriminator in ('op','shape'):
+                    if discriminator not in args: continue
+                    matching = [b for b in branches if args[discriminator] in b.get('properties', {}).get(discriminator, {}).get('enum', [])]
+                    if len(matching) == 1:
+                        return check(args, matching[0], path=path, root=root)
             attempt = [check(args, b, path=path, root=root) for b in branches]
             if not any(not a for a in attempt):
                 # Report the branch that got furthest (fewest problems) — that is
@@ -113,6 +120,10 @@ def check(args: Any, schema: dict, *, path: str = "arguments", root: dict | None
     enum = schema.get("enum")
     if isinstance(enum, list) and args not in enum:
         return [f"{path}: {_describe(args)} is not one of {enum}"]
+    if "const" in schema and args != schema['const']:
+        return [f"{path}: must equal {schema['const']!r}"]
+    if isinstance(args, str) and 'pattern' in schema and re.search(schema['pattern'], args) is None:
+        problems.append(f"{path}: does not match pattern {schema['pattern']}")
 
     if isinstance(args, (int, float)) and not isinstance(args, bool):
         if not math.isfinite(args):
@@ -121,6 +132,10 @@ def check(args: Any, schema: dict, *, path: str = "arguments", root: dict | None
             problems.append(f"{path}: {args} is below minimum={schema['minimum']}")
         if "maximum" in schema and args > schema["maximum"]:
             problems.append(f"{path}: {args} exceeds maximum={schema['maximum']}")
+        if "exclusiveMinimum" in schema and args <= schema['exclusiveMinimum']:
+            problems.append(f"{path}: must exceed {schema['exclusiveMinimum']}")
+        if "exclusiveMaximum" in schema and args >= schema['exclusiveMaximum']:
+            problems.append(f"{path}: must be below {schema['exclusiveMaximum']}")
 
     bounds = (("minLength", "maxLength") if isinstance(args, str) else
               ("minItems", "maxItems") if isinstance(args, list) else None)

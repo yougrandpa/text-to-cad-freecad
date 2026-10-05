@@ -303,6 +303,8 @@ def validate_ir(ir: IrDocument) -> list[ValidationIssue]:
             issues.append(ValidationIssue(code="dup_body_id", severity="error",
                           message=f"duplicate body id '{body.id}'", target_id=body.id))
         seen.add(body.id)
+        if body.suspension_pivot is not None and not all(math.isfinite(v) for v in body.suspension_pivot.as_tuple()):
+            issues.append(_finite_issue('suspension pivot',body.id))
         if body.motion is not None:
             motion = body.motion
             values = (*motion.pivot.as_tuple(), *motion.axis.as_tuple(), motion.ratio)

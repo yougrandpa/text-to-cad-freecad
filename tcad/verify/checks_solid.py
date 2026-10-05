@@ -170,7 +170,8 @@ class SolidCountCheck:
             expect = len(ctx.ir.bodies)
             if invalid or actual != expect:
                 return _r(self, "fail", "assembly requires one measured solid per body: "
-                          + ", ".join(invalid), measurements={"solids": actual},
+                          + ", ".join(f'{id}={d.body_solids.get(id,"unmeasured")} solids (expected 1)' for id in invalid)
+                          + ". The total below counts the whole assembly, not each failing body.", measurements={"solids": actual},
                           expected={"solids": expect}, feature_id=invalid[0] if invalid else fid)
         if actual == expect:
             return _r(self, "pass", f"solid count == {expect}",

@@ -269,7 +269,7 @@ async def test_inspect_turn_exposes_only_read_tools():
     names = {t["function"]["name"] for t in llm.last_tools}
     assert "ir_patch" not in names
     assert "ir_commit" not in names
-    assert names <= {"ir_get", "ir_digest", "ir_list_features", "geo_view", "geo_check_motion", "assembly_simulate", "assembly_solve", "assembly_export", "geo_measure", "asset_export", "asset_import"}
+    assert names <= {"ir_get", "ir_digest", "ir_list_features", "ir_help", "geo_view", "geo_check_motion", "assembly_simulate", "assembly_solve", "assembly_export", "geo_measure", "asset_export", "asset_import"}
 
 
 async def test_privileged_absent_unless_enabled():

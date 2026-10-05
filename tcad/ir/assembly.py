@@ -4,6 +4,7 @@ import re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from tcad.ir.rotary import RotaryRig
 
 JOINT_TYPES = ('Fixed', 'Revolute', 'Cylindrical', 'Slider', 'Ball', 'Distance',
                'Parallel', 'Perpendicular', 'Angle', 'RackPinion', 'Screw', 'Gears', 'Belt')
@@ -75,14 +76,17 @@ class AssemblySpec(BaseModel):
     grounded: list[str] = Field(min_length=1, max_length=100)
     joints: list[AssemblyJoint] = Field(default_factory=list, max_length=100)
     drivers: list[AssemblyDriver] = Field(default_factory=list, max_length=100)
+    rotation: RotaryRig | None = None
     start: float = 0
     end: float = 1
     step: float = Field(default=0.025, ge=1e-6)
 
     @model_validator(mode='after')
     def valid_simulation(self):
-        if self.end <= self.start or (self.end-self.start)/self.step > 599:
+        if self.end <= self.start or (self.end-self.start)/self.step > 599+1e-8:
             raise ValueError('simulation requires increasing time and at most 600 frames')
+        if self.rotation is not None and (self.joints or self.drivers):
+            raise ValueError('rotation rig cannot be mixed with native joints/drivers')
         ids = [j.id for j in self.joints]
         if len(set(ids)) != len(ids) or len(set(self.grounded)) != len(self.grounded):
             raise ValueError('joint IDs and grounded body IDs must be unique')
@@ -101,6 +105,12 @@ class AssemblySpec(BaseModel):
 
     def validate_bodies(self, body_ids):
         ids = set(body_ids)
+        if self.rotation is not None:
+            self.rotation.validate_bodies(ids)
+            moving = set(self.rotation.rotating_body_ids) | {id for s in self.rotation.suspensions for id in s.body_ids}
+            if set(self.grounded) != ids - moving:
+                raise ValueError('rotation rig grounded IDs must be exactly the stationary bodies')
+            return
         referenced = set(self.grounded) | {side.body_id for j in self.joints for side in (j.side1, j.side2)}
         if referenced - ids:
             raise ValueError(f'assembly references unknown bodies: {sorted(referenced-ids)}')

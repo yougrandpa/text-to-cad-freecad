@@ -64,8 +64,8 @@ def saved_assembly(services, ctx, args):
     if not scene.animation:
         raise ValueError("commit a configured native assembly first")
     result = {**scene.animation, "mesh": scene.mesh.model_dump(mode="json"),
-        "artifact_id": manifest.artifact_id, "scope": "Saved native kinematics; not contact or cutting verification.",
-        "export": str(root / "assembly.FCStd"), "interferences": None, "frames_checked": 0}
+        "artifact_id": manifest.artifact_id, "scope": scene.animation.get('scope', "Saved native kinematics; not contact or cutting verification."),
+        "export": str(root / ("assembly.FCStd" if (root / "assembly.FCStd").exists() else manifest.model_id + '.FCStd')), "interferences": None, "frames_checked": 0}
     if args.get("check_pairs"):
         response = services.worker.request("check_saved_motion", {
             **document_params(reader, manifest, root), "frames": scene.animation["frames"],

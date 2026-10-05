@@ -23,8 +23,15 @@ def build_artifacts(ir, out_dir, exports=None, **_extra):
         with open(os.path.join(out_dir, "digest.json"), "w", encoding="utf-8") as output:
             json.dump(digest, output, ensure_ascii=False, allow_nan=False)
         if ir.get("assembly"):
-            scene = simulate_assembly(ir=ir, out_dir=out_dir, _built=built,
-                                      solve_only=not ir["assembly"]["drivers"])
+            if ir["assembly"].get("rotation"):
+                from tcad.ir.pendulum import gravity_frames
+                scene = read_artifact_scene(exported["files"]["fcstd"], ir["bodies"])
+                from tcad.worker.rotary import measured_rotation
+                measured = measured_rotation(ir['assembly'], built['body_results'])
+                scene.update(gravity_frames(measured, [b['id'] for b in ir['bodies']]))
+            else:
+                scene = simulate_assembly(ir=ir, out_dir=out_dir, _built=built,
+                                          solve_only=not ir["assembly"]["drivers"])
         else:
             # Reopen the delivered document, not the author's live build state.
             scene = read_artifact_scene(exported["files"]["fcstd"], ir["bodies"])

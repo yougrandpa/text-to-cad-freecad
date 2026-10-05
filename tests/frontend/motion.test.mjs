@@ -39,3 +39,11 @@ test('native animation applies row-major solver rotation and translation without
   animation.frames[0].arm[0]=Infinity;
   assert.throws(()=>poseAnimation(mesh,animation,0));
 });
+
+test('gravity frames report their physical scope instead of claiming a native solver', async () => {
+  const { motionScopeNote } = await import(new URL('../../tcad/viewer/core/scene.js', import.meta.url));
+  assert.match(motionScopeNote({solver:'Planar gravity pendulum / fixed-step RK4'}), /重力吊舱仿真/);
+  assert.doesNotMatch(motionScopeNote({solver:'Planar gravity pendulum / fixed-step RK4'}), /FreeCAD 原生/);
+  assert.match(motionScopeNote({solver:'FreeCAD Assembly / OndselSolver'}), /关节运动帧/);
+  assert.match(motionScopeNote(null), /传动比/);
+});

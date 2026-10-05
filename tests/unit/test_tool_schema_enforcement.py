@@ -232,7 +232,7 @@ def test_real_tools_accept_their_documented_minimal_call():
         ("geo_measure", {"what": ["volume"]}),
         ("asset_export", {"fmt": "step"}), ("asset_import", {"path": "/tmp/x.step"}),
         ("ir_commit", {"message": "go"}),
-        ("ir_patch", {"base_version": "current", "ops": []}),
+        ("ir_patch", {"base_version": "current", "ops": [{"op":"add_body", "payload":{"id":"body", "name":"body"}, "reason":"Create body"}]}),
         ("raw_python", {"code": "print(1)"}),
     ]:
         spec = registry.get(name)
