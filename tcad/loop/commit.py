@@ -32,7 +32,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import inspect
-import logging
 import os
 import time
 import uuid
@@ -51,8 +50,6 @@ from tcad.store.artifacts import write_build_stamp
 from tcad.worker.protocol import M_COMPILE_IR, M_EXPORT, M_INTROSPECT, M_READ_ARTIFACT_SCENE
 
 from tcad.tools.ir_tools import _err, _ok  # shared helpers
-
-log = logging.getLogger("tcad.commit")
 
 
 def _ekind(kind: str | None) -> ToolErrorKind:
@@ -213,32 +210,19 @@ async def _off_loop(
     immediately (the thread keeps going) — so this is the one place that can
     notice "the build is still running and nobody wants it any more".
     """
-    try:
-        return await asyncio.to_thread(fn, *args, **kwargs)
-    except asyncio.CancelledError:
-        _abort_worker(services, label)
-        raise
+    from tcad.build.execution import run_blocking
+    return await run_blocking(services, fn, *args, label=label, **kwargs)
 
 
-def _abort_worker(services: "Any", label: str) -> None:
-    """End the worker call this cancellation left running. Never raises.
-
-    Duck-typed rather than required by the ``Services.worker`` Protocol: the
-    pipeline is also driven by minimal test bundles whose worker is a plain
-    object, and those have no process to kill.
-    """
-    abort = getattr(getattr(services, "worker", None), "abort_inflight", None)
-    if not callable(abort):
-        return
-    try:
-        aborted = abort(f"turn stopped during {label}")
-        log.warning("aborted the running worker call (%s): %s", label,
-                    "process killed" if aborted else "nothing was running")
-    except Exception as exc:  # noqa: BLE001 — a stop must not fail on cleanup
-        log.warning("could not abort the worker call (%s): %s", label, exc)
+async def run_commit(services, model_id, ir_version, message, workdir, data_dir, hooks=None):
+    runtime = getattr(services, "build_runtime", None)
+    factory = lambda: _run_commit(services, model_id, ir_version, message, workdir, data_dir, hooks)
+    if runtime is None:
+        return await factory()
+    return await runtime.commit(services, model_id, ir_version, factory)
 
 
-async def run_commit(
+async def _run_commit(
     services: "Any",
     model_id: str,
     ir_version: int,
@@ -316,6 +300,9 @@ async def run_commit(
         ir_sha256=hashlib.sha256(ir.model_dump_json().encode("utf-8")).hexdigest(),
     )
     write_build_stamp(artifact_dir, stamp)
+    runtime = getattr(services, "build_runtime", None)
+    if runtime is not None:
+        runtime.progress("staging", attempt_id=attempt_id, artifact_dir=artifact_dir)
     # Freeze the exact build input alongside its outputs. Gate requirement and
     # provenance reads must not depend on a source snapshot later being edited.
     (Path(artifact_dir) / "ir.json").write_text(ir.model_dump_json(), encoding="utf-8")
@@ -333,6 +320,9 @@ async def run_commit(
             dispatch=dispatch,
         )
         if report is None and staging_dir:
+            retained = _retain_failed(services, staging_dir, stamp, error=result.error)
+            if retained:
+                result = result.model_copy(update={"content": result.content + f"\nFailed attempt artifact_id={retained}."})
             _discard_staging(services, staging_dir)
         return result, report
     except asyncio.CancelledError:
@@ -362,91 +352,105 @@ async def _build_and_grade(
     dispatch: "Any",
 ) -> tuple[ToolResult, GateReport | None]:
     """Steps 3-8 of the commit pipeline (module docstring has the invariants)."""
-    # 3. compile in the worker (FreeCAD — the only place that touches FreeCAD).
-    try:
-        comp = await _worker_call(
-            services, M_COMPILE_IR,
-            {"ir": ir.model_dump(), "out_dir": artifact_dir},
-            timeout_s=120.0,
-        )
-    except Exception as e:  # worker process down / transport error
-        return (_err(ToolErrorKind.RUNTIME, f"worker unreachable during compile: {e}"), None)
-    if not comp.get("ok"):
-        return (_worker_error(comp.get("error")), None)
-
-    # Steps 4/5 failures used to be swallowed (`except: pass`, and an unchecked
-    # inner `ok`). That turned a real problem — a sketch that will not solve, a
-    # solid that will not export — into a Gate that could only report "cannot
-    # attest", with no hint of the cause. The model then had nothing to repair.
-    # Collect the causes and tell it.
-    pipeline_notes: list[str] = []
-
-    # Honour the configured export list when a full Config is wired; fall back to
-    # the design's default otherwise (a bare service bundle in a unit test).
-    storage_cfg = getattr(getattr(services, "config", None), "storage", None)
-    export_formats = list(getattr(storage_cfg, "artifact_exports", None) or ["step", "stl"])
-
-    # 4. export artefacts (step/stl/brep/fcstd).
-    try:
-        exp = await _worker_call(
-            services,
-            M_EXPORT,
-            {
-                "ir": ir.model_dump(),
-                "exports": list(export_formats),
-                "name": model_id,
-                "out_dir": artifact_dir,
-            },
-            timeout_s=120.0,
-        )
-        if not exp.get("ok"):
-            pipeline_notes.append(f"artefact export failed: {_describe(exp)}")
-    except Exception as exc:  # noqa: BLE001
-        pipeline_notes.append(f"artefact export raised: {type(exc).__name__}: {exc}")
-
-    # 5. persist digest (advisory for the Gate's *measurements*, but its absence
-    #    is exactly why the Gate would otherwise say "no measurements available").
-    try:
-        dig = await _worker_call(
-            services, M_INTROSPECT,
-            {"ir": ir.model_dump(), "out_dir": artifact_dir, "measure": True},
-            timeout_s=60.0,
-        )
-        if dig.get("ok"):
-            digest = GeometryDigest.model_validate(dig.get("result"))
-            _persist_digest(services, model_id, ir_version, digest, artifact_dir)
-        else:
-            pipeline_notes.append(f"geometry measurement failed: {_describe(dig)}")
-    except Exception as exc:  # noqa: BLE001
-        pipeline_notes.append(f"geometry measurement raised: {type(exc).__name__}: {exc}")
-
-    # Freeze the shared render input during the build transaction. Static
-    # scenes read the exported FCStd; native poses are solved once here, never
-    # by a viewer query. Minimal embedders without manifests keep their legacy
-    # commit protocol.
     manifest_writer = getattr(services.store, "write_manifest", None)
-    if callable(manifest_writer):
-        from tcad.render.scene import SceneModel
-        if ir.assembly is not None:
-            method = "simulate_assembly" if ir.assembly.drivers else "solve_assembly"
-            params = {"ir": ir.model_dump(mode="json"), "out_dir": artifact_dir}
-        else:
-            method = M_READ_ARTIFACT_SCENE
-            params = {"fcstd_path": str(Path(artifact_dir) / f"{model_id}.FCStd"),
-                      "bodies": [{"id": b.id, "name": b.name,
-                                  "motion": b.motion.model_dump(mode="json") if b.motion else None}
-                                 for b in ir.bodies]}
+    runtime = getattr(services, "build_runtime", None)
+    pipeline_notes = []
+    if runtime is not None:
         try:
-            response = await _worker_call(services, method, params, timeout_s=180.0)
-            if not response.get("ok"):
-                return _worker_error(response.get("error")), None
-            scene = SceneModel.from_build(response["result"], ir.model_dump(mode="json"))
-            await asyncio.to_thread((Path(artifact_dir) / "scene.json").write_text,
-                                    scene.model_dump_json(), encoding="utf-8")
-        except asyncio.CancelledError:
-            raise
+            response = await _off_loop(services, runtime.geometry,
+                ir.model_dump(mode="json"), artifact_dir,
+                list(services.config.storage.artifact_exports), label="build_artifacts")
         except Exception as exc:
-            return _err(ToolErrorKind.RUNTIME, f"artifact scene generation failed: {exc}"), None
+            return _err(ToolErrorKind.RUNTIME, f"build runtime failed: {exc}"), None
+        if not response.get("ok"):
+            return _worker_error(response.get("error")), None
+        runtime.progress("gate", state="verifying")
+    else:
+        # 3. compile in the worker (FreeCAD — the only place that touches FreeCAD).
+        try:
+            comp = await _worker_call(
+                services, M_COMPILE_IR,
+                {"ir": ir.model_dump(), "out_dir": artifact_dir},
+                timeout_s=120.0,
+            )
+        except Exception as e:  # worker process down / transport error
+            return (_err(ToolErrorKind.RUNTIME, f"worker unreachable during compile: {e}"), None)
+        if not comp.get("ok"):
+            return (_worker_error(comp.get("error")), None)
+
+        # Steps 4/5 failures used to be swallowed (`except: pass`, and an unchecked
+        # inner `ok`). That turned a real problem — a sketch that will not solve, a
+        # solid that will not export — into a Gate that could only report "cannot
+        # attest", with no hint of the cause. The model then had nothing to repair.
+        # Collect the causes and tell it.
+        pipeline_notes: list[str] = []
+
+        # Honour the configured export list when a full Config is wired; fall back to
+        # the design's default otherwise (a bare service bundle in a unit test).
+        storage_cfg = getattr(getattr(services, "config", None), "storage", None)
+        export_formats = list(getattr(storage_cfg, "artifact_exports", None) or ["step", "stl"])
+
+        # 4. export artefacts (step/stl/brep/fcstd).
+        try:
+            exp = await _worker_call(
+                services,
+                M_EXPORT,
+                {
+                    "ir": ir.model_dump(),
+                    "exports": list(export_formats),
+                    "name": model_id,
+                    "out_dir": artifact_dir,
+                },
+                timeout_s=120.0,
+            )
+            if not exp.get("ok"):
+                pipeline_notes.append(f"artefact export failed: {_describe(exp)}")
+        except Exception as exc:  # noqa: BLE001
+            pipeline_notes.append(f"artefact export raised: {type(exc).__name__}: {exc}")
+
+        # 5. persist digest (advisory for the Gate's *measurements*, but its absence
+        #    is exactly why the Gate would otherwise say "no measurements available").
+        try:
+            dig = await _worker_call(
+                services, M_INTROSPECT,
+                {"ir": ir.model_dump(), "out_dir": artifact_dir, "measure": True},
+                timeout_s=60.0,
+            )
+            if dig.get("ok"):
+                digest = GeometryDigest.model_validate(dig.get("result"))
+                _persist_digest(services, model_id, ir_version, digest, artifact_dir)
+            else:
+                pipeline_notes.append(f"geometry measurement failed: {_describe(dig)}")
+        except Exception as exc:  # noqa: BLE001
+            pipeline_notes.append(f"geometry measurement raised: {type(exc).__name__}: {exc}")
+
+        # Freeze the shared render input during the build transaction. Static
+        # scenes read the exported FCStd; native poses are solved once here, never
+        # by a viewer query. Minimal embedders without manifests keep their legacy
+        # commit protocol.
+        manifest_writer = getattr(services.store, "write_manifest", None)
+        if callable(manifest_writer):
+            from tcad.render.scene import SceneModel
+            if ir.assembly is not None:
+                method = "simulate_assembly" if ir.assembly.drivers else "solve_assembly"
+                params = {"ir": ir.model_dump(mode="json"), "out_dir": artifact_dir}
+            else:
+                method = M_READ_ARTIFACT_SCENE
+                params = {"fcstd_path": str(Path(artifact_dir) / f"{model_id}.FCStd"),
+                          "bodies": [{"id": b.id, "name": b.name,
+                                      "motion": b.motion.model_dump(mode="json") if b.motion else None}
+                                     for b in ir.bodies]}
+            try:
+                response = await _worker_call(services, method, params, timeout_s=180.0)
+                if not response.get("ok"):
+                    return _worker_error(response.get("error")), None
+                scene = SceneModel.from_build(response["result"], ir.model_dump(mode="json"))
+                await asyncio.to_thread((Path(artifact_dir) / "scene.json").write_text,
+                                        scene.model_dump_json(), encoding="utf-8")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                return _err(ToolErrorKind.RUNTIME, f"artifact scene generation failed: {exc}"), None
 
     # 6/7. Gate.evaluate builds CheckContext FROM DISK and grades independently.
     # It also drives the worker (round_trip re-imports the STEP), so it goes off
@@ -478,9 +482,11 @@ async def _build_and_grade(
     # A failed attempt is discarded, leaving the last verified build in place, so
     # "recover the last good version" is simply "do nothing".
     published = False
+    failed_artifact_id = None
     if staging_dir:
         if report.passed:
-            published = _publish(services, model_id, ir_version, staging_dir, attempt_id, stamp, report)
+            publisher = lambda: _publish(services, model_id, ir_version, staging_dir, attempt_id, stamp, report)
+            published = runtime.publish(publisher) if runtime is not None else publisher()
             if not published:
                 # The Gate passed but the result is not the version's artifacts.
                 # Saying nothing here would let a green report imply a delivery
@@ -490,6 +496,7 @@ async def _build_and_grade(
                     "directory; the previous verified artifacts are still in place"
                 )
         else:
+            failed_artifact_id = _retain_failed(services, staging_dir, stamp, report=report)
             _discard_staging(services, staging_dir)
 
     # 7c. Persist the verdict beside the IR snapshot. The *next* turn may run in
@@ -506,12 +513,16 @@ async def _build_and_grade(
     )
 
     text = _format_report(report, ir)
+    if failed_artifact_id:
+        text += f"\nFailed attempt artifact_id={failed_artifact_id}."
     if published and callable(getattr(services.store, "artifact_dir", None)):
         path = Path(services.store.artifact_dir(model_id, ir_version)) / "manifest.json"
         if path.is_file():
             from tcad.artifacts.manifest import ArtifactSet
             manifest = ArtifactSet.model_validate_json(path.read_text(encoding="utf-8"))
             text += f"\nPublished artifact_id={manifest.artifact_id}."
+            if runtime is not None:
+                runtime.progress("published", artifact_id=manifest.artifact_id)
     if pipeline_notes:
         text += "\n\nUpstream failures that hid the geometry from the Gate:\n" + "\n".join(
             f"  - {n}" for n in pipeline_notes
@@ -599,6 +610,24 @@ def _discard_staging(services: "Any", staging_dir: str) -> None:
     shutil.rmtree(staging_dir, ignore_errors=True)
 
 
+def _retain_failed(services, directory, stamp, report=None, error=None):
+    retain = getattr(services.store, "retain_attempt", None)
+    manifest = getattr(services.store, "write_manifest", None)
+    if not callable(retain) or not callable(manifest):
+        return None
+    if report is not None:
+        (Path(directory) / "gate_report.json").write_text(report.model_dump_json(), encoding="utf-8")
+    elif error is not None:
+        (Path(directory) / "build_error.json").write_text(error.model_dump_json(), encoding="utf-8")
+    manifest(directory, model_id=stamp.model_id, version=stamp.ir_version,
+             attempt_id=stamp.attempt_id, ir_sha256=stamp.ir_sha256, status="failed")
+    identity = retain(directory)
+    runtime = getattr(services, "build_runtime", None)
+    if runtime is not None:
+        runtime.progress("failed_attempt", artifact_id=identity)
+    return identity
+
+
 def _publish(
     services: "Any",
     model_id: str,
@@ -607,7 +636,7 @@ def _publish(
     attempt_id: str,
     stamp: BuildStamp,
     report: GateReport,
-) -> bool:
+) -> str | bool:
     """Write the artifact list and promote the verified build. Never raises.
 
     Returns whether the version directory now holds this build. A failure to
@@ -626,13 +655,18 @@ def _publish(
                 ir_sha256=stamp.ir_sha256,
                 status="verified",
             )
+        artifact_id = None
+        if callable(manifest):
+            from tcad.artifacts.manifest import ArtifactSet
+            artifact_id = ArtifactSet.model_validate_json(
+                (Path(staging_dir) / "manifest.json").read_bytes()).artifact_id
         publisher = getattr(services.store, "publish", None)
         if not callable(publisher):
             # No publish capability: the "staging" dir was already promoted by
             # the store's own convention (or there is no staging at all).
-            return True
+            return artifact_id or True
         publisher(model_id, ir_version, staging_dir)
-        return True
+        return artifact_id or True
     except Exception:  # noqa: BLE001 — surfaced as a pipeline note, never a crash
         _discard_staging(services, staging_dir)
         return False

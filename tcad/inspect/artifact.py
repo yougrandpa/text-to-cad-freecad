@@ -52,10 +52,11 @@ class ArtifactReader:
             raise ArtifactReadError("artifact identity does not match the request")
         for name in manifest.files:
             self.read_file(manifest, root, name)
-        if manifest.status == ArtifactStatus.VERIFIED:
+        if "ir.json" in manifest.files:
             source = self.read_file(manifest, root, "ir.json")
             if hashlib.sha256(source).hexdigest() != manifest.ir_sha256:
                 raise ArtifactReadError("artifact source does not match its build input hash")
+        if "gate_report.json" in manifest.files:
             self.gate_report(manifest, root)
         # Version directories are compatibility aliases. Render from the
         # retained immutable set when present, so concurrent retries cannot
@@ -109,6 +110,7 @@ class ArtifactReader:
             raise ArtifactReadError(f"invalid artifact Gate report: {exc}") from exc
         if (report.model_id != manifest.model_id or report.ir_version != manifest.ir_version
                 or report.attempt_id != manifest.attempt_id or report.ir_sha256 != manifest.ir_sha256
-                or (manifest.status == ArtifactStatus.VERIFIED and not report.passed)):
+                or (manifest.status == ArtifactStatus.VERIFIED and not report.passed)
+                or (manifest.status == ArtifactStatus.FAILED and report.passed)):
             raise ArtifactReadError("artifact Gate report does not attest this build")
         return report

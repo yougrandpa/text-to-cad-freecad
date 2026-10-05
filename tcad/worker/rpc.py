@@ -25,10 +25,20 @@ from tcad.worker.assembly import simulate_assembly, solve_assembly
 from tcad.worker.exporters import export_artifacts
 from tcad.worker.reopen import reopen_edit_measure
 from tcad.worker.selftest import api_selftest
+from tcad.worker.bundle import build_artifacts
+from tcad.worker.artifact_ops import export_saved, check_saved_motion
+
+
+def _ping(**_extra):
+    import FreeCAD
+    return {"ok": True, "pong": True, "freecad_version": list(FreeCAD.Version())}
 
 
 _HANDLERS = {
-    "ping": lambda **kw: {"ok": True, "pong": True},
+    "ping": _ping,
+    "build_artifacts": build_artifacts,
+    "export_saved": export_saved,
+    "check_saved_motion": check_saved_motion,
     "api_selftest": api_selftest,
     "compile_ir": compile_ir,
     "introspect_document": introspect_document,

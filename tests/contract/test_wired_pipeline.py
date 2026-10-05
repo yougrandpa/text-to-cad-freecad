@@ -470,11 +470,13 @@ def test_upstream_failures_are_named_when_the_gate_cannot_attest(services):
     real_request = services.worker.request
 
     def picky(method, params=None, *, timeout_s=30.0):
-        if method in ("export_artifacts", "introspect_document"):
+        if method == "build_artifacts":
             return {"ok": False, "error": {"kind": "compile", "message": f"{method} refused"}}
         return real_request(method, params, timeout_s=timeout_s)
 
     services.worker.request = picky
+    real_restore = services.build_runtime.cache.restore
+    services.build_runtime.cache.restore = lambda *args: False
     try:
         result, report = asyncio.run(
             run_commit(
@@ -484,12 +486,11 @@ def test_upstream_failures_are_named_when_the_gate_cannot_attest(services):
         )
     finally:
         services.worker.request = real_request
+        services.build_runtime.cache.restore = real_restore
 
-    assert report is not None and report.passed is False
-    assert "artefact export failed" in result.content
-    assert "geometry measurement failed" in result.content
-    assert "export_artifacts refused" in result.content
-    assert "introspect_document refused" in result.content
+    assert report is None and not result.ok
+    assert "build_artifacts refused" in result.error.message
+    assert "Failed attempt artifact_id=" in result.content
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -638,11 +639,13 @@ def test_a_failed_build_is_never_published(services):
     real_request = services.worker.request
 
     def picky(method, params=None, *, timeout_s=30.0):
-        if method in ("export_artifacts", "introspect_document"):
+        if method == "build_artifacts":
             return {"ok": False, "error": {"kind": "compile", "message": f"{method} refused"}}
         return real_request(method, params, timeout_s=timeout_s)
 
     services.worker.request = picky
+    real_restore = services.build_runtime.cache.restore
+    services.build_runtime.cache.restore = lambda *args: False
     try:
         _, report = asyncio.run(run_commit(
             services, model_id=model_id, ir_version=version, message="degraded",
@@ -650,8 +653,9 @@ def test_a_failed_build_is_never_published(services):
         ))
     finally:
         services.worker.request = real_request
+        services.build_runtime.cache.restore = real_restore
 
-    assert report is not None and report.passed is False
+    assert report is None
     assert not canonical.exists() or not any(
         p.suffix.lower() in (".step", ".stl", ".fcstd") for p in canonical.rglob("*")
     ), f"a failed build leaked artifacts: {sorted(p.name for p in canonical.rglob('*')) if canonical.exists() else []}"
@@ -697,11 +701,13 @@ def test_a_failed_retry_leaves_the_verified_build_in_place(services):
     real_request = services.worker.request
 
     def picky(method, params=None, *, timeout_s=30.0):
-        if method in ("export_artifacts", "introspect_document"):
+        if method == "build_artifacts":
             return {"ok": False, "error": {"kind": "compile", "message": f"{method} refused"}}
         return real_request(method, params, timeout_s=timeout_s)
 
     services.worker.request = picky
+    real_restore = services.build_runtime.cache.restore
+    services.build_runtime.cache.restore = lambda *args: False
     try:
         _, second = asyncio.run(run_commit(
             services, model_id=model_id, ir_version=version, message="retry",
@@ -709,8 +715,9 @@ def test_a_failed_retry_leaves_the_verified_build_in_place(services):
         ))
     finally:
         services.worker.request = real_request
+        services.build_runtime.cache.restore = real_restore
 
-    assert second is not None and second.passed is False
+    assert second is None
     # The failed retry must not have overwritten the verified evidence.
     assert (canonical / f"{model_id}.step").read_bytes() == step_before
     manifest_after = json.loads((canonical / "manifest.json").read_text(encoding="utf-8"))

@@ -194,24 +194,14 @@ async def test_asset_export_refuses_a_traversing_name(tmp_path):
 
 async def test_asset_export_accepts_a_normal_name(tmp_path):
     from tcad.tools.geo_tools import asset_export_handler
-
-    calls = []
-
-    def request(method, params=None, **kw):
-        calls.append(params)
-        return {"ok": False, "error": {"kind": "runtime", "message": "reached the worker"}}
-
-    class _Ir:
-        def model_dump(self):
-            return {}
-
-    services = _services(
-        store=SimpleNamespace(current_version=lambda m: 0, load=lambda *a, **k: _Ir()),
-        worker=SimpleNamespace(request=request),
-    )
-    res = await asset_export_handler(services, {"fmt": "step", "name": "plate_v2"}, _ctx(tmp_path))
-    assert res.error is not None and "reached the worker" in res.error.message
-    assert calls[0]["name"] == "plate_v2"
+    from tests.fixtures.artifact_scene import publish_scene
+    ctx = _ctx(tmp_path)
+    publish_scene(ctx.data_dir, model_id=ctx.model_id)
+    services = _services(store=SimpleNamespace(current_version=lambda m: 0))
+    res = await asset_export_handler(services, {"fmt": "step", "name": "plate_v2"}, ctx)
+    assert res.ok, res.error
+    import json
+    assert Path(json.loads(res.content)["path"]).name == "plate_v2.step"
 
 
 async def test_asset_import_refuses_a_path_outside_the_roots(tmp_path):

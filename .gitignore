@@ -19,7 +19,9 @@ __pycache__/
 .pytest_tmp/
 .pytest_tmp_*/
 .pytest_cache/
-build/
+.playwright-cli/
+/output/playwright/
+/build/
 dist/
 
 # 运行期数据（IR 快照、事件流、SQLite、导出的 STEP/STL）

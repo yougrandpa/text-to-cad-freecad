@@ -18,7 +18,9 @@ from pydantic import BaseModel, Field, field_validator
 class RuntimeConfig(BaseModel):
     freecad_cmd: str = "./free-cad/FreeCAD/build/debug/bin/FreeCADCmd"
     freecad_python_path: str = "."
-    worker_pool_size: int = 2
+    worker_pool_size: int = Field(default=2, ge=1, le=16)
+    build_debounce_s: float = Field(default=0.05, ge=0, le=5)
+    build_timeout_s: float = Field(default=600, gt=0)
     worker_request_timeout_s: float = 60.0
     worker_restart_on_crash: bool = True
     worker_startup_timeout_s: float = 120.0
@@ -125,6 +127,8 @@ class RenderConfig(BaseModel):
     height: int = 576
     supersample: int = 2
     style: Literal["flat_edges", "flat", "edges_only"] = "flat_edges"
+    backend: Literal["software", "webgl"] = "software"
+    browser_executable: str | None = None
 
 
 class ContextConfig(BaseModel):

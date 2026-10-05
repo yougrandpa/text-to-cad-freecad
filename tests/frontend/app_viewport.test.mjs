@@ -4,7 +4,8 @@ import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
 
 const source = (await readFile(new URL('../../tcad/server/ui/app.js', import.meta.url),'utf8'))
-  .replace(/^import .*;$/m,'').replace(/\nboot\(\);\s*$/,'');
+  .replace(/^import .*;$/gm,'').replace(/\nboot\(\);\s*$/,'');
+const { validateArtifactScene } = await import(new URL('../../tcad/viewer/core/artifact.js', import.meta.url));
 const deferred = () => { let resolve; const promise = new Promise((r)=>{resolve=r;}); return {promise,resolve}; };
 const response = (body,status=200) => ({ok:status===200,status,statusText:'Error',json:async()=>body.model_id
   ? {artifact_id:'sha256:'+'f'.repeat(64),status:'verified',...body} : body,blob:async()=>({})});
@@ -18,7 +19,7 @@ function harness(fetch) {
   const viewer = {available:true,hasMesh:false,camera:{},error:'',
     clear(){this.hasMesh=false;},setMesh(mesh){drawn.push(mesh);this.hasMesh=true;return 12;}};
   const context = vm.createContext({document:{getElementById:node,querySelectorAll:()=>tabs},fetch,
-    URLSearchParams,AbortController,URL:{createObjectURL:()=> 'blob:test',revokeObjectURL:(url)=>revoked.push(url)},console});
+    validateArtifactScene,URLSearchParams,AbortController,URL:{createObjectURL:()=> 'blob:test',revokeObjectURL:(url)=>revoked.push(url)},console});
   vm.runInContext(source + '\n globalThis.testing={state,loadView,applyToolImages,displayImage,cancelViewRequest,setViewer:(value)=>{meshViewer=value;}};',context);
   const api=context.testing; api.setViewer(viewer); api.state.modelId='model-A'; api.state.sessionEpoch=1;
   return {...api,node,viewer,drawn,revoked};

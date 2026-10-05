@@ -199,8 +199,8 @@ def _require_mapping(value: object, *, field: str) -> dict:
 #: which is the failure mode that makes people delete whitelists.
 _PAYLOAD_FIELDS: dict[str, frozenset[str]] = {
     "set_assembly": frozenset({"assembly"}),
-    "add_body": frozenset({"id", "name", "motion"}),
-    "update_body": frozenset({"name", "motion"}),
+    "add_body": frozenset({"id", "name", "motion", "part_ref"}),
+    "update_body": frozenset({"name", "motion", "part_ref"}),
     "add_sketch": frozenset(SketchSpec.model_fields) | {"body_id", "geometry_append", "constraints_append"},
     "update_sketch": frozenset(SketchSpec.model_fields) | {"geometry_append", "constraints_append"},
     "add_feature": frozenset(FeatureSpec.model_fields) | {"body_id"},
@@ -392,7 +392,7 @@ def _op_add_body(ir: IrDocument, op: IrPatchOp, out: PatchOutcome) -> None:
     if bid in ids:
         _reject(ToolErrorKind.SEMANTIC, f"body id '{bid}' already exists")
     body = BodySpec(id=bid, name=op.payload.get("name") or bid,
-                    motion=op.payload.get("motion"))
+                    motion=op.payload.get("motion"), part_ref=op.payload.get("part_ref"))
     ir.bodies.append(body)
     out.created_ids.append(bid)
     out.changes.append(f"add_body '{body.name}' (id={bid}): {op.reason or '-'}")

@@ -26,16 +26,16 @@
 
 当前 Scene 网格精度在构建时固定为 `tolerance=0.5`。请求其他精度会返回 409；`force` 仅刷新派生响应或图片，不重新构建几何。未构建的显式版本返回 404，不借用其他版本。
 
-当前仍保留原有失败 attempt 清理行为，失败详情继续存于 `gate_reports/`。尚未提供失败 attempt 的持久 artifact_id 查询。
+失败 attempt 现在保存为独立不可变产物，可通过 artifact_id 查询已有测量和 Scene；不会替换正式版本。失败详情仍存于 `gate_reports/`，编译失败没有生成的文件不会被补成有效证据。
 
 ## 后续范围
 
-核心查询边界已建立。按需导出、`assembly_simulate` / `assembly_export` 和专门的运动干涉检查仍沿用原来的命令链路，未全部迁移到 Artifact；失败 attempt 的持久查询仍待实施。
+后续 Phase 2–5 已接入：BuildDigest / 可重建缓存、持久 Job / Scheduler、Warm Worker Pool、取消/合并构建、Viewer Core/Host 分离、可选共用 WebGL 快照和组件装配构建图。按需导出、`assembly_simulate` / `assembly_export` 和运动干涉检查也已使用冻结产物。`artifact_id` 仍不能替代 BuildDigest。
 
-下一步可以引入 BuildDigest 与可重建缓存策略，再抽象 Build Job / Scheduler。当前 `artifact_id` 不能替代 BuildDigest。WebGL 与 Python 光栅器已共用 Scene 数据，但尚未完成 Viewer Core/Host 分离和统一像素渲染实现。Warm Worker Pool、取消/合并构建和 Assembly 构建图也尚未实施。
+依赖、配置、兼容后端和验证范围见 [Build Runtime 与 Viewer 重构](build-runtime-refactor.md)。默认软件光栅器保留；需要复用实际交互渲染器的部署可选择 WebGL 快照后端。
 
 ## 验证
 
 回归覆盖已发布版本选择、显式构建身份、损坏产物拒绝、缓存删除重建、渲染并发隔离和请求取消。真实 FreeCAD 合约测试覆盖静态、指定旋转运动、原生动态装配和原生静态装配；移除创作源并禁止 worker 请求后，Viewer、Web PNG 与 `geo_view` 仍能读取已发布产物。网页检查确认未启动 worker 时可显示已验证构建。
 
-本轮检查：`pytest tests/unit tests/contract -q` 1412 项通过；`node --test tests/frontend/*.test.mjs` 33 项通过；`git diff --check` 通过。未调用真实模型服务 E2E。
+Phase 1 历史检查：`pytest tests/unit tests/contract -q` 1412 项通过；`node --test tests/frontend/*.test.mjs` 33 项通过；`git diff --check` 通过。后续 Phase 2–5 最终检查为 Python 1438 项、前端 36 项通过，详见重构说明；未调用真实模型服务 E2E。

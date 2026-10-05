@@ -1,8 +1,8 @@
 """Geometry/read tools — read tier, model never reaches FreeCAD.
 
-geo_view      : render declared visual-checkpoint views from a worker mesh
+geo_view      : render declared visual-checkpoint views from saved scenes
 geo_measure   : measurements (volume/bbox/faces/edges/solids) from introspect
-asset_export  : export step/stl/brep/fcstd via the worker
+asset_export  : read or convert saved step/stl/brep/fcstd artifacts
 asset_import  : import an external asset (step/iges/stl/dxf) via the worker
 
 Token cost is the reason geo_view is gated: the engine sets a per-step
@@ -51,9 +51,9 @@ async def _ask_worker(services: "Any", method: str, params: dict, *, timeout_s: 
     checkpoint. The commit path was moved onto a thread for exactly this reason;
     the geo tools had the same shape and were missed.
     """
-    return await asyncio.to_thread(
-        functools.partial(services.worker.request, method, params, timeout_s=timeout_s)
-    )
+    from tcad.build.execution import run_blocking
+    return await run_blocking(services, services.worker.request, method, params,
+                              timeout_s=timeout_s, label=method)
 
 
 async def geo_view_handler(services: "Any", args: dict, ctx: ToolContext) -> ToolResult:
@@ -161,26 +161,14 @@ async def asset_export_handler(services: "Any", args: dict, ctx: ToolContext) ->
         name = ensure_safe_id(name, kind="export name")
     except InvalidIdentifier as exc:
         return _err(ToolErrorKind.SCHEMA, str(exc))
-    version = services.store.current_version(ctx.model_id)
-    ir = services.store.load(ctx.model_id, version)
-    out_dir = _artifact_dir(ctx, version)
-    os.makedirs(out_dir, exist_ok=True)
-    res = await _ask_worker(
-        services, M_EXPORT,
-        {"ir": ir.model_dump(), "exports": [fmt], "name": name, "out_dir": out_dir},
-        timeout_s=60.0,
-    )
-    if not res.get("ok"):
-        e = res.get("error", {}) or {}
-        return _err(
-            ToolErrorKind(e.get("kind", "runtime")),  # type: ignore[arg-type]
-            e.get("message", "export failed"),
-            feature_id=e.get("feature_id"),
-        )
-    files = (res.get("result") or {}).get("files", {})
-    path = files.get(fmt)
-    size = os.path.getsize(path) if path and os.path.exists(path) else 0
-    return _ok(json.dumps({"path": path, "size_bytes": size}, indent=2))
+    from tcad.inspect.operations import export_artifact
+    try:
+        from tcad.build.execution import run_blocking
+        result = await run_blocking(services, export_artifact, services, ctx,
+                                   {**args, "name": name}, label="artifact export")
+    except (OSError, ValueError) as exc:
+        return _err(ToolErrorKind.RUNTIME, str(exc))
+    return _ok(json.dumps(result, indent=2))
 
 
 async def asset_import_handler(services: "Any", args: dict, ctx: ToolContext) -> ToolResult:
@@ -228,41 +216,19 @@ async def asset_import_handler(services: "Any", args: dict, ctx: ToolContext) ->
 
 
 async def _assembly_result(services, ctx, checks=None):
-    import hashlib
-    ir = services.store.load(ctx.model_id)
-    if ir.assembly is None:
-        raise ValueError("Call assembly_configure with native joints/drivers first")
-    out_dir = os.path.join(_artifact_dir(ctx, ir.version), "assembly")
-    os.makedirs(out_dir, exist_ok=True)
-    fingerprint = hashlib.sha256(ir.model_dump_json().encode()).hexdigest()
-    path = os.path.join(out_dir, "animation.json")
-    if os.path.isfile(path):
-        with open(path, encoding="utf-8") as source:
-            cached = json.load(source)
-        if cached.get("ir_sha256") == fingerprint and cached.get("adapter_version") == 1 and cached.get("checks") == checks:
-            return cached, path
-    response = await _ask_worker(services, "simulate_assembly", {"ir": ir.model_dump(), "out_dir": out_dir, **(checks or {})}, timeout_s=180.0)
-    if not response.get("ok"):
-        error = response.get("error") or {}
-        raise ValueError(error.get("message", "native simulation failed"))
-    result = response["result"]
-    result["ir_sha256"] = fingerprint
-    result["checks"] = checks
-    result["adapter_version"] = 1
-    with open(path + ".tmp", "w", encoding="utf-8") as output:
-        json.dump(result, output, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
-    os.replace(path + ".tmp", path)
-    return result, path
+    from tcad.inspect.operations import saved_assembly
+    from tcad.build.execution import run_blocking
+    return await run_blocking(services, saved_assembly, services, ctx, checks or {}, label="saved assembly")
 
 
 async def assembly_simulate_handler(services, args, ctx):
     try:
         result, path = await _assembly_result(services, ctx, args or None)
-    except ValueError as exc:
+    except (OSError, ValueError) as exc:
         return _err(ToolErrorKind.SOLVER, str(exc))
     return _ok(json.dumps({"solver": result["solver"], "frames": len(result["frames"]),
         "bodies": [p["body_id"] for p in result["parts"]], "start": result["start"], "step": result["step"],
-        "animation": path, "fcstd": result["export"], "scope": result["scope"], "interferences": (result["interferences"][:10] if result.get("interferences") is not None else None), "interference_count": len(result.get("interferences") or []), "frames_checked": result.get("frames_checked", 0)}, ensure_ascii=False, separators=(",", ":")))
+        "animation": path, "fcstd": result["export"], "artifact_id": result["artifact_id"], "scope": result["scope"], "interferences": (result["interferences"][:10] if result.get("interferences") is not None else None), "interference_count": len(result.get("interferences") or []), "frames_checked": result.get("frames_checked", 0)}, ensure_ascii=False, separators=(",", ":")))
 
 
 async def assembly_solve_handler(services, args, ctx):
@@ -270,43 +236,36 @@ async def assembly_solve_handler(services, args, ctx):
 
 
 async def assembly_export_handler(services, args, ctx):
-    from tcad.render.animation import export_animation
+    from tcad.inspect.operations import export_saved_animation
     try:
-        result, source_path = await _assembly_result(services, ctx)
-        path = os.path.join(os.path.dirname(source_path), "animation." + args.get("format", "gif"))
-        summary = await asyncio.to_thread(export_animation, result, path,
-            view=args.get("view", "iso"), width=args.get("width", 480), height=args.get("height", 360),
-            stride=args.get("stride", 2))
-    except ValueError as exc:
+        summary = await asyncio.to_thread(export_saved_animation, services, ctx, args)
+    except (OSError, ValueError) as exc:
         return _err(ToolErrorKind.SEMANTIC, str(exc))
     return _ok(json.dumps(summary, ensure_ascii=False, separators=(",", ":")))
 
 
 async def geo_check_motion_handler(services, args, ctx):
-    ir = services.store.load(ctx.model_id)
-    if ir.assembly is not None:
-        return _err(ToolErrorKind.SEMANTIC, "Native assemblies use solved frames; call assembly_simulate with check_pairs instead of prescribed crank-angle checks")
-    result = await _ask_worker(services, "check_motion", {
-        "ir": ir.model_dump(), "out_dir": _artifact_dir(ctx, ir.version), **args,
-    }, timeout_s=120.0)
-    if not result.get("ok"):
-        error = result.get("error") or {}
-        return _err(ToolErrorKind.RUNTIME, error.get("message", "motion check failed"))
-    return _ok(json.dumps(result["result"], ensure_ascii=False, separators=(",", ":")))
+    from tcad.inspect.operations import check_motion
+    try:
+        from tcad.build.execution import run_blocking
+        result = await run_blocking(services, check_motion, services, ctx, args, label="motion check")
+    except (OSError, ValueError) as exc:
+        return _err(ToolErrorKind.RUNTIME, str(exc))
+    return _ok(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
 
 
 def build_geo_tools(services: "Any") -> dict[str, ToolSpec]:
     return {
         "assembly_solve": ToolSpec(
             name="assembly_solve", tier=ToolTier.READ,
-            description="Run native static Assembly constraint solve, including passive Fixed/Ball/Distance/Parallel/Perpendicular/Angle joints. Requires grounding and configured joints but no motion driver. Returns solved placement/export summary or native constraint errors. Use assembly_simulate for time-dependent motion.",
-            params_schema={"type":"object", "additionalProperties":False, "properties":{}},
+            description="Read the committed native static Assembly solution, including passive Fixed/Ball/Distance/Parallel/Perpendicular/Angle joints. Requires grounding and configured joints but no motion driver. Returns solved placement/export summary or native constraint errors. Use assembly_simulate for time-dependent motion.",
+            params_schema={"type":"object", "additionalProperties":False, "properties":{"artifact_id":{"type":"string"},}},
             handler=functools.partial(assembly_solve_handler,services),timeout_s=190.0,
         ),
         "assembly_export": ToolSpec(
             name="assembly_export", tier=ToolTier.READ,
-            description="Export native solver animation as GIF, MP4, AVI or WebM, reusing frames matching the current IR. Fixed camera bounds avoid frame-to-frame zoom. stride controls frame sampling; GIF needs Pillow, video needs optional animation/PyAV dependency and the matching encoder. This is a visual export, not physical validation.",
-            params_schema={"type":"object", "additionalProperties":False, "properties":{
+            description="Export saved artifact animation as GIF, MP4, AVI or WebM; commit this version first or pin artifact_id. Fixed camera bounds avoid frame-to-frame zoom. stride controls frame sampling; GIF needs Pillow, video needs optional animation/PyAV dependency and the matching encoder. This is a visual export, not physical validation.",
+            params_schema={"type":"object", "additionalProperties":False, "properties":{"artifact_id":{"type":"string"},
                 "format":{"type":"string","enum":["gif","mp4","avi","webm"]},
                 "view":{"type":"string","enum":["iso","front","top","right"]},
                 "width":{"type":"integer","minimum":128,"maximum":1024},
@@ -316,16 +275,17 @@ def build_geo_tools(services: "Any") -> dict[str, ToolSpec]:
         ),
         "assembly_simulate": ToolSpec(
             name="assembly_simulate", tier=ToolTier.READ,
-            description="Solve configured native Assembly and generate motion frames once. Returns compact frame summary and animation.json/FCStd paths, not large frame arrays. Optional check_pairs performs sampled BRep overlap checks on solved poses, with check_stride selecting frames. Web viewport loads these native poses for playback/scrubbing. Solver failures are reported; not contact force, collision or cutting verification, and not a geometry Gate pass.",
-            params_schema={"type":"object", "additionalProperties":False, "properties":{
+            description="Read the committed native Assembly motion frames. Returns compact frame summary and animation.json/FCStd paths, not large frame arrays. Optional check_pairs performs sampled BRep overlap checks on solved poses, with check_stride selecting frames. Returns saved artifact poses for playback/scrubbing; commit after assembly edits. Solver failures are reported; not contact force, collision or cutting verification, and not a geometry Gate pass.",
+            params_schema={"type":"object", "additionalProperties":False, "properties":{"artifact_id":{"type":"string"},
                 "check_pairs":{"type":"array","minItems":1,"maxItems":100,"items":{"type":"array","minItems":2,"maxItems":2,"items":{"type":"string"}}},
                 "check_stride":{"type":"integer","minimum":1,"maximum":30}}},
             handler=functools.partial(assembly_simulate_handler, services), timeout_s=190.0,
         ),
         "geo_check_motion": ToolSpec(
             name="geo_check_motion", tier=ToolTier.READ,
-            description="Build once and check real solid overlap at sampled crank angles. Optional pairs selects body ID pairs; default all. Reports interference volume; sampled_clear never proves continuous clearance, gear contact or cutting. Check mounting parts separately from expected intentional fits.",
+            description="Read the committed FCStd and check real solid overlap at sampled crank angles. Optional pairs selects body ID pairs; default all. Reports interference volume; sampled_clear never proves continuous clearance, gear contact or cutting. Check mounting parts separately from expected intentional fits.",
             params_schema={"type": "object", "additionalProperties": False, "properties": {
+                "artifact_id": {"type": "string"},
                 "angles": {"type": "array", "minItems": 1, "maxItems": 73, "items": {"type": "number", "minimum": -720, "maximum": 720}},
                 "pairs": {"type": "array", "minItems": 1, "maxItems": 100, "items": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "string"}}},
                 "volume_tolerance": {"type": "number", "minimum": 0}}},
@@ -338,7 +298,7 @@ def build_geo_tools(services: "Any") -> dict[str, ToolSpec]:
                          "Optional artifact_id pins a build; otherwise commit this version first. "
                          "Optional driver_angle_deg poses bodies using their motion pivot/axis/ratio "
                          "or frame_index selects a saved native animation frame. This previews rigid kinematics, not collision, "
-                         "contact or material removal. Default 0 shows the static CAD/export pose."),
+                         "contact or material removal. Default angle 0 preserves the static pose; native frame 0 shows the first solved frame."),
             params_schema={
                 "type": "object",
                 "properties": {
@@ -369,10 +329,11 @@ def build_geo_tools(services: "Any") -> dict[str, ToolSpec]:
         "asset_export": ToolSpec(
             name="asset_export",
             tier=ToolTier.READ,
-            description="Export the current model to step/stl/brep/fcstd and return the file path + size.",
+            description="Export committed step/stl/brep/fcstd artifacts and return path, size and artifact_id; commit first or pin artifact_id.",
             params_schema={
                 "type": "object",
                 "properties": {
+                    "artifact_id": {"type": "string"},
                     "fmt": {"type": "string"},
                     "name": {"type": "string"},
                 },

@@ -13,7 +13,8 @@
  *     real decisions.
  */
 
-import { MeshViewport } from "./viewport.js?v=20261004-assembly";
+import { MeshViewport } from "./viewport.js?v=20261004-refactor";
+import { validateArtifactScene } from "../../viewer/core/artifact.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -689,6 +690,15 @@ async function send(text) {
  * turn ended, so a long run looked like nothing was happening.
  */
 function handleAgentEvent(d) {
+  if (d.kind === "build") {
+    const phases = { staging: "准备构建", cache: "检查已有几何", geometry_reused: "复用已有几何",
+      compile: "构建零件", components: "构建装配组件", assemble: "组合组件",
+      queued: "等待构建", validate: "校验输入", gate: "验证构建", published: "构建已发布",
+      failed_attempt: "构建未通过验证", failed: "构建失败", cancelled: "构建已取消", timeout: "构建超时" };
+    if (d.phase === "complete") phases.complete = d.state === "published" ? "构建已发布" : "构建失败";
+    if (d.model_id === state.modelId && phases[d.phase]) setLive(`v${d.ir_version} · ${phases[d.phase]}`);
+    return;
+  }
   if (d.kind === "model") {
     if (d.text && d.text.trim()) pushAssistantText(d.text.trim());
     if (d.tool_calls && d.tool_calls.length) {
@@ -838,10 +848,7 @@ async function loadView(force, { version = null } = {}) {
       }
       const body = await res.json();
       if (!current()) return;
-      if (body.model_id !== token.modelId || !Number.isInteger(body.version) || body.version < 0 ||
-          (version != null && body.version !== version)) throw new Error("网格响应与当前模型版本不匹配");
-      if (typeof body.artifact_id !== "string" || !/^sha256:[0-9a-f]{64}$/.test(body.artifact_id) ||
-          !["draft", "verifying", "verified", "failed"].includes(body.status)) throw new Error("几何响应缺少构建身份或验证状态");
+      validateArtifactScene(body, { modelId: token.modelId, version });
       params.set("artifact_id", body.artifact_id);
       const count = meshViewer.setMesh(body.mesh, body.motion || [], body.animation || null);
       clearViewImage();

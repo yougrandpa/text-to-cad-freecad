@@ -253,8 +253,13 @@ class ArtifactStore:
         with tempfile.TemporaryDirectory(prefix=".set-", dir=root.parent) as scratch:
             candidate = Path(scratch) / "artifact"
             candidate.mkdir()
+            from tcad.artifacts.document_store import DocumentStore
+            documents = DocumentStore(self.data_dir)
             for name in manifest.files:
-                (candidate / name).write_bytes(reader.read_file(manifest, staging, name))
+                raw = reader.read_file(manifest, staging, name)
+                (candidate / name).write_bytes(raw)
+                if Path(name).suffix.lower() in {".step", ".stl", ".fcstd", ".brep"}:
+                    documents.put(raw)
             shutil.copyfile(manifest_path, candidate / "manifest.json")
             try:
                 os.rename(candidate, root)
@@ -265,6 +270,25 @@ class ArtifactStore:
                 existing, _ = reader.resolve(manifest.model_id, artifact_id=manifest.artifact_id)
                 for name in existing.files:
                     reader.read_file(existing, root, name)
+
+    def retain_attempt(self, staging_dir):
+        """Keep failed geometry for diagnosis without changing published aliases."""
+        from tcad.artifacts.manifest import AttemptArtifact
+        from tcad.inspect.artifact import ArtifactReader
+        staging = Path(staging_dir)
+        manifest = AttemptArtifact.model_validate_json((staging / "manifest.json").read_bytes())
+        reader = ArtifactReader(self.data_dir)
+        root = reader.object_dir(manifest.artifact_id)
+        root.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".attempt-", dir=root.parent) as scratch:
+            candidate = Path(scratch) / "artifact"
+            candidate.mkdir()
+            for name in manifest.files:
+                (candidate / name).write_bytes(reader.read_file(manifest, staging, name))
+            shutil.copyfile(staging / "manifest.json", candidate / "manifest.json")
+            if not root.exists():
+                candidate.rename(root)
+        return manifest.artifact_id
 
     def publish(self, model_id: str, version: int, staging_dir: str | Path) -> Path:
         """Make a verified attempt the version's artifacts.

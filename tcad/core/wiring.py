@@ -40,7 +40,7 @@ from tcad.core.types import (
     ToolError,
     ToolErrorKind,
 )
-from tcad.core.worker_client import WorkerCallFailed, WorkerError, WorkerHandle
+from tcad.build.worker_client import WorkerCallFailed, WorkerError, WorkerHandle
 from tcad.ir.schema import FeatureSpec, IrDocument, IrPatch
 from tcad.ir.validate import ValidationIssue, validate_ir
 from tcad.store.artifacts import ArtifactStore
@@ -157,6 +157,9 @@ class StoreAdapter:
 
     def write_manifest(self, staging_dir: str | os.PathLike[str], **kw) -> Path:
         return self.artifacts.write_manifest(staging_dir, **kw)
+
+    def retain_attempt(self, staging_dir):
+        return self.artifacts.retain_attempt(staging_dir)
 
     def publish(self, model_id: str, version: int, staging_dir: str | os.PathLike[str]) -> Path:
         return self.artifacts.publish(model_id, version, staging_dir)
@@ -309,6 +312,7 @@ class RendererAdapter:
 
     def __init__(self, supersample: int = 2) -> None:
         self.supersample = supersample
+        self.backend = "software"
 
     def render(
         self,
@@ -347,6 +351,13 @@ class RendererAdapter:
                 )
             )
         return images
+
+
+def build_renderer(config):
+    if config.backend == "webgl":
+        from tcad.render.webgl import WebGLRenderer
+        return WebGLRenderer(executable=config.browser_executable, supersample=config.supersample)
+    return RendererAdapter(supersample=config.supersample)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -640,20 +651,23 @@ def build_services(cfg: Config, *, start_worker: bool = True):
     # settings.json (written by the UI) wins over the YAML when it exists.
     runtime_settings = effective_settings(cfg, data_dir)
 
-    handle = WorkerHandle(
-        cfg.runtime.freecad_cmd,
-        REPO_ROOT,
+    from tcad.build.pool import WarmWorkerPool
+    from tcad.build.runtime import BuildRuntime
+    handle = WarmWorkerPool([WorkerHandle(
+        cfg.runtime.freecad_cmd, REPO_ROOT, worker_id=f"w{index}",
         request_timeout_s=float(cfg.runtime.worker_request_timeout_s),
         startup_timeout_s=float(cfg.runtime.worker_startup_timeout_s),
-        # Read here for real. It was declared in the config and never used, so a
-        # wedged or crashed FreeCADCmd stayed wedged for the life of the server.
         restart_on_failure=bool(cfg.runtime.worker_restart_on_crash),
-    )
+    ) for index in range(cfg.runtime.worker_pool_size)])
     if start_worker:
         handle.start()
+    worker = SyncWorkerClient(handle)
+    runtime = BuildRuntime(data_dir, handle, worker,
+                           debounce_s=cfg.runtime.build_debounce_s,
+                           timeout_s=cfg.runtime.build_timeout_s)
 
     store = StoreAdapter(data_dir)
-    renderer = RendererAdapter(supersample=cfg.context.render.supersample)
+    renderer = build_renderer(cfg.context.render)
     context = ContextServiceAdapter(store)
     hooks, approvals = build_hooks(cfg, data_dir)
 
@@ -685,7 +699,9 @@ def build_services(cfg: Config, *, start_worker: bool = True):
     llm = HotSwapLlm(runtime_settings.llm)
 
     rs = runtime_settings.llm
+    from tcad.agent.contract import cad_contract
     loop_config = LoopConfig(
+        system_prompt=LoopConfig.model_fields["system_prompt"].default + "\n\n" + cad_contract(),
         default_strategy=cfg.loop.default_strategy,
         llm_base_url=rs.resolved_base_url(),
         llm_model=rs.resolved_model(),
@@ -706,7 +722,8 @@ def build_services(cfg: Config, *, start_worker: bool = True):
 
     return SimpleNamespace(
         store=store,
-        worker=SyncWorkerClient(handle),
+        worker=worker,
+        build_runtime=runtime,
         gate=gate,
         renderer=renderer,
         hooks=hooks,

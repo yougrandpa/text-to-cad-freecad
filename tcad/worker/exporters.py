@@ -53,10 +53,16 @@ def export_artifacts(ir: dict | None = None, out_dir: str = "", exports=None,
     exports = [e for e in exports if e in EXPORT_FORMATS]
 
     built = _build(ir, out_dir)
+    try:
+        return export_built(ir, built, out_dir, exports)
+    finally:
+        _close_doc(built["doc"])
+
+
+def export_built(ir, built, out_dir, exports):
     # Never export a shape the build itself failed to produce: a stale or
     # partial Tip must not be delivered as a valid artefact.
     if built["errors"]:
-        _close_doc(built["doc"])
         return {"ok": False, "files": {}, "errors": built["errors"]}
     doc = built["doc"]
     shape = built["result_shape"]
@@ -66,7 +72,6 @@ def export_artifacts(ir: dict | None = None, out_dir: str = "", exports=None,
     try:
         model_id = _safe_component(ir.get("model_id") or "model", kind="model_id")
     except ValueError as exc:
-        _close_doc(built["doc"])
         return {"ok": False, "files": {},
                 "errors": [{"kind": "schema", "feature_id": None, "message": str(exc)}]}
 
@@ -96,5 +101,4 @@ def export_artifacts(ir: dict | None = None, out_dir: str = "", exports=None,
             errors.append({"kind": "runtime", "feature_id": None,
                            "message": f"{fmt} export failed: {type(exc).__name__}: {exc}"})
 
-    _close_doc(doc)
     return {"ok": len(errors) == 0 and len(files) > 0, "files": files, "errors": errors}

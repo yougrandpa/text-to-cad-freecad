@@ -25,13 +25,14 @@ import numpy as np
 
 from tcad.core.types import Mesh, RenderStyle, ViewName
 from tcad.render.camera import camera_for
+from tcad.render.contract import CONTRACT
 
 # Fixed directional light for flat shading (points up-and-toward +X/+Y).
 _LIGHT = np.array([0.4, 0.5, 0.85], dtype=float)
 _LIGHT = _LIGHT / np.linalg.norm(_LIGHT)
 
 # Colour used for silhouette / crease lines.
-_EDGE_RGB = np.array([25, 25, 25], dtype=np.uint8)
+_EDGE_RGB = np.array(CONTRACT["edge"], dtype=np.uint8)
 _BACKGROUND_RGB = np.array([255, 255, 255], dtype=np.uint8)
 
 _MAX_DIM = 8192
@@ -118,8 +119,11 @@ def _render_one(verts, facets, bbox, view, width, height, supersample, style):
     # Per-facet Lambert grey. Normals are oriented toward the camera so a closed
     # mesh is lit two-sided and never comes out black.
     fnormal = _facet_normals(verts, facets, cam.look)
-    lam = np.clip(fnormal @ _LIGHT, 0.0, 1.0)
-    grey = np.clip((45.0 + 200.0 * lam), 0, 255).astype(np.uint8)  # (F,)
+    light = cam.look + CONTRACT["light"]["up"] * cam.up + CONTRACT["light"]["right"] * cam.right
+    light = light / np.linalg.norm(light)
+    shade = (CONTRACT["ambient"] + CONTRACT["diffuse"] * np.clip(fnormal @ light, 0, 1)
+             + CONTRACT["rim"] * np.clip(fnormal @ -cam.right, 0, 1))
+    grey = np.clip(shade[:, None] * np.array(CONTRACT["color"])[None, :] * 255, 0, 255).astype(np.uint8)
 
     facet_buf = np.full((H, W), -1, dtype=np.int32)
     depth_buf = np.full((H, W), -np.inf, dtype=np.float64)
@@ -203,7 +207,7 @@ def _compose(facet_buf, depth_buf, grey, style, H, W, fnormal):
     if style in ("flat", "flat_edges"):
         # Map facet id -> grey, background (-1) clipped to facet 0 then masked out.
         shade = grey[np.clip(facet_buf, 0, grey.shape[0] - 1)]
-        shade_rgb = shade[:, :, None].repeat(3, axis=2).astype(np.uint8)
+        shade_rgb = shade.astype(np.uint8)
         img[covered] = shade_rgb[covered]
 
     if style in ("edges_only", "flat_edges"):
@@ -214,7 +218,7 @@ def _compose(facet_buf, depth_buf, grey, style, H, W, fnormal):
 
 # cos(~10 degrees): two neighbouring samples belong to the same flat surface
 # unless their normals diverge by more than this.
-_CREASE_COS = 0.985
+_CREASE_COS = CONTRACT["crease_cos"]
 
 
 def _edge_mask(facet_buf, covered, fnormal):

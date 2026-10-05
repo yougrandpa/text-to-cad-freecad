@@ -186,6 +186,9 @@ op names and their payload shapes:
                dozens of additive tooth primitives repeatedly fuse the BRep and
                can time out. A polygon/toothed outline is only an approximate
                wheel unless its tooth form and contact are independently verified.
+  add_body / update_body may use part_ref={model_id, artifact_id, body_id, placement?}
+               to reuse a verified immutable component. No local sketches/features
+               on a PartRef body; commit to resolve and assemble it.
   update_body  target_id = body id; payload may set name and/or motion:
                {"motion": {"pivot": {"x":30,"y":0,"z":40},
                            "axis": {"x":0,"y":1,"z":0}, "ratio": 1.0}}.
@@ -516,7 +519,7 @@ def build_ir_tools(services: "Any") -> dict[str, ToolSpec]:
     return {
         "assembly_configure": ToolSpec(
             name="assembly_configure", tier=ToolTier.WRITE,
-            description="Configure native FreeCAD Assembly: grounded body IDs, all 13 joint types, world connector positions/axes/roll, limits and time drivers. Replaces assembly declaration; null clears it. Clear prescribed body.motion first. Angular drivers target Revolute/Cylindrical; Linear target Slider/Cylindrical. Formula is native math in time (seconds); Angular uses radians (e.g. pi/2*time for 90 degrees/s), Linear mm, initialValue is supported. Gears/Belt distance and distance2 are positive pitch radii; RackPinion distance=pitch radius; Screw distance=native pitch. Native constraints must make the mechanism solvable; grounding graph alone does not prove solvability. Then assembly_simulate for actual solver frames. ir_commit still grades zero-pose part geometry separately.",
+            description="Configure native FreeCAD Assembly: grounded body IDs, all 13 joint types, world connector positions/axes/roll, limits and time drivers. Replaces assembly declaration; null clears it. Clear prescribed body.motion first. Angular drivers target Revolute/Cylindrical; Linear target Slider/Cylindrical. Formula is native math in time (seconds); Angular uses radians (e.g. pi/2*time for 90 degrees/s), Linear mm, initialValue is supported. Gears/Belt distance and distance2 are positive pitch radii; RackPinion distance=pitch radius; Screw distance=native pitch. Native constraints must make the mechanism solvable; grounding graph alone does not prove solvability. Then ir_commit to build and save actual solver frames; assembly_simulate reads them. ir_commit still grades zero-pose part geometry separately.",
             params_schema={"type": "object", "additionalProperties": False, "required": ["assembly", "reason"],
                 "$defs": AssemblySpec.model_json_schema().get("$defs", {}),
                 "properties": {"assembly": {"anyOf": [AssemblySpec.model_json_schema(), {"type": "null"}]},

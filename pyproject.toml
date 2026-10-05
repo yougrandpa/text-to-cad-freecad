@@ -15,6 +15,7 @@ dependencies = [
 [project.optional-dependencies]
 server = ["fastapi>=0.110", "uvicorn>=0.29"]
 animation = ["av>=12"]
+webgl = ["playwright>=1.50,<2"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "httpx[socks]>=0.27,<1"]
 
 [tool.pytest.ini_options]
@@ -30,3 +31,6 @@ markers = [
 
 [tool.setuptools.packages.find]
 include = ["tcad*"]
+
+[tool.setuptools.package-data]
+tcad = ["server/ui/*", "viewer/package.json", "viewer/core/*.js", "viewer/core/*.json", "viewer/hosts/*.js", "agent/contracts/*.md"]

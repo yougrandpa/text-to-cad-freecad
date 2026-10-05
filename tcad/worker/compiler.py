@@ -1177,7 +1177,46 @@ def _apply_feature(doc, body, f: dict, ref_objects: dict) -> dict:
     return state
 
 
-def _build(ir: dict, out_dir: str):
+def _copy_component(doc, body_spec, component, ref_objects, sketches):
+    import hashlib
+    path = component["path"]
+    with open(path, "rb") as source:
+        if hashlib.sha256(source.read()).hexdigest() != component["sha256"]:
+            raise ValueError("component document failed its integrity check")
+    source = FreeCAD.openDocument(path)
+    try:
+        original = source.getObject(_obj_name(component["body_id"], component["body_name"]))
+        if original is None or original.TypeId != "PartDesign::Body" or original.Shape.isNull():
+            raise ValueError("component contains no requested solid body")
+        if component.get("reference"):
+            body = doc.addObject("PartDesign::Body", _obj_name(body_spec["id"], body_spec["name"]))
+            body.Label = body_spec["name"]
+            feature = body.newObject("PartDesign::Feature", "ReferencedShape")
+            feature.Shape = original.Shape.copy()
+            body.Tip = feature
+            if component.get("placement"):
+                errors = _apply_placement(body, {"id": body_spec["id"], "placement": component["placement"]})
+                if errors:
+                    raise ValueError(errors[0]["message"])
+        else:
+            body = doc.copyObject(original, True)
+            if body.Name != _obj_name(body_spec["id"], body_spec["name"]):
+                raise ValueError("component body name collision")
+            for node in body_spec.get("sketches", []) + body_spec.get("features", []):
+                obj = doc.getObject(_obj_name(node["id"], node["name"]))
+                if obj is None:
+                    raise ValueError("component lost its parametric history")
+                ref_objects[node["id"]] = obj
+            for sk in body_spec.get("sketches", []):
+                obj = ref_objects[sk["id"]]
+                sketches.append({"id": sk["id"], "name": sk["name"], "errors": [],
+                    "fully_constrained": bool(obj.FullyConstrained),
+                    "dof": int(obj.DoF), "solve_status": int(obj.solve())})
+    finally:
+        _close_doc(source)
+
+
+def _build(ir: dict, out_dir: str, components=None):
     """Build the FreeCAD document from an IR dict.
 
     Returns a dict with keys:
@@ -1204,21 +1243,29 @@ def _build(ir: dict, out_dir: str):
     errors: list = []
 
     for b in ir.get("bodies") or []:
-        body = doc.addObject("PartDesign::Body", _obj_name(b.get("id"), b.get("name")))
-        body.Label = b.get("name") or b.get("id")
+        component = (components or {}).get(b["id"])
+        if b.get("part_ref") and not component:
+            errors.append({"kind": "schema", "feature_id": b["id"],
+                           "message": "PartRef must be resolved by the build runtime"})
+            continue
+        if component:
+            _copy_component(doc, b, component, ref_objects, sketches)
+        else:
+            body = doc.addObject("PartDesign::Body", _obj_name(b.get("id"), b.get("name")))
+            body.Label = b.get("name") or b.get("id")
 
-        order, order_errors = _dependency_order(b)
-        errors.extend(order_errors)
-        for kind, node in order:
-            if kind == "sketch":
-                sk_state = _add_sketch(doc, body, node, ref_objects)
-                sketches.append(sk_state)
-                # Surface per-sketch errors (e.g. solver conflicts) to the top level
-                # so the supervisor sees a structured, feature_id-tagged error.
-                errors.extend(sk_state.get("errors") or [])
-            else:
-                fstate = _apply_feature(doc, body, node, ref_objects)
-                errors.extend(fstate["errors"])
+            order, order_errors = _dependency_order(b)
+            errors.extend(order_errors)
+            for kind, node in order:
+                if kind == "sketch":
+                    sk_state = _add_sketch(doc, body, node, ref_objects)
+                    sketches.append(sk_state)
+                    # Surface per-sketch errors (e.g. solver conflicts) to the top level
+                    # so the supervisor sees a structured, feature_id-tagged error.
+                    errors.extend(sk_state.get("errors") or [])
+                else:
+                    fstate = _apply_feature(doc, body, node, ref_objects)
+                    errors.extend(fstate["errors"])
 
         # The chain is reported in the IR's *declared* order (list order = build
         # order for features), which is what the model wrote and what a reader

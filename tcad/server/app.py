@@ -308,6 +308,15 @@ def artifact_url_for(path: str | None) -> str | None:
     """
     if not path:
         return None
+    for category in ("exports", "animations"):
+        marker = f"/derived/{category}/"
+        if marker in path:
+            return f"/derived/{category}/" + path.split(marker, 1)[1]
+    object_marker = "/artifact_sets/"
+    if object_marker in path:
+        parts = path.split(object_marker, 1)[1].split("/")
+        if len(parts) == 2:
+            return f"/artifact-sets/sha256:{parts[0]}/files/{parts[1]}"
     snapshot_marker = "/derived/snapshots/"
     if snapshot_marker in path:
         parts = path.split(snapshot_marker, 1)[1].split("/")
@@ -673,6 +682,74 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
         return mesh_preview(cfg().storage.data_dir, app.state.mesh_cache, model_id,
                             version=None, tolerance=0.5, force=False, artifact_id=artifact_id)
 
+    @app.get("/artifact-sets/{artifact_id}/inspect/{kind}")
+    def inspect_artifact(artifact_id: str, kind: str, model_id: str) -> dict:
+        from tcad.inspect.artifact import ArtifactReader
+        from tcad.inspect.cache import InspectionCache
+        try:
+            reader = ArtifactReader(cfg().storage.data_dir)
+            manifest, root = reader.resolve(model_id, artifact_id=artifact_id)
+            return {"artifact_id": manifest.artifact_id, "status": manifest.status.value,
+                    "data": InspectionCache(reader.data_dir).query(reader, manifest, root, kind)}
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.get("/artifact-sets/{artifact_id}/files/{filename}")
+    def get_artifact_file(artifact_id: str, filename: str) -> FileResponse:
+        from tcad.inspect.artifact import ArtifactReader
+        from tcad.artifacts.manifest import ArtifactSet
+        try:
+            reader = ArtifactReader(cfg().storage.data_dir)
+            manifest = ArtifactSet.model_validate_json((reader.object_dir(artifact_id) / "manifest.json").read_bytes())
+            manifest, root = reader.resolve(manifest.model_id, artifact_id=artifact_id)
+            reader.read_file(manifest, root, filename)
+            return FileResponse(_resolve_artifact(root, filename), headers={
+                "X-Artifact-ID": artifact_id, "X-Artifact-Status": manifest.status.value})
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.get("/derived/{category}/{file_path:path}")
+    def get_derived_file(category: str, file_path: str) -> FileResponse:
+        if category not in {"exports", "animations"}:
+            raise HTTPException(404, "no such derived artifact")
+        return FileResponse(_resolve_artifact(Path(cfg().storage.data_dir) / "derived" / category, file_path))
+
+    @app.get("/build-jobs")
+    def list_build_jobs(model_id: str | None = None) -> dict:
+        from tcad.build.jobs import BuildJob
+        root = Path(cfg().storage.data_dir) / "build_jobs"
+        jobs = []
+        for path in root.glob("job-*.json"):
+            try:
+                job = BuildJob.model_validate_json(path.read_bytes())
+            except (OSError, ValueError):
+                continue
+            if model_id is None or job.model_id == model_id:
+                jobs.append(job.model_dump(mode="json"))
+        return {"jobs": sorted(jobs, key=lambda j: j["created_at"], reverse=True)[:100]}
+
+    @app.get("/build-jobs/{job_id}")
+    def get_build_job(job_id: str) -> dict:
+        from tcad.build.jobs import BuildJob
+        from tcad.core.ids import contained_path, ensure_safe_id
+        try:
+            path = contained_path(cfg().storage.data_dir, "build_jobs", ensure_safe_id(job_id, kind="job_id") + ".json")
+            return BuildJob.model_validate_json(path.read_bytes()).model_dump(mode="json")
+        except FileNotFoundError as exc:
+            raise HTTPException(404, "no such build job") from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/build-jobs/{job_id}/cancel")
+    def cancel_build_job(job_id: str) -> dict:
+        get_build_job(job_id)  # validate before touching running services
+        runtime = getattr(app.state.services, "build_runtime", None)
+        return {"cancelled": bool(runtime and runtime.cancel(job_id))}
+
     @app.get("/artifact-sets/{artifact_id}/snapshots/{model_id}/{key}/{filename}")
     def get_snapshot(artifact_id: str, model_id: str, key: str, filename: str) -> FileResponse:
         from tcad.inspect.artifact import ArtifactReader
@@ -852,7 +929,7 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
         requirement. Both paths use the saved artifact scene. Derived PNGs live
         in an isolated cache keyed by artifact identity and render settings.
         """
-        from tcad.core.wiring import RendererAdapter
+        from tcad.core.wiring import build_renderer
         from tcad.inspect.artifact import ArtifactReader
         from tcad.render.snapshot import render_snapshot
 
@@ -868,7 +945,7 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
         reader = ArtifactReader(c.storage.data_dir)
         try:
             manifest, root = reader.resolve(model_id, version, artifact_id)
-            renderer = getattr(app.state.services, "renderer", None) or RendererAdapter(c.context.render.supersample)
+            renderer = getattr(app.state.services, "renderer", None) or build_renderer(c.context.render)
             images = render_snapshot(reader, manifest, root, renderer, views=[view],
                                      style=style, width=w, height=h, force=force,
                                      angle=driver_angle_deg, frame=frame_index)
@@ -1392,6 +1469,8 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
                 response.headers["Cache-Control"] = "no-store"
                 return response
 
+        viewer_dir = Path(__file__).resolve().parents[1] / "viewer"
+        app.mount("/viewer", LiveUIFiles(directory=str(viewer_dir), html=True), name="viewer")
         app.mount("/ui", LiveUIFiles(directory=str(ui_dir), html=True), name="ui")
 
         @app.get("/", include_in_schema=False)
@@ -1463,10 +1542,17 @@ async def run_turn_request(
         history_provider=history_provider or _default_history_provider(services),
         hooks=hooks,
     )
-    return await engine.run_turn(
-        thread, UserMessage(kind=req.kind, text=req.text,
-                            privileged_requested=req.privileged_requested, access_mode=req.access_mode)
-    )
+    from tcad.build.scheduler import build_observer
+    loop = asyncio.get_running_loop()
+    callback = (lambda payload: loop.call_soon_threadsafe(observer, "build", payload)) if observer else None
+    token = build_observer.set(callback)
+    try:
+        return await engine.run_turn(
+            thread, UserMessage(kind=req.kind, text=req.text,
+                                privileged_requested=req.privileged_requested, access_mode=req.access_mode)
+        )
+    finally:
+        build_observer.reset(token)
 
 
 def _default_history_provider(services: Any):

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 SCHEMA_VERSION = 1
 
@@ -244,12 +244,28 @@ class RotaryMotionSpec(BaseModel):
     ratio: float = 1.0  # body angle = input crank angle * ratio
 
 
+class PartRef(BaseModel):
+    """A verified component pinned to immutable build bytes."""
+    model_config = ConfigDict(extra="forbid")
+    model_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+    artifact_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    body_id: str
+    placement: PlacementSpec | None = None
+
+
 class BodySpec(BaseModel):
     id: str
     name: str
     sketches: list[SketchSpec] = Field(default_factory=list)
     features: list[FeatureSpec] = Field(default_factory=list)  # list order = build order
     motion: RotaryMotionSpec | None = None
+    part_ref: PartRef | None = None
+
+    @model_validator(mode="after")
+    def reference_or_features(self):
+        if self.part_ref and (self.sketches or self.features):
+            raise ValueError("a referenced part cannot also declare sketches/features")
+        return self
 
 
 # ══════════════════════════════════════════════════════════════════════════

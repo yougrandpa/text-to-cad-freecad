@@ -412,6 +412,13 @@ def introspect_document(ir: dict | None = None, out_dir: str = "", **_extra) -> 
         return {"ok": False, "error": "; ".join(
             f'{e.get("feature_id") or "?"}: {e.get("message")}' for e in built["errors"]
         )}
+    try:
+        return digest_built(ir, built)
+    finally:
+        _close_doc(built["doc"])
+
+
+def digest_built(ir, built):
     shape = built["result_shape"]
     measure = _measure(shape)
     holes = _measure_holes(shape)
@@ -451,6 +458,5 @@ def introspect_document(ir: dict | None = None, out_dir: str = "", **_extra) -> 
         built["sketches"], holes, min_wall,
     )
 
-    _close_doc(built["doc"])
     digest["ok"] = True
     return digest

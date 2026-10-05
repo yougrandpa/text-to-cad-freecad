@@ -34,6 +34,8 @@ from typing import get_args
 
 import numpy as np
 
+from tcad.render.contract import CONTRACT
+
 from tcad.core.types import BBox, ViewName
 
 # The Literal's members, used for runtime validation (a Literal cannot be
@@ -59,7 +61,7 @@ class OrthoCamera:
         up: np.ndarray,
         look: np.ndarray,
         center: np.ndarray,
-        margin_ratio: float = 0.08,
+        margin_ratio: float = CONTRACT["margin"],
     ) -> None:
         if view not in _VIEW_NAMES:
             raise ValueError(f"unknown view {view!r}; expected one of {sorted(_VIEW_NAMES)}")
@@ -140,7 +142,7 @@ class OrthoCamera:
 
 
 def camera_for(
-    view: ViewName, bbox: BBox, margin_ratio: float = 0.08
+    view: ViewName, bbox: BBox, margin_ratio: float = CONTRACT["margin"]
 ) -> OrthoCamera:
     """Build a standard-view orthographic camera framed on ``bbox``.
 
@@ -163,34 +165,10 @@ def camera_for(
         dtype=float,
     )
 
-    if view == "front":
-        # Camera on -Y looking toward +Y (FreeCAD's Front view convention).
-        # Putting the camera on +Y instead would make (right, up, look)
-        # left-handed — right x up = -look — and the projection would come out
-        # MIRRORED: an asymmetric part would be shown to the model as its own
-        # reflection. Only the front view was affected; top/right/iso were
-        # already right-handed.
-        look = np.array([0.0, -1.0, 0.0])
-        right = np.array([1.0, 0.0, 0.0])  # +X → screen right
-        up = np.array([0.0, 0.0, 1.0])     # +Z → screen up
-    elif view == "top":
-        look = np.array([0.0, 0.0, 1.0])   # camera on +Z, looking down
-        right = np.array([1.0, 0.0, 0.0])  # +X → screen right
-        up = np.array([0.0, 1.0, 0.0])     # +Y → screen up (footprint)
-    elif view == "right":
-        look = np.array([1.0, 0.0, 0.0])   # camera on +X, looking toward -X
-        right = np.array([0.0, 1.0, 0.0])  # +Y → screen right
-        up = np.array([0.0, 0.0, 1.0])     # +Z → screen up
-    elif view == "iso":
-        look = np.array([1.0, 1.0, 1.0])   # camera at (+,+,+) octant
-        look = look / np.linalg.norm(look)
-        # right = up_world × look  (keeps +X-ish to the right)
-        right = np.cross(_WORLD_UP, look)
-        right = right / np.linalg.norm(right)
-        # up = look × right  (orthonormal completion)
-        up = np.cross(look, right)
-        up = up / np.linalg.norm(up)
-    else:
-        raise ValueError(f"unknown view {view!r}; expected iso/front/top/right")
+    yaw, pitch = CONTRACT["presets"][view]
+    c, s = np.cos(pitch), np.sin(pitch)
+    right = np.array([-np.sin(yaw), np.cos(yaw), 0.0])
+    up = np.array([-np.cos(yaw) * s, -np.sin(yaw) * s, c])
+    look = np.array([np.cos(yaw) * c, np.sin(yaw) * c, s])
 
     return OrthoCamera(view, right, up, look, center, margin_ratio)

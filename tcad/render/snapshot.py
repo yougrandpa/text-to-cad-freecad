@@ -33,8 +33,11 @@ def render_snapshot(reader, manifest, root, renderer, *, views, style="flat_edge
     if not 16 <= width <= 4096 or not 16 <= height <= 4096:
         raise ValueError("width/height must be within [16, 4096]")
     scene = reader.scene(manifest, root)
-    mesh = scene.posed_mesh(angle=angle, frame=frame)
-    settings = {"renderer": 1, "style": style, "width": width, "height": height,
+    from tcad.render.pipeline import prepare_scene
+    from tcad.render.contract import RENDER_IDENTITY
+    mesh = prepare_scene(scene, angle=angle, frame=frame)
+    settings = {"renderer": RENDER_IDENTITY, "backend": getattr(renderer, "backend", "software"),
+                "style": style, "width": width, "height": height,
                 "angle": angle, "frame": frame, "supersample": getattr(renderer, "supersample", 2)}
     key = hashlib.sha256(json.dumps(settings, sort_keys=True, allow_nan=False).encode()).hexdigest()
     destination = snapshot_dir(reader.data_dir, manifest.artifact_id, manifest.model_id, key)

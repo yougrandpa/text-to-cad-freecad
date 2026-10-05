@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
 const source = (await readFile(new URL('../../tcad/server/ui/app.js', import.meta.url), 'utf8'))
-  .replace(/^import .*;$/m, '').replace(/\nboot\(\);\s*$/, '');
+  .replace(/^import .*;$/gm, '').replace(/\nboot\(\);\s*$/, '');
 function harness() {
   const nodes = new Map();
   const node = id => {

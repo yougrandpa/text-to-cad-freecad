@@ -5,9 +5,7 @@ import { readFile } from 'node:fs/promises';
 // Load the shipped ES module directly, without adding npm/package.json or a
 // second compiled implementation. This also works on Node versions that treat
 // .js files as CommonJS unless an enclosing package opts into ESM.
-const source = await readFile(new URL('../../tcad/server/ui/viewport.js', import.meta.url), 'utf8');
-const { PRESETS, cameraBasis, OrbitCamera, projectPoint, prepareMesh, meshBounds, MeshViewport } =
-  await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+const { PRESETS, cameraBasis, OrbitCamera, projectPoint, prepareMesh, meshBounds, MeshViewport } = await import(new URL("../../tcad/viewer/core/viewport.js", import.meta.url));
 
 const cube = {
   vertices: [[0,0,0],[2,0,0],[2,2,0],[0,2,0],[0,0,2],[2,0,2],[2,2,2],[0,2,2]],

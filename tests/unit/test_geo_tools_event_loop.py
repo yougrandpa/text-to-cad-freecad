@@ -97,7 +97,6 @@ async def _ticks_during(coro):
 
 
 @pytest.mark.parametrize("handler, args", [
-    (asset_export_handler, {"fmt": "step", "name": "out"}),
     (asset_import_handler, {}),
 ])
 async def test_a_geo_tool_leaves_the_event_loop_free(tmp_path, handler, args):
@@ -142,3 +141,18 @@ async def test_measurement_disk_read_leaves_event_loop_free(tmp_path, monkeypatc
     monkeypatch.setattr(ArtifactReader, "digest", slow_read)
     ticks = await _ticks_during(geo_measure_handler(services, {}, _ctx(tmp_path)))
     assert ticks >= 15
+
+
+async def test_saved_export_disk_copy_leaves_loop_free(tmp_path, monkeypatch):
+    from tests.fixtures.artifact_scene import publish_scene
+    from tcad.inspect.artifact import ArtifactReader
+    publish_scene(tmp_path, model_id="m1", version=1)
+    original = ArtifactReader.read_file
+    def slow_read(self, *args):
+        time.sleep(0.04)
+        return original(self, *args)
+    monkeypatch.setattr(ArtifactReader, "read_file", slow_read)
+    services = _services()
+    ticks = await _ticks_during(asset_export_handler(services, {"fmt": "step", "name": "out"}, _ctx(tmp_path)))
+    assert ticks >= 15
+    assert not services.worker.calls

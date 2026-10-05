@@ -44,7 +44,7 @@ def simulate_assembly(ir=None, out_dir='', check_pairs=None, check_stride=1, sol
     if not spec:
         return {'ok': False, 'error': 'configure the native assembly first'}
     os.makedirs(out_dir, exist_ok=True)
-    built = _build(ir, out_dir)
+    built = _extra.get("_built") or _build(ir, out_dir)
     try:
         if built['errors']:
             return {'ok': False, 'errors': built['errors']}
@@ -152,7 +152,8 @@ def simulate_assembly(ir=None, out_dir='', check_pairs=None, check_stride=1, sol
                 'solver': 'FreeCAD Assembly / OndselSolver',
                 'scope': 'Native kinematic joint solution; no contact forces or material removal.'}
     finally:
-        _close_doc(built['doc'])
+        if not _extra.get("_built"):
+            _close_doc(built['doc'])
 
 
 def solve_assembly(**params):

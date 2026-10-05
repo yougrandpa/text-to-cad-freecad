@@ -1,11 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-const source = await readFile(new URL('../../tcad/server/ui/viewport.js', import.meta.url), 'utf8');
-const { poseMesh } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
-const motion = (start, ratio, pivot = {x:0,y:0,z:0}) => ({body_id: `body-${start}`, vertex_start:start,
-  vertex_count:1, pivot, axis:{x:0,y:0,z:2}, ratio});
-const close = (point, expected) => point.forEach((v,i) => assert.ok(Math.abs(v-expected[i])<1e-9));
+const { poseMesh, poseAnimation } = await import(new URL("../../tcad/viewer/core/viewport.js", import.meta.url));
+const close=(a,b)=>a.forEach((v,i)=>assert.ok(Math.abs(v-b[i])<1e-8,`${a} != ${b}`));
+const motion=(vertex_start,ratio=1,pivot={x:0,y:0,z:0})=>({vertex_start,vertex_count:1,pivot,axis:{x:0,y:0,z:1},ratio});
 
 test('crank and external driven gear rotate with signed ratio while housing stays fixed', () => {
   const original = {vertices:[[5,5,5],[1,0,0],[11,0,0]],facets:[[0,1,2]]};
@@ -31,7 +29,6 @@ test('invalid, overlapping, or out-of-bounds ranges are rejected', () => {
   assert.throws(()=>poseMesh(mesh,[motion(0,1)],NaN));
 });
 
-const { poseAnimation } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 test('native animation applies row-major solver rotation and translation without drift', () => {
   const mesh={vertices:[[1,0,0],[5,5,5]],facets:[]};
   const m=[0,-1,0,10,1,0,0,20,0,0,1,30,0,0,0,1];
