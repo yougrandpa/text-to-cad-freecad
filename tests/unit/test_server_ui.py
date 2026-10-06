@@ -132,7 +132,7 @@ def test_no_css_imports():
 def test_every_referenced_asset_exists():
     """A typo in a src/href is a 404 the user sees as a broken page."""
     html = (UI_DIR / "index.html").read_text(encoding="utf-8")
-    refs = re.findall(r"""(?:src|href)\s*=\s*["']\./([^"'#?]+)["']""", html)
+    refs = re.findall(r"""(?:src|href)\s*=\s*["']\./([^"'#?]+)(?:[?#][^"']*)?["']""", html)
     assert refs, "index.html 没有引用任何本地资源，可能写错了"
     for ref in refs:
         assert (UI_DIR / ref).is_file(), f"index.html 引用了不存在的文件：{ref}"

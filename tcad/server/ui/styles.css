@@ -87,7 +87,6 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 
 .brand { display: flex; align-items: baseline; gap: 10px; }
-.brand .mark { font-weight: 650; letter-spacing: .02em; font-size: 16px; }
 .brand .tag { color: var(--fg-faint); font-size: 12px; }
 
 .chip {
@@ -716,9 +715,7 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); 
 /* Design studio: paper controls around a graphite drawing surface. */
 .topbar { height: 68px; flex: 0 0 auto; padding: 0 22px; gap: 16px; background: var(--panel); }
 .brand { gap: 8px; align-items: center; flex-shrink: 0; }
-.brand-symbol { color: var(--accent); font-size: 34px; line-height: 1; }
-.brand .mark { font-size: 25px; font-weight: 750; letter-spacing: -.06em; }
-.brand-period { color: var(--accent); }
+.brand-logo { display: block; width: 112px; height: auto; flex-shrink: 0; }
 .brand .tag { margin-left: 12px; font-family: var(--mono); font-size: 9px; letter-spacing: .14em; color: var(--fg-dim); }
 .chip { border-radius: 7px; background: transparent; font-size: 11px; max-width: 34ch; }
 .status { max-width: 175px; line-height: 1.4; }
