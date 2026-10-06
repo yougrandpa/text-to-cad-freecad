@@ -11,3 +11,5 @@ The workspace pairs warm paper controls with a graphite model canvas and terraco
 Interaction changes: editable example drafts, IME-safe Enter handling, preservation of drafts when submission is blocked, sidebar expanded state, and keyboard focus cycling/restoration in settings.
 
 Validation: 52 frontend tests, 60 UI server tests, and `git diff --check` passed. Browser checks covered example selection, responsive layout, and settings Shift+Tab/Escape handling. Geometry generation and real-provider requests were not run; CAD contracts and backend code are unchanged.
+
+Merge review: integrated current main at `78b403d`, retained its rounded scrollbar behavior with panel-specific colors, constrained long session titles/IDs, and kept the unbounded-budget indicator visible on narrow screens. The integrated revision passed 52 frontend tests and 1331 unit tests (1 skipped), plus `git diff --check`. No backend files differ from current main.
