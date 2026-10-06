@@ -204,6 +204,29 @@ async def test_asset_export_accepts_a_normal_name(tmp_path):
     assert Path(json.loads(res.content)["path"]).name == "plate_v2.step"
 
 
+@pytest.mark.parametrize('fmt, name, expected', [
+    ('step', 'chair.step', 'chair.step'),
+    ('step', 'chair.STEP', 'chair.step'),
+    ('step', 'chair.v2.step', 'chair.v2.step'),
+    ('step', 'chair.v2', 'chair.v2.step'),
+])
+async def test_asset_export_accepts_full_filename_without_duplicate_extension(tmp_path, fmt, name, expected):
+    import json
+    from tcad.tools.geo_tools import asset_export_handler
+    from tests.fixtures.artifact_scene import publish_scene
+
+    ctx = _ctx(tmp_path)
+    manifest, root = publish_scene(ctx.data_dir, model_id=ctx.model_id)
+    services = _services(store=SimpleNamespace(current_version=lambda m: 0))
+    result = await asset_export_handler(services, {'fmt': fmt, 'name': name}, ctx)
+    assert result.ok, result.error
+    exported = json.loads(result.content)
+    assert Path(exported['path']).name == expected
+    original = ctx.model_id + ('.FCStd' if fmt == 'fcstd' else '.step')
+    assert Path(exported['path']).read_bytes() == (root / original).read_bytes()
+    assert exported['artifact_id'] == manifest.artifact_id
+
+
 async def test_asset_import_refuses_a_path_outside_the_roots(tmp_path):
     from tcad.tools.geo_tools import asset_import_handler
 

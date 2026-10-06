@@ -207,11 +207,13 @@ def test_fcstd_export_preserves_native_assembly_when_available(tmp_path, native)
                                worker=SimpleNamespace(request=forbidden))
     ctx = ToolContext(model_id='part', thread_id='t', turn_id='turn', data_dir=str(tmp_path))
     expected = (root/('assembly.FCStd' if native else 'part.FCStd')).read_bytes()
-    for name in ('part', 'download'):
+    for name in ('part', 'download', 'download.FCStd', 'download.fcstd'):
         exported = export_artifact(services, ctx, {'artifact_id': manifest.artifact_id,
                                                   'fmt': 'fcstd', 'name': name})
         assert Path(exported['path']).read_bytes() == expected
         assert exported['artifact_id'] == manifest.artifact_id
+        if name.startswith('download'):
+            assert Path(exported['path']).name == 'download.FCStd'
 
 
 async def test_unbuilt_version_does_not_borrow_previous_measurements(tmp_path):

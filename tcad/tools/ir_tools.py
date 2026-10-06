@@ -589,6 +589,8 @@ def build_ir_tools(services: "Any") -> dict[str, ToolSpec]:
     from tcad.ir.assembly import AssemblySpec
     from tcad.tools.authoring import build_authoring_tools
     from tcad.selection.tools import build_selection_tools
+    assembly_schema = AssemblySpec.model_json_schema()
+    assembly_defs = assembly_schema.pop("$defs", {})
     return {
         **build_authoring_tools(services),
         **build_selection_tools(services),
@@ -596,8 +598,8 @@ def build_ir_tools(services: "Any") -> dict[str, ToolSpec]:
             name="assembly_configure", tier=ToolTier.WRITE,
             description="Configure native FreeCAD Assembly: grounded body IDs, all 13 joint types, world connector positions/axes/roll, limits and time drivers. Replaces assembly declaration; null clears it. Clear prescribed body.motion first. Angular drivers target Revolute/Cylindrical; Linear target Slider/Cylindrical. Formula is native math in time (seconds); Angular uses radians (e.g. pi/2*time for 90 degrees/s), Linear mm, initialValue is supported. Gears/Belt distance and distance2 are positive pitch radii; RackPinion distance=pitch radius; Screw distance=native pitch. Native constraints must make the mechanism solvable; grounding graph alone does not prove solvability. Then ir_commit to build and save actual solver frames; assembly_simulate reads them. ir_commit still grades zero-pose part geometry separately.",
             params_schema={"type": "object", "additionalProperties": False, "required": ["assembly", "reason"],
-                "$defs": AssemblySpec.model_json_schema().get("$defs", {}),
-                "properties": {"assembly": {"anyOf": [AssemblySpec.model_json_schema(), {"type": "null"}]},
+                "$defs": assembly_defs,
+                "properties": {"assembly": {"anyOf": [assembly_schema, {"type": "null"}]},
                     "reason": {"type": "string"}, "base_version": {"anyOf": [{"type": "integer"}, {"type": "string", "enum": ["current"]}, {"type": "string", "pattern": "^[0-9]+$"}]}}},
             handler=functools.partial(assembly_configure_handler, services),
         ),

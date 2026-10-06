@@ -123,6 +123,8 @@ def _format_report(report: GateReport, ir: Any = None) -> str:
             " verified that the part matches what was asked for. If the user named"
             " any size, count or position, record it with update_requirement"
             ' ("confirmed": true) and commit again — otherwise nothing checks it.'
+            ' If no explicit measurable values were supplied, no requirement write is needed;'
+            ' keep chosen dimensions unconfirmed. Never invent confirmed values to clear this advisory.'
             ' Complete all requested features, then call design_review; unsupported functions remain pending acceptance.'
         )
     lines = [f"GATE FAILED (ir_version={report.ir_version}). {len(report.blocking_failures)} blocking failure(s):"]

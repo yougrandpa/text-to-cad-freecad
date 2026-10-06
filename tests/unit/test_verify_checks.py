@@ -139,6 +139,18 @@ def test_requirement_coverage_passes_once_a_requirement_exists(tmp_path):
     assert "2 confirmed" in r.message
 
 
+def test_qualitative_request_advisory_does_not_request_invented_dimensions(tmp_path):
+    from tcad.verify.checks_spec import RequirementCoverageCheck
+
+    ir = _ir_with(confirmed=0)
+    ir.requirements.raw_text = '创建一个人体工学椅'
+    result = RequirementCoverageCheck().run(_ctx(tmp_path, ir=ir))
+    assert result.status == CheckStatus.FAIL and result.severity == Severity.ADVISORY
+    assert 'no requirement write is needed' in result.message
+    assert 'Never invent confirmed values' in result.message
+    assert 'design_review as a draft' in result.message
+
+
 def test_unconfirmed_expressions_do_not_count_as_coverage(tmp_path):
     """`confirmed=False` may never block, so it cannot be evidence either."""
     from tcad.verify.checks_spec import RequirementCoverageCheck

@@ -87,6 +87,16 @@ def test_a_pass_with_a_confirmed_requirement_reports_what_it_was_judged_on():
     assert "design_review" in text
 
 
+def test_qualitative_request_can_finish_as_draft_without_invented_constraints():
+    ir = _ir()
+    ir.requirements.raw_text = '创建一个人体工学椅'
+    text = _format_report(_report(), ir)
+    assert 'no requirement write is needed' in text
+    assert 'keep chosen dimensions unconfirmed' in text
+    assert 'Never invent confirmed values' in text
+    assert 'design_review' in text
+
+
 def test_an_unconfirmed_requirement_does_not_count_as_a_judgement():
     """`confirmed=False` must never block, so it cannot count as evidence
     either — otherwise the two rules would contradict each other."""

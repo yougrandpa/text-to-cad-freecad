@@ -300,6 +300,8 @@ def build_geo_tools(services: "Any") -> dict[str, ToolSpec]:
             name="geo_view",
             tier=ToolTier.READ,
             description=("Render saved artifact views (iso/front/top/right) at a visual checkpoint. "
+                         "Z is up; cameras sit at +X/+Y/+Z for iso, -Y for front, +X for right, +Z for top. "
+                         "Choose another view when a support surface is hidden in iso. "
                          "Optional artifact_id pins a build; otherwise commit this version first. "
                          "Create/modify turns require a successful ir_commit in THIS turn to open the checkpoint, "
                          "even for an already published or pinned artifact. Inspect turns can render saved artifacts directly. "
@@ -342,7 +344,7 @@ def build_geo_tools(services: "Any") -> dict[str, ToolSpec]:
                 "properties": {
                     "artifact_id": {"type": "string"},
                     "fmt": {"type": "string"},
-                    "name": {"type": "string"},
+                    "name": {"type": "string", "description": "Safe filename stem or filename with the matching format extension; that extension is added exactly once."},
                 },
             },
             handler=functools.partial(asset_export_handler, services),

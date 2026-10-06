@@ -14,8 +14,8 @@ Contract with worker/verify (frozen ``GeometryDigest`` has no per-sketch field):
   * per-sketch constraint state lives in ``digest.key_dimensions`` under the
     reserved keys ``"<sketch_id>__fully_constrained"`` (1.0/0.0) and
     ``"<sketch_id>__dof"`` (float). Same convention ``checks_solid`` reads.
-  * ``measurements_available is False`` means the worker was unreachable and the
-    digest is structure-only: we MUST stamp an explicit ``[未验证几何]`` banner so
+  * ``measurements_available is False`` means no saved measurements are available
+    and the digest is structure-only: stamp an explicit ``[未验证几何]`` banner so
     the model knows it is flying blind rather than assuming the geometry is
     confirmed (design §4.3 failure handling).
 """
@@ -76,8 +76,11 @@ def render_digest_text(digest: GeometryDigest, ir: IrDocument) -> str:
     out: list[str] = []
 
     if not digest.measurements_available:
+        empty = not ir.all_features() and not ir.all_sketches()
+        reason = ("empty model; create geometry and call ir_commit first" if empty else
+                  "no saved measurements for this version; call ir_commit to build and verify it")
         out.append(
-            f"{_UNVERIFIED_BANNER} geometry not measured (worker unreachable); "
+            f"{_UNVERIFIED_BANNER} geometry not measured ({reason}); "
             "values below are structure-only and NOT confirmed."
         )
         out.append("")

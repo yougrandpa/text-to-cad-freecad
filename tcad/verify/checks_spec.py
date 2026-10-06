@@ -174,8 +174,11 @@ class RequirementCoverageCheck:
             confidence=self.confidence,
             message=(
                 "no confirmed requirement — only self-consistency was verified, "
-                "NOT that the part matches the request. Record the user's numbers "
-                "via update_requirement (confirmed=true)."
+                "NOT that the part matches the request. If the user supplied explicit "
+                "measurable values, record them via update_requirement (confirmed=true). "
+                "If none were supplied, no requirement write is needed: keep chosen dimensions "
+                "unconfirmed, complete the design and call design_review as a draft. "
+                "Never invent confirmed values to clear this advisory."
             ),
         )
 

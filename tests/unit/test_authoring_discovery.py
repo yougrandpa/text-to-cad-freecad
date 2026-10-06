@@ -126,6 +126,19 @@ async def test_assembly_discovery_names_unlock_and_demonstrates_valid_native_dri
     assert not check(data['example'], tools.get('assembly_configure').params_schema)
 
 
+async def test_assembly_schema_shares_definitions_and_validates_nested_arguments():
+    schema = build_default_registry(SimpleNamespace()).get('assembly_configure').params_schema
+    data = json.loads((await help_handler(None, {'topic': 'assembly'}, None)).content)
+    assert '$defs' not in schema['properties']['assembly']['anyOf'][0]
+    # The request must not carry a second complete set of joint/connector definitions.
+    assert json.dumps(schema).count('"$defs"') == 1
+    assert not check(data['example'], schema)
+    assert not check({'assembly': None, 'reason': 'Clear assembly'}, schema)
+    data['example']['assembly']['joints'][0]['side1']['position'] = [0, 0]
+    problems = check(data['example'], schema)
+    assert problems and 'side1.position' in problems[0]
+
+
 @pytest.mark.parametrize("shape, params, semantic", [
     ("box", {"length", "width", "height"}, "minimum corner"),
     ("cylinder", {"radius", "height"}, "base centre"),

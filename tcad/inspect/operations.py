@@ -33,6 +33,9 @@ def export_artifact(services, ctx, args):
     if fmt not in {"fcstd", "step", "stl", "brep"}:
         raise ValueError("unsupported export format")
     name = ensure_safe_id(args.get("name", ctx.model_id), kind="export name")
+    extension = ".FCStd" if fmt == "fcstd" else "." + fmt
+    if name.lower().endswith(extension.lower()):
+        name = ensure_safe_id(name[:-len(extension)], kind="export name")
     original = manifest.model_id + (".FCStd" if fmt == "fcstd" else "." + fmt)
     if fmt == 'fcstd' and 'assembly.FCStd' in manifest.files:
         # The native document retains editable source bodies plus joints and
@@ -44,7 +47,7 @@ def export_artifact(services, ctx, args):
                 "artifact_id": manifest.artifact_id}
     params = None if original in manifest.files else document_params(reader, manifest, root)
     identity = manifest.files[original].sha256 if params is None else params["sha256"]
-    destination = contained_path(ctx.data_dir, "derived", "exports", identity, name + (".FCStd" if fmt == "fcstd" else "." + fmt))
+    destination = contained_path(ctx.data_dir, "derived", "exports", identity, name + extension)
     destination.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".export-", dir=destination.parent) as scratch:
         if original in manifest.files:
