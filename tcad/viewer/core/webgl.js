@@ -104,7 +104,10 @@ export class MeshViewport {
   stopPlayback() {
     if (this.playbackFrame !== null) cancelAnimationFrame(this.playbackFrame);
     this.playbackFrame = null;
-    if (this.motionControls?.play) this.motionControls.play.textContent = "播放";
+    if (this.motionControls?.play) {
+      this.motionControls.play.textContent = "播放";
+      this.motionControls.play.setAttribute("aria-pressed", "false");
+    }
   }
   play() {
     if (!this.motionControls || (!this.animation && !this.motion.length) || this.animation?.frames.length === 1) return;
@@ -115,7 +118,10 @@ export class MeshViewport {
     const speed = Number(this.motionControls.speed?.value || 1);
     const rate = this.animation ? 1/this.animation.step : 60;
     const start = performance.now();
-    if (this.motionControls.play) this.motionControls.play.textContent = "暂停";
+    if (this.motionControls.play) {
+      this.motionControls.play.textContent = "暂停";
+      this.motionControls.play.setAttribute("aria-pressed", "true");
+    }
     const tick = now => {
       let value = initial + (now-start)/1000*rate*speed;
       if (value > maximum) {

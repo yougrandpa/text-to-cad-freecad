@@ -694,17 +694,53 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); 
 .field .row #modelInput { flex: 1; min-width: 0; }
 .field .row #modelOptions { width: 125px; flex-shrink: 0; }
 #fetchModels { flex-shrink: 0; white-space: nowrap; }
-/* The motion control appears only for an assembly with declared rotating parts. */
-.motion-controls { padding: 8px 14px; border-top: 1px solid var(--line); }
+/* Motion transport uses an explicit palette: form controls must not inherit
+   the light document colors inside the dark model panel. */
+.motion-controls {
+  --motion-accent: #c4ddae;
+  container-type: inline-size;
+  container-name: motion-transport;
+  padding: 16px 18px;
+  flex: 0 0 auto;
+  border-top: 1px solid var(--line);
+  background: #26312e;
+  color: #dce5d6;
+}
 .motion-controls[hidden] { display: none; }
-.motion-controls label { display: flex; justify-content: space-between; }
-.motion-controls input { width: 100%; }
-
-.motion-player { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
-.motion-player label { display: inline-flex; gap: 4px; align-items: center; }
-.motion-player input { width: auto; }
-
-.motion-player select { background: var(--panel-2); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+.motion-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.motion-heading label { color: #b4c2b0; font-size: 11px; letter-spacing: .04em; }
+.motion-heading output { color: #d9eacb; background: #354238; border: 1px solid #4b5a48; border-radius: 6px; padding: 3px 8px; font: 11px var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+#crankAngle { display: block; appearance: none; width: 100%; height: 20px; margin: 0 0 14px; background: transparent; cursor: pointer; accent-color: var(--motion-accent); }
+#crankAngle::-webkit-slider-runnable-track { height: 4px; border-radius: 4px; background: #53604f; }
+#crankAngle::-moz-range-track { height: 4px; border-radius: 4px; background: #53604f; }
+#crankAngle::-moz-range-progress { height: 4px; border-radius: 4px; background: var(--motion-accent); }
+#crankAngle::-webkit-slider-thumb { appearance: none; width: 14px; height: 14px; margin-top: -5px; border: 2px solid #26312e; border-radius: 50%; background: var(--motion-accent); box-shadow: 0 0 0 1px #829673; }
+#crankAngle::-moz-range-thumb { width: 10px; height: 10px; border: 2px solid #26312e; border-radius: 50%; background: var(--motion-accent); box-shadow: 0 0 0 1px #829673; }
+#crankAngle:focus-visible { outline: 2px solid var(--motion-accent); outline-offset: 3px; border-radius: 4px; }
+.motion-player { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.motion-play, .motion-reset { display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 34px; padding: 0 12px; border-radius: 7px; font-size: 11px; cursor: pointer; transition: background .15s, border-color .15s; }
+.motion-play { color: #253226; background: var(--motion-accent); border: 1px solid var(--motion-accent); font-weight: 600; min-width: 76px; }
+.motion-play:hover { background: #d6eac6; }
+.motion-play::before { content: ''; width: 0; height: 0; border-top: 4px solid transparent; border-bottom: 4px solid transparent; border-left: 6px solid currentColor; }
+.motion-play[aria-pressed="true"]::before { width: 7px; height: 9px; border: 0; background: linear-gradient(to right, currentColor 0 2px, transparent 2px 5px, currentColor 5px 7px); }
+.motion-reset { color: #c5d1be; border: 1px solid #53604f; background: transparent; }
+.motion-reset::before { content: '↺'; font-size: 16px; line-height: 1; }
+.motion-reset:hover { background: #354238; border-color: #829673; }
+.motion-options { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; margin-left: auto; }
+.motion-speed, .motion-loop { display: inline-flex; align-items: center; gap: 7px; color: #b4c2b0; font-size: 11px; }
+.motion-speed select { min-width: 66px; height: 32px; background: #303d33; color: #dce5d6; border: 1px solid #53604f; border-radius: 6px; padding: 0 6px; font: 11px var(--mono); cursor: pointer; }
+.motion-loop { position: relative; cursor: pointer; min-height: 32px; }
+.motion-loop input { position: absolute; left: 0; width: 28px; height: 18px; margin: 0; opacity: 0; cursor: pointer; }
+.loop-switch { width: 28px; height: 18px; border-radius: 12px; background: #455140; border: 1px solid #65705c; pointer-events: none; }
+.loop-switch::before { content: ''; display: block; width: 10px; height: 10px; margin: 3px; border-radius: 50%; background: #c3cdbb; transition: transform .15s; }
+.motion-loop input:checked + .loop-switch { background: #b6d09d; border-color: #b6d09d; }
+.motion-loop input:checked + .loop-switch::before { transform: translateX(10px); background: #293928; }
+.motion-loop input:focus-visible + .loop-switch { outline: 2px solid var(--motion-accent); outline-offset: 3px; }
+.motion-play:focus-visible, .motion-reset:focus-visible, .motion-speed select:focus-visible { outline: 2px solid var(--motion-accent); outline-offset: 3px; }
+.motion-note { margin-top: 12px; padding-top: 10px; border-top: 1px solid #3a473c; font-size: 10px; color: #a9b6a3; line-height: 1.7; }
+@container motion-transport (max-width: 360px) { .motion-options { flex-basis: 100%; margin: 4px 0 0; justify-content: space-between; } }
+@media (max-width: 540px) { .motion-controls { padding: 14px; } .motion-options { flex-basis: 100%; margin: 4px 0 0; justify-content: space-between; gap: 10px; } }
+@media (forced-colors: active) { .motion-loop input { position: static; opacity: 1; appearance: auto; } .loop-switch { display: none; } }
 
 /* Compact entity selection follows the existing CAD toolbar palette. */
 #pickKind { max-width: 142px; padding: 4px 6px; font: inherit; font-size: 11px;

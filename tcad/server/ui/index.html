@@ -149,10 +149,22 @@
     </div>
     <div class="view-status" id="viewStatus" role="status" aria-live="polite">真实网格 · 自由旋转 / 缩放 / 平移</div>
     <div class="motion-controls" id="motionControls" hidden>
-      <label for="crankAngle"><span id="motionLabel">摇杆转角</span> <output id="crankAngleValue">0°</output></label>
+      <div class="motion-heading">
+        <label for="crankAngle" id="motionLabel">摇杆转角</label>
+        <output id="crankAngleValue" for="crankAngle">0°</output>
+      </div>
       <input id="crankAngle" type="range" min="0" max="720" step="1" value="0">
-      <div class="motion-player"><button class="mini" id="animationPlay" type="button">播放</button> <button class="mini" id="animationReset" type="button">归零</button> <label>速度 <select id="animationSpeed"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select></label> <label><input id="animationLoop" type="checkbox" checked>循环</label></div>
-      <div class="muted small" id="motionNote">按声明的传动比演示 · 未验证碰撞、齿面接触或实际切削</div>
+      <div class="motion-player" role="group" aria-label="运动播放控制">
+        <button class="motion-play" id="animationPlay" type="button" aria-pressed="false">播放</button>
+        <button class="motion-reset" id="animationReset" type="button" title="停止播放并回到起点">归零</button>
+        <div class="motion-options">
+          <label class="motion-speed" for="animationSpeed">速度
+            <select id="animationSpeed"><option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select>
+          </label>
+          <label class="motion-loop" for="animationLoop"><input id="animationLoop" type="checkbox" checked><span class="loop-switch" aria-hidden="true"></span>循环</label>
+        </div>
+      </div>
+      <div class="motion-note" id="motionNote">按声明的传动比演示 · 未验证碰撞、齿面接触或实际切削</div>
     </div>
     <div class="filebar" id="fileBar"></div>
   </section>

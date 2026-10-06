@@ -47,3 +47,34 @@ test('gravity frames report their physical scope instead of claiming a native so
   assert.match(motionScopeNote({solver:'FreeCAD Assembly / OndselSolver'}), /关节运动帧/);
   assert.match(motionScopeNote(null), /传动比/);
 });
+
+test('playback state announces pause and resets when playback reaches the end', async () => {
+  const { MeshViewport } = await import('../../tcad/viewer/core/webgl.js');
+  const originalRequest = globalThis.requestAnimationFrame;
+  const originalCancel = globalThis.cancelAnimationFrame;
+  let tick;
+  globalThis.requestAnimationFrame = callback => { tick = callback; return 1; };
+  globalThis.cancelAnimationFrame = () => {};
+  try {
+    const button = { textContent: '', setAttribute(key, value) { this[key] = value; } };
+    const viewer = Object.create(MeshViewport.prototype);
+    viewer.motionControls = { play: button, input: { max: '720', value: '0' }, speed: { value: '1' }, loop: { checked: false } };
+    viewer.motion = [{}];
+    viewer.playbackFrame = null;
+    viewer.setMotionValue = value => { viewer.motionControls.input.value = String(value); };
+    viewer.play();
+    assert.equal(button.textContent, '暂停');
+    assert.equal(button['aria-pressed'], 'true');
+    tick(performance.now() + 13000);
+    assert.equal(viewer.motionControls.input.value, '720');
+    assert.equal(button.textContent, '播放');
+    assert.equal(button['aria-pressed'], 'false');
+    assert.equal(viewer.playbackFrame, null);
+    viewer.play();
+    viewer.stopPlayback();
+    assert.equal(button['aria-pressed'], 'false');
+  } finally {
+    globalThis.requestAnimationFrame = originalRequest;
+    globalThis.cancelAnimationFrame = originalCancel;
+  }
+});
