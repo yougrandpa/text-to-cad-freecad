@@ -676,7 +676,7 @@ def _check_finite_numbers(
         for g in s.geometry:
             for i, p in enumerate(g.points or []):
                 vec(f"sketch '{s.id}' geometry '{g.id}' point[{i}]", p, s.id)
-            for fld in ("radius", "theta1", "theta2"):
+            for fld in ("radius", "theta1", "theta2", "major_radius", "minor_radius", "rotation"):
                 if not _is_finite_number(getattr(g, fld, None)):
                     issues.append(_finite_issue(
                         f"sketch '{s.id}' geometry '{g.id}' {fld}", s.id))

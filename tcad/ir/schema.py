@@ -10,6 +10,7 @@ document directly. It only mutates this IR; FreeCAD is a compiler backend.
 
 from __future__ import annotations
 
+import math
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -90,7 +91,7 @@ class PlacementSpec(BaseModel):
 # Sketch
 # ══════════════════════════════════════════════════════════════════════════
 
-GeomKind = Literal["line", "circle", "arc", "point"]
+GeomKind = Literal["line", "circle", "arc", "point", "ellipse", "bspline"]
 
 
 class SketchGeom(BaseModel):
@@ -100,6 +101,10 @@ class SketchGeom(BaseModel):
     circle -> points = [center], radius required
     arc    -> points = [center], radius + theta1/theta2 required (radians)
     point  -> points = [p]
+    ellipse -> points = [center], major_radius/minor_radius are semi-axes;
+               rotation is degrees in the sketch's local (u, v) frame
+    bspline -> points are WORLD interpolation points, not control poles;
+               periodic closes the curve smoothly (do not repeat the first point)
 
     Verified constructors (Mod/Part/App/AppPart.cpp):
         Part.LineSegment(App.Vector(...), App.Vector(...))
@@ -114,6 +119,52 @@ class SketchGeom(BaseModel):
     theta1: float | None = None
     theta2: float | None = None
     construction: bool = False
+    major_radius: float | None = None
+    minor_radius: float | None = None
+    rotation: float = 0.0
+    periodic: bool = Field(default=False, strict=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_unknown_curve_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict) and data.get("kind") in {"ellipse", "bspline"}:
+            unknown = set(data) - set(cls.model_fields)
+            if unknown:
+                raise ValueError(f"unknown curve fields: {', '.join(sorted(unknown))}")
+        return data
+
+    @model_validator(mode="after")
+    def validate_curve(self) -> "SketchGeom":
+        if self.kind not in {"ellipse", "bspline"}:
+            return self
+        if any(not math.isfinite(v) for p in self.points for v in p.as_tuple()):
+            raise ValueError("curve points must be finite")
+        if not math.isfinite(self.rotation):
+            raise ValueError("rotation must be finite")
+        if any(v is not None for v in (self.radius, self.theta1, self.theta2)):
+            raise ValueError("ellipse/bspline do not use radius or theta1/theta2")
+        if self.kind == "ellipse":
+            if len(self.points) != 1:
+                raise ValueError("ellipse requires exactly one center point")
+            if (self.major_radius is None or self.minor_radius is None
+                    or not math.isfinite(self.major_radius)
+                    or not math.isfinite(self.minor_radius)
+                    or not self.major_radius >= self.minor_radius > 0):
+                raise ValueError("ellipse requires finite major_radius >= minor_radius > 0")
+            if self.periodic:
+                raise ValueError("ellipse is already closed; periodic is for bspline")
+        else:
+            if self.major_radius is not None or self.minor_radius is not None or self.rotation:
+                raise ValueError("bspline uses world interpolation points, not ellipse parameters")
+            minimum = 3 if self.periodic else 2
+            if not minimum <= len(self.points) <= 128:
+                raise ValueError(f"bspline requires {minimum}..128 interpolation points")
+            pairs = list(zip(self.points, self.points[1:]))
+            if self.periodic:
+                pairs.append((self.points[-1], self.points[0]))
+            if any(math.dist(a.as_tuple(), b.as_tuple()) <= 1e-7 for a, b in pairs):
+                raise ValueError("bspline consecutive points must differ; periodic curves must not repeat the first point")
+        return self
 
 
 class SketchConstraint(BaseModel):

@@ -19,10 +19,39 @@
   --bad:       #b43a35;
   --mono: "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
   --sans: "Avenir Next", "Avenir", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --scroll-thumb: #babdb2;
+  --scroll-hover: #949b8e;
+  --scroll-active: #767e70;
   --radius: 10px;
 }
 
 * { box-sizing: border-box; }
+
+/* Quiet rails inherit the palette of each workspace panel. */
+@media (forced-colors: none) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scroll-thumb) var(--bg);
+  }
+  .session-list, .stream, .inspect { scrollbar-gutter: stable; }
+
+  @supports selector(::-webkit-scrollbar) {
+    /* Native scrollbar properties otherwise override the rounded thumb. */
+    * { scrollbar-width: auto; scrollbar-color: auto; }
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+    ::-webkit-scrollbar-thumb {
+      background: var(--scroll-thumb);
+      background-clip: padding-box;
+      border: 3px solid transparent;
+      border-radius: 999px;
+      min-height: 32px;
+    }
+    ::-webkit-scrollbar-thumb:hover { background-color: var(--scroll-hover); border-width: 2px; }
+    ::-webkit-scrollbar-thumb:active { background-color: var(--scroll-active); }
+    ::-webkit-scrollbar-button { display: none; }
+  }
+}
 
 html, body {
   height: 100%;
@@ -751,7 +780,7 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); 
 .kv { gap: 14px; border-bottom: 1px solid var(--line-soft); padding: 7px 0; }
 .kv .v { overflow-wrap: anywhere; text-align: right; min-width: 0; }
 /* Local variables keep all existing viewport controls in their dark palette. */
-.col-view { color-scheme: dark; --bg: #202927; --panel: #202927; --panel-2: #303b38; --line: #3e4944; --line-soft: #35413c; --fg: #e4e8dd; --fg-dim: #b4beb2; --fg-faint: #98a697; --accent-dim: #59695b; --warn: #eac482; background: var(--bg); border-color: #303b38; }
+.col-view { --scroll-thumb: #667362; --scroll-hover: #83907e; --scroll-active: #a3ae9c; color-scheme: dark; --bg: #202927; --panel: #202927; --panel-2: #303b38; --line: #3e4944; --line-soft: #35413c; --fg: #e4e8dd; --fg-dim: #b4beb2; --fg-faint: #98a697; --accent-dim: #59695b; --warn: #eac482; background: var(--bg); border-color: #303b38; }
 .col-view .col-head { min-height: 52px; }
 .col-view .pane-label small { color: #9aa898; }
 .view-tabs { padding: 9px 12px; background: #26312d; }
@@ -784,7 +813,6 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); 
 .modal-body { padding: 22px 24px; }
 .modal-foot { padding: 16px 24px; }
 .field input:focus-visible, .field select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-* { scrollbar-width: thin; scrollbar-color: #babdb2 transparent; }
 @keyframes studio-enter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 @media (max-width: 1500px) and (min-width: 981px) {
   .brand .tag { display: none; }

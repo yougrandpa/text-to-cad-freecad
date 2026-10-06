@@ -14,7 +14,8 @@ Design facts used here (verified, see docs/02-架构设计.md 附录 A/B):
   * ``doc.addObject(type, name)`` + ``body.addObject(obj)`` (NOT body.newObject)
   * sketch attach: ``sk.AttachmentSupport = (target, [sub])`` + ``sk.MapMode = "FlatFace"``
   * origin planes via ``doc.XY_Plane`` / ``doc.XZ_Plane`` / ``doc.YZ_Plane``
-  * geometry: ``Part.LineSegment`` / ``Part.Circle`` / ``Part.ArcOfCircle`` / ``Part.Point``
+  * geometry: ``Part.LineSegment`` / ``Part.Circle`` / ``Part.ArcOfCircle`` /
+    ``Part.Point`` / ``Part.Ellipse`` / interpolated ``Part.BSplineCurve``
   * ``sk.addConstraint(Sketcher.Constraint(type, *refs))`` -> int index
   * ``sk.setDatum(idx, App.Units.Quantity("N mm"))``
   * ``setDatum`` raises ``ValueError: Invalid constraint index`` for BOTH a bad
@@ -24,6 +25,7 @@ Design facts used here (verified, see docs/02-架构设计.md 附录 A/B):
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import tempfile
@@ -771,6 +773,12 @@ def _add_geometry(sk, g: dict):
     kind = g.get("kind")
     pts = g.get("points") or []
     construction = bool(g.get("construction", False))
+    if kind in {"ellipse", "bspline"}:
+        inverse = sk.Placement.inverse()
+        for p in pts:
+            world = App.Vector(float(p["x"]), float(p["y"]), float(p["z"]))
+            if abs(inverse.multVec(world).z) > 1e-7:
+                raise ValueError(f"{kind} points must lie on the sketch plane")
     if kind == "line":
         p0 = _sketch_point(sk, pts[0])
         p1 = _sketch_point(sk, pts[1])
@@ -787,6 +795,20 @@ def _add_geometry(sk, g: dict):
         )
     elif kind == "point":
         geo = Part.Point(_sketch_point(sk, pts[0]))
+    elif kind == "ellipse":
+        center = _sketch_point(sk, pts[0])
+        angle = math.radians(float(g.get("rotation", 0.0)))
+        major = float(g["major_radius"])
+        minor = float(g["minor_radius"])
+        geo = Part.Ellipse(
+            center + App.Vector(major * math.cos(angle), major * math.sin(angle), 0),
+            center + App.Vector(-minor * math.sin(angle), minor * math.cos(angle), 0),
+            center,
+        )
+    elif kind == "bspline":
+        local_points = [_sketch_point(sk, p) for p in pts]
+        geo = Part.BSplineCurve()
+        geo.interpolate(local_points, PeriodicFlag=bool(g.get("periodic", False)))
     else:
         raise ValueError(f"unknown geometry kind: {kind!r}")
     return sk.addGeometry(geo, construction)
