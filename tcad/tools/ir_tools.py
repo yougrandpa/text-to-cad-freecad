@@ -275,6 +275,22 @@ op names and their payload shapes:
         the geometry. Pick one anchor per edge, not both.
 
       Constraint refs are positional, exactly as Sketcher.Constraint(type, *refs):
+      Native curves (no polyline approximation):
+        ellipse: {"id":"g0","kind":"ellipse","points":[{"x":0,"y":0,"z":0}],
+                  "major_radius":20,"minor_radius":10,"rotation":30}
+          One WORLD center; radii are SEMI-axes in mm, major >= minor > 0.
+          rotation is degrees from local sketch +u toward +v, not a world-axis angle.
+        bspline: {"id":"g0","kind":"bspline","points":[{"x":0,"y":0,"z":0},
+                  {"x":20,"y":10,"z":0},{"x":40,"y":0,"z":0}],"periodic":false}
+          WORLD interpolation points ON the sketch plane; curve passes through them.
+          Not control poles: degree/knots/weights are not supported in this mode.
+          2..128 points for open curves; 3..128 for periodic=true, which closes smoothly.
+          No consecutive duplicate points; periodic input must not repeat its first point.
+          Open splines need other edges closing the profile before pad/pocket.
+        First-stage constraint recipe for ellipse/bspline: {"type":"Block","refs":[0]}.
+          Fix the whole curve; edit its IR parameters/points to regenerate it.
+          Do not expose internal geometry or guess axis/pole dimension constraints.
+          A fixed curve is not a sketch with independently dimension-driven axes/poles.
         {"type":"Coincident","refs":[0,2,1,1]}   line0 end  == line1 start
         {"type":"Coincident","refs":[0,1,-1,1]}  line0 start == the sketch origin
         {"type":"Horizontal","refs":[0]} / {"type":"Vertical","refs":[1]}
