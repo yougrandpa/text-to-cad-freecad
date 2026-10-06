@@ -112,11 +112,14 @@ test("geometry chips validate publication, remain read-only and clear their high
 });
 
 test("app safely clears empty references and retains a feature selection when referencing it", async () => {
+  const { TreeHighlighter } = await import("../../tcad/server/ui/highlight.mjs");
   const source = (await readFile(new URL("../../tcad/server/ui/app.js", import.meta.url), "utf8"))
     .replace(/^import .*;$/gm, "").replace(/\nboot\(\);\s*$/, "");
-  const viewer = { schedule() {}, pickMapping: { entities: [{ body_id: "body" }] } };
+  const viewer = { hasMesh: true, schedule() {}, pickMapping: { entities: [{ body_id: "body" }] } };
   const selected = [];
-  const context = vm.createContext({ ReferenceController, console,
+  const context = vm.createContext({ ReferenceController, TreeHighlighter, AbortController, URLSearchParams, console,
+    fetch: async () => ({ ok: true, json: async () => ({ artifact_id: viewer.artifactId,
+      body_id: "body", entity_kind: "feature", node_id: "pad", vertices: [[0,0,0],[1,0,0]] }) }),
     document: { getElementById: () => new Node(), createElement: () => new Node() } });
   vm.runInContext(source + `
     globalThis.testing = {referenceUI, stub(viewer, selected) {
@@ -132,8 +135,10 @@ test("app safely clears empty references and retains a feature selection when re
   viewer.artifactId = targets.artifact_id;
   c.update(targets, "plate", 0);
   c.button("body", "feature", "pad").click();
+  await new Promise(resolve => setImmediate(resolve));
   assert.equal(viewer.selectedEntity.body_id, "body");
-  assert.equal(viewer.selectedEntity.entity_kind, "body");
+  assert.equal(viewer.selectedEntity.entity_kind, "feature");
+  assert.equal(viewer.selectedEntity.feature_id, "pad");
   assert.equal(selected.at(-1).feature_id, "pad");
   c.clear(); assert.equal(viewer.selectedEntity, null);
 });

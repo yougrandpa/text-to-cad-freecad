@@ -530,6 +530,7 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
     )
 
     app.state.mesh_cache = MeshPreviewCache()
+    app.state.feature_highlight_cache = MeshPreviewCache(max_entries=32, max_bytes=8 * 1024 * 1024)
     app.state.mesh_preview_jobs = set()
 
     def svc() -> Any:
@@ -701,6 +702,24 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
         from tcad.server.mesh import mesh_preview
         return mesh_preview(cfg().storage.data_dir, app.state.mesh_cache, model_id,
                             version=None, tolerance=0.5, force=False, artifact_id=artifact_id)
+
+    @app.get("/artifact-sets/{artifact_id}/highlight")
+    async def get_feature_highlight(artifact_id: str, model_id: str, body_id: str, kind: str, node_id: str) -> Response:
+        from tcad.server.feature_highlight import feature_highlight
+        jobs = app.state.mesh_preview_jobs
+        if len(jobs) >= MAX_ACTIVE_MESH_REQUESTS:
+            raise HTTPException(429, "selection preview is busy; retry shortly", headers={"Retry-After": "1"})
+        job = asyncio.create_task(run_in_threadpool(feature_highlight, cfg().storage.data_dir,
+            app.state.feature_highlight_cache, svc().worker, model_id, artifact_id, body_id, kind, node_id))
+        jobs.add(job)
+
+        def release(finished: asyncio.Task) -> None:
+            jobs.discard(finished)
+            if not finished.cancelled():
+                finished.exception()
+
+        job.add_done_callback(release)
+        return await asyncio.shield(job)
 
     @app.get("/artifact-sets/{artifact_id}/inspect/{kind}")
     def inspect_artifact(artifact_id: str, kind: str, model_id: str) -> dict:

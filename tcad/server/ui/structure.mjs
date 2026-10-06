@@ -286,7 +286,10 @@ export class StructureController {
       row("约束要求", data.require_fully_constrained ? "完全约束" : "允许自由度");
     }
     this.detail.append(this.element("p", "structure-detail-note", this.artifactId
-      ? node.kind === "body" ? "选择零件可在三维视图中高亮。" : "三维视图高亮所属零件；此处查看特征定义。"
+      ? node.kind === "body" ? "三维视图高亮整个零件。" : node.kind === "sketch"
+        ? "三维视图仅高亮此草图轮廓（包含被实体遮挡的线）。"
+        : node.suppressed ? "此特征已抑制，没有可高亮几何。"
+          : "三维视图仅高亮此特征产生且保留在当前零件上的轮廓。"
       : "当前显示编辑定义，构建后可与三维视图联动。"));
   }
 }

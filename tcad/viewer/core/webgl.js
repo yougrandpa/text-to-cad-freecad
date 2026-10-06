@@ -96,6 +96,7 @@ export class MeshViewport {
       this._uploadMesh(prepareScene({ mesh: this.motionSource, animation: this.animation }, { frame: value }));
       if (this.motionControls) this.motionControls.output.textContent = `${(this.animation.start + value*this.animation.step).toFixed(2)} s · ${value+1}/${this.animation.frames.length}`;
     } else {
+      this.displayedMotionValue = value;
       this._uploadMesh(prepareScene({ mesh: this.motionSource, motion: this.motion }, { angle: value }));
       if (this.motionControls) this.motionControls.output.textContent = `${Math.round(value)}°`;
     }
@@ -265,13 +266,18 @@ export class MeshViewport {
       gl.drawArrays(gl.LINES, 0, this.edgeVertices);
     }
     if (this.selectedEntity) {
-      const highlight = highlightVertices(this.posedMesh, this.pickMapping, this.selectedEntity, this.origin);
+      const highlight = highlightVertices(this.posedMesh, this.pickMapping, this.selectedEntity, this.origin,
+        { motion: this.motion, animation: this.animation, value: this.displayedMotionValue || 0 });
       gl.bindBuffer(gl.ARRAY_BUFFER, this.highlightBuffer);
       gl.bufferData(gl.ARRAY_BUFFER, highlight, gl.STATIC_DRAW);
       gl.vertexAttribPointer(aPosition, 3, gl.FLOAT, false, 12, 0);
       gl.disableVertexAttribArray(aNormal); gl.vertexAttrib3f(aNormal, 0, 0, 1);
       gl.uniform1i(u.uSelected, 1);
+      gl.uniform1i(u.uLines, 1);
+      // Sketches are construction geometry, often inside the finished solid.
+      if (this.selectedEntity.entity_kind === "sketch") gl.disable(gl.DEPTH_TEST);
       gl.drawArrays(gl.LINES, 0, highlight.length/3);
+      gl.enable(gl.DEPTH_TEST);
       gl.uniform1i(u.uSelected, 0);
     }
     this.drawAxes(right, up, look);

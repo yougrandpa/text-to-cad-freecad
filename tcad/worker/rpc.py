@@ -20,6 +20,7 @@ from tcad.worker.compiler import compile_ir, _measure
 from tcad.worker.introspect import introspect_document
 from tcad.worker.mesh import tessellate
 from tcad.worker.artifact_scene import read_artifact_scene
+from tcad.worker.feature_highlight import read_feature_highlight
 from tcad.worker.collision import check_motion
 from tcad.worker.assembly import simulate_assembly, solve_assembly
 from tcad.worker.exporters import export_artifacts
@@ -44,6 +45,7 @@ _HANDLERS = {
     "introspect_document": introspect_document,
     "tessellate": tessellate,
     "read_artifact_scene": read_artifact_scene,
+    "read_feature_highlight": read_feature_highlight,
     "check_motion": check_motion,
     "simulate_assembly": simulate_assembly,
     "solve_assembly": solve_assembly,

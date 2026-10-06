@@ -17,6 +17,7 @@ import { MeshViewport } from "./viewport.js?v=20261004-refactor";
 import { validateArtifactScene } from "../../viewer/core/artifact.js";
 import { ReferenceController } from "./references.mjs";
 import { StructureController } from "./structure.mjs";
+import { TreeHighlighter } from "./highlight.mjs";
 import { WorkspaceController } from "./workspace.mjs";
 
 let references = null;
@@ -27,6 +28,13 @@ let compactMedia = null;
 let sourceIr = null;
 let displayedArtifact = null;
 let structureRequest = 0;
+let treeHighlighter = null;
+
+function highlightSelection(entity, artifactId) {
+  if (!meshViewer) return;
+  treeHighlighter ||= new TreeHighlighter(meshViewer, { fetch, notice: message => pushNotice("warn", message) });
+  return treeHighlighter.select(entity, artifactId, state.modelId);
+}
 
 function clearDisplayedStructure() {
   displayedArtifact = null;
@@ -67,10 +75,7 @@ function referenceUI() {
     onChange: refs => {
       if (!meshViewer) return;
       const latest = refs.filter(ref => ref.artifact_id === meshViewer.artifactId).at(-1);
-      meshViewer.selectedEntity = latest && ["body", "face", "edge"].includes(latest.entity_kind) ? latest
-        : latest && meshViewer.pickMapping?.entities.some(entity => entity.body_id === latest.body_id)
-          ? { body_id: latest.body_id, entity_kind: "body" } : null;
-      meshViewer.schedule();
+      highlightSelection(latest, meshViewer.artifactId);
       if (latest) structure?.selectReference(latest);
     },
     notice: (message) => pushNotice("warn", message), focus: () => { workspace?.select("chat"); $("input").focus(); }, document,
@@ -1580,10 +1585,8 @@ function wire() {
       ? referenceUI().button(node.bodyId, node.kind, node.id) : null,
     onSelect: (node, artifactId) => {
       if (!meshViewer?.hasMesh) return;
-      const mapped = node && artifactId === meshViewer.artifactId &&
-        meshViewer.pickMapping?.entities.some(entity => entity.body_id === node.bodyId);
-      meshViewer.selectedEntity = mapped ? { body_id: node.bodyId, entity_kind: "body" } : null;
-      meshViewer.schedule();
+      highlightSelection(node ? { body_id: node.bodyId, entity_kind: node.kind,
+        ...(node.kind === "sketch" ? { sketch_id: node.id } : node.kind === "feature" ? { feature_id: node.id } : {}) } : null, artifactId);
     },
   });
   const panelTabs = [$("structureTab"), $("checksTab")];

@@ -23,6 +23,7 @@ M_SOLVE_ASSEMBLY = "solve_assembly"
 M_IMPORT_ASSET = "import_asset"
 M_REOPEN_EDIT = "reopen_edit_measure"
 M_READ_ARTIFACT_SCENE = "read_artifact_scene"
+M_READ_FEATURE_HIGHLIGHT = "read_feature_highlight"
 M_BUILD_ARTIFACTS = "build_artifacts"
 M_EXPORT_SAVED = "export_saved"
 M_CHECK_SAVED_MOTION = "check_saved_motion"
@@ -40,6 +41,7 @@ WORKER_METHODS: tuple[str, ...] = (
     M_IMPORT_ASSET,
     M_REOPEN_EDIT,
     M_READ_ARTIFACT_SCENE,
+    M_READ_FEATURE_HIGHLIGHT,
     M_BUILD_ARTIFACTS,
     M_EXPORT_SAVED,
     M_CHECK_SAVED_MOTION,

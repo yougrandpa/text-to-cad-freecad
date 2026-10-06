@@ -1,5 +1,6 @@
 /** Hit tests use the currently posed vertices and artifact-local topology IDs. */
 import { projectPoint } from "./camera.js";
+import { poseMesh, poseAnimation } from "./scene.js";
 
 function triangleDepth(p, a, b, c) {
   const denominator = (b[1]-c[1])*(a[0]-c[0]) + (c[0]-b[0])*(a[1]-c[1]);
@@ -46,8 +47,19 @@ export function pickEntity(mesh, mapping, camera, width, height, x, y, kind = "f
   return edge;
 }
 
-export function highlightVertices(mesh, mapping, selected, origin) {
+export function highlightVertices(mesh, mapping, selected, origin, { motion = [], animation = null, value = 0 } = {}) {
   const points = [];
+  if (selected?.overlay) {
+    let overlay = { vertices: selected.overlay.vertices };
+    if (!overlay.vertices.length) return new Float32Array();
+    const part = { body_id: selected.body_id, vertex_start: 0, vertex_count: overlay.vertices.length };
+    if (animation) overlay = poseAnimation(overlay, { ...animation, parts: [part] }, value);
+    else {
+      const spec = motion.find(item => item.body_id === selected.body_id);
+      if (spec) overlay = poseMesh(overlay, [{ ...spec, ...part }], value);
+    }
+    return new Float32Array(overlay.vertices.flatMap(p => p.map((v, j) => v - origin[j])));
+  }
   if (!selected || !mapping) return new Float32Array();
   for (const entity of mapping.entities) {
     if (entity.body_id !== selected.body_id || (selected.entity_kind !== "body" &&
