@@ -208,6 +208,10 @@ class SandboxConfig(BaseModel):
     wall_clock_s: float = 20.0
 
 
+class SelectionConfig(BaseModel):
+    enabled: bool = True
+
+
 class Config(BaseModel):
     version: int = 1
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
@@ -219,6 +223,7 @@ class Config(BaseModel):
     policy: PolicyConfig = Field(default_factory=PolicyConfig)
     verify: VerifyConfig = Field(default_factory=VerifyConfig)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
+    selection: SelectionConfig = Field(default_factory=SelectionConfig)
 
     def budget_total(self) -> int:
         """Static budget consumed before history is added."""

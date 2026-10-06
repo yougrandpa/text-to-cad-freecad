@@ -424,7 +424,7 @@ button:disabled, input:disabled, textarea:disabled, select:disabled {
 /* ── composer ─────────────────────────────────────────────────────────── */
 
 .composer {
-  flex: 0 0 auto; display: flex; gap: 9px; align-items: flex-end;
+  flex: 0 0 auto; display: flex; gap: 9px; align-items: flex-end; flex-wrap: wrap;
   padding: 11px 14px 14px; border-top: 1px solid var(--line);
   background: var(--panel);
 }
@@ -434,6 +434,16 @@ button:disabled, input:disabled, textarea:disabled, select:disabled {
   padding: 10px 12px; outline: none;
 }
 .composer textarea:focus { border-color: var(--accent-dim); }
+.reference-chips { flex: 1 0 100%; display: flex; flex-wrap: wrap; gap: 6px; }
+.reference-chips[hidden] { display: none; }
+.reference-chip {
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 4px 8px; border: 1px solid var(--accent-dim); border-radius: 5px;
+  background: var(--bg); color: var(--accent); font-family: var(--mono); font-size: 11px;
+}
+.reference-chip:focus-visible, .reference-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.chain .reference-button { float: right; margin-left: 6px; }
+.chain .body-row { margin-top: 8px; font-weight: 600; }
 .primary {
   background: var(--accent); color: #06121f; border: none; border-radius: 9px;
   padding: 10px 20px; font-weight: 600; cursor: pointer;

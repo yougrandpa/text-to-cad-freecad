@@ -392,6 +392,8 @@ def _key_dimensions(measure: dict, sketches: list,
         dof = sk.get("dof")
         if dof is not None:
             out[f"{sid}__dof"] = float(dof)
+        if sk.get("solve_status") is not None:
+            out[f"{sid}__solve_status"] = float(sk["solve_status"])
     return out
 
 

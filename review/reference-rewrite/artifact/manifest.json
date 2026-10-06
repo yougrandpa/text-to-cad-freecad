@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "artifact_id": "sha256:e37cb4c7e78f531e367beb60d95363ff5ba3fe275bc2e7b95aa5f2095f263893",
+  "model_id": "reference_plate",
+  "ir_version": 3,
+  "attempt_id": "reference_plate-v3-862343bf",
+  "ir_sha256": "bc9daddc0dd7a48d63e7a692cd7b9701f284b064d8da384c97bbd3d9d8b8f5dc",
+  "status": "verified",
+  "files": {
+    "build.json": {
+      "sha256": "014d56983875135a2ec2b18e7364b4f3de7eb91644160afcc5f4fad3969427c6",
+      "bytes": 372
+    },
+    "build_stamp.json": {
+      "sha256": "69d8bacc3c49988aa01bdc48fedfbde07720db92aa32ea24fcf8406abac58b84",
+      "bytes": 198
+    },
+    "components.json": {
+      "sha256": "40f5d3e9e9c75847065405dfa9d33295401a0bc9b835dd1a8c5c230eb55fc738",
+      "bytes": 177
+    },
+    "digest.json": {
+      "sha256": "0535da1dc851606fe5c509a41ee10b746f0018876bb69934cdfb92c2ea4fd68b",
+      "bytes": 3932
+    },
+    "gate_report.json": {
+      "sha256": "9fe66d0945f40fa80b2ef24e746f0809a55dbc920d3a37871ecbaca3ddb9bc61",
+      "bytes": 4235
+    },
+    "ir.json": {
+      "sha256": "bc9daddc0dd7a48d63e7a692cd7b9701f284b064d8da384c97bbd3d9d8b8f5dc",
+      "bytes": 2515
+    },
+    "reference_plate.FCStd": {
+      "sha256": "1c1ff5b95cd8eaba51ad2ed7be2707c434fa2fcdcce2237c8c0e248143904256",
+      "bytes": 14085
+    },
+    "reference_plate.step": {
+      "sha256": "ef5462701f890a0b760d378303c0435b3baa4585a18b23313cedb992f86e2cd7",
+      "bytes": 8307
+    },
+    "reference_plate.stl": {
+      "sha256": "264e9ff0493fbc4f4f35789e10c261cf856621a8a4f60cd4afd98539db3136cd",
+      "bytes": 235812
+    },
+    "scene.json": {
+      "sha256": "1ea0c3f08b85c7324af258edb99c3640a78abeba1934de7ed65bc72f6ac14443",
+      "bytes": 31736
+    }
+  }
+}

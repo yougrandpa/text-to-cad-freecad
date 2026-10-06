@@ -217,6 +217,13 @@ async def execute_tool(
                 ),
             )
         )
+    if ctx.edit_precondition is not None and spec.tier == ToolTier.PRIVILEGED:
+        return ToolOutcome(result=ToolResult(ok=False, error=ToolError(
+            kind=ToolErrorKind.DENIED, message="Artifact references require declarative editing tools.")))
+    if spec.selection_capability and (ctx.edit_precondition is None
+            or not ctx.edit_precondition.supports(spec.selection_capability)):
+        return ToolOutcome(result=ToolResult(ok=False, error=ToolError(
+            kind=ToolErrorKind.DENIED, message="Selected target does not support this operation.")))
     # The declared argument schema is a contract, not documentation (task §5-A).
     # Checked *before* the handler so a malformed call cannot half-execute: a
     # string where an array belongs used to reach the handler, where a truthy

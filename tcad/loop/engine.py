@@ -52,6 +52,7 @@ from tcad.loop.budget import Budget, BudgetLimits
 from tcad.loop.recovery import RepeatedFailures
 from tcad.loop.strategies import LoopUntilDoneStrategy, make_strategy
 from tcad.tools.base import Services, ToolOutcome, execute_tool
+from tcad.selection.types import SelectionContext
 
 
 @dataclass
@@ -72,6 +73,7 @@ class UserMessage(BaseModel):
     text: str
     privileged_requested: bool = False
     access_mode: AccessMode | None = None
+    selection_context: SelectionContext | None = None
 
 
 class TurnResult(BaseModel):
@@ -275,6 +277,7 @@ class LoopEngine:
         self._pinned_history: list[dict] = []
         self._completion_review: dict | None = None
         self._request_text: str | None = None
+        self._edit_precondition = None
         self._observer = observer
         self._stop_requested = stop_requested
         # Budgeted context build (design §4.3). When absent the engine keeps the
@@ -402,6 +405,17 @@ class LoopEngine:
         if user_msg.access_mode == AccessMode.READ_ONLY:
             user_msg = user_msg.model_copy(update={"kind": TurnKind.INSPECT})
         self._access_mode = user_msg.access_mode
+        self._edit_precondition = None
+        if user_msg.selection_context is not None:
+            from tcad.selection.precondition import EditPrecondition
+            from tcad.selection.resolve import SelectionResolver
+            from tcad.selection.types import SelectionError
+            if not self.services.config.selection.enabled:
+                raise SelectionError("selection_disabled", "Feature references are disabled.", 403)
+            resolver = SelectionResolver(self.config.data_dir, self.services.store)
+            snapshot, targets = resolver.resolve(thread.model_id, user_msg.selection_context,
+                                                 inspection=user_msg.kind == TurnKind.INSPECT)
+            self._edit_precondition = EditPrecondition(targets, snapshot.ir.model_copy(deep=True), resolver.reader)
         if user_msg.access_mode is not None:
             self._hooks = AccessHooks(self._base_hooks, user_msg.access_mode)
         else:
@@ -485,12 +499,21 @@ class LoopEngine:
                 if user_msg.text.strip() and user_msg.text not in text:
                     text = (text + "\n\n用户追加需求：\n" if text else "") + user_msg.text
                 if text != original_text:
-                    self.services.store.apply_patch(turn.model_id, IrPatch(
+                    provenance = IrPatch(
                         base_version=ir.version, ops=[IrPatchOp(
                             op="update_requirement", payload={"raw_text": text},
                             reason="Preserve the user's original request for acceptance provenance",
                         )],
-                    ))
+                    )
+                    if self._edit_precondition is None:
+                        self.services.store.apply_patch(turn.model_id, provenance)
+                    else:
+                        from tcad.tools.ir_tools import ir_patch_handler
+                        self._request_text = text
+                        applied = await ir_patch_handler(self.services, provenance.model_dump(mode="json"),
+                                                         self._make_tool_context(turn))
+                        if not applied.ok:
+                            raise ValueError(applied.error.message)
                 self._request_text = text
                 messages = await self._build_messages(user_msg, turn)
                 self._trace_start = len(messages)
@@ -594,6 +617,7 @@ class LoopEngine:
         # Detailed editing contracts are discoverable, not repeated on every
         # primitive-building step. Keep the registry complete for existing clients.
         tools = self._authoring_surface(tools,turn.model_id)
+        tools = [tool for tool in tools if self._selection_tool_available(tool["function"]["name"])]
         if self._access_mode == AccessMode.READ_ONLY:
             tools = [tool for tool in tools if tool["function"]["name"] in READ_ONLY_TOOLS]
         await self._prepare_step_context(turn, messages, tools)
@@ -1034,6 +1058,7 @@ class LoopEngine:
         return [
             {"role": "system", "content": self.config.system_prompt},
             *self._access_messages(),
+            *self._selection_messages(),
             *([{"role": "system", "content": "Authoritative user requirements:\n" + self._request_text}]
               if self._request_text else []),
             {"role": "user", "content": user_msg.text},
@@ -1142,7 +1167,20 @@ class LoopEngine:
         # The current request always goes last, verbatim, exactly once.
         messages.append({"role": "user", "content": user_msg.text})
         messages[0:0] = self._access_messages()
+        messages[0:0] = self._selection_messages()
         return messages
+
+    def _selection_tool_available(self, name: str) -> bool:
+        spec = self.registry.get(name)
+        if self._edit_precondition is not None and spec.tier == ToolTier.PRIVILEGED:
+            return False
+        capability = spec.selection_capability
+        return capability is None or (self._edit_precondition is not None
+                                      and self._edit_precondition.supports(capability))
+
+    def _selection_messages(self):
+        return ([{"role": "system", "content": self._edit_precondition.prompt()}]
+                if self._edit_precondition is not None else [])
 
     def _access_messages(self):
         if self._access_mode is None:
@@ -1233,6 +1271,7 @@ class LoopEngine:
             visual_ok=False,
             request_text=self._request_text,
             access_mode=self._access_mode,
+            edit_precondition=self._edit_precondition,
         )
 
     def _request_approval(

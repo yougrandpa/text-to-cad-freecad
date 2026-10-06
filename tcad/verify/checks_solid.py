@@ -287,6 +287,10 @@ class SketchFullyConstrainedCheck:
         for sketch in required:
             fc = d.key_dimensions.get(f"{sketch.id}__fully_constrained")
             dof = d.key_dimensions.get(f"{sketch.id}__dof")
+            status = d.key_dimensions.get(f"{sketch.id}__solve_status")
+            if status is not None and status != 0:
+                return _r(self, "fail", f"sketch {sketch.id} did not solve (solve()={status:g})",
+                          measurements={"solve_status": status}, feature_id=sketch.id)
             if fc is None:
                 return _r(self, "skip",
                           f"constraint state for sketch {sketch.id} not measured")

@@ -119,7 +119,7 @@ async def help_handler(services,args,ctx):
     selected={'sketch':['add_sketch','update_sketch'],'feature':['add_feature','update_feature'],'requirements':['update_requirement'],'assembly':['set_assembly'],'patch':[]}[topic]
     data={'schema':[b for b in branches if b['properties']['op']['enum'][0] in selected]}
     if topic=='sketch':
-        data['rules']='World coordinates: XY uses x,y,z=0; XZ uses x,z,y=0; YZ uses y,z,x=0. Pad normals XY:+Z, XZ:-Y, YZ:+X. Fully fixed geometry uses constraints [{type:Block,refs:[index]}].'
+        data['rules']='World coordinates: XY uses x,y,z=0; XZ uses x,z,y=0; YZ uses y,z,x=0. Pad normals XY:+Z, XZ:-Y, YZ:+X. Fully fixed geometry uses constraints [{type:Block,refs:[index]}]. For an editable circle use DistanceX/DistanceY on refs [index,3] (centre) and Radius on refs [index], each with a numeric value. Block also fixes the radius; it does not support diameter editing.'
         data['example']={'op':'add_sketch','payload':{'id':'sk','name':'sk','body_id':'base','plane':{'kind':'origin_plane','plane':'XY'},'geometry':[{'id':'c','kind':'circle','points':[{'x':0,'y':0,'z':0}],'radius':10}],'constraints':[{'type':'Block','refs':[0]}]},'reason':'Circle for pad'}
     elif topic=='feature':
         data['params']=sorted(_VERIFIED_OP_PARAMS.get(args.get('feature_op','pad'),[]))

@@ -58,7 +58,10 @@ def _sketch_state_line(digest: GeometryDigest, ir: IrDocument) -> list[str]:
     for sk in ir.all_sketches():
         fc = digest.key_dimensions.get(f"{sk.id}__fully_constrained")
         dof = digest.key_dimensions.get(f"{sk.id}__dof")
-        if fc is None:
+        status = digest.key_dimensions.get(f"{sk.id}__solve_status")
+        if status is not None and status != 0:
+            state = f"SOLVER-FAILED (solve={status:g}); constraint flag is not trustworthy"
+        elif fc is None:
             state = "unmeasured"
         elif fc == 1.0:
             state = "fully-constrained"
@@ -121,7 +124,7 @@ def render_digest_text(digest: GeometryDigest, ir: IrDocument) -> str:
 
     # key dimensions (carried by the worker, e.g. holes / thickness)
     kd = {k: v for k, v in digest.key_dimensions.items()
-          if not k.endswith("__fully_constrained") and not k.endswith("__dof")}
+          if not k.endswith(("__fully_constrained", "__dof", "__solve_status"))}
     if kd:
         out.append("key_dimensions: " + " ".join(f"{k}={v:g}" for k, v in kd.items()))
 

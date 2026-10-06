@@ -50,8 +50,10 @@
     "min_wall_thickness": 4.0,
     "sk_outer__fully_constrained": 0.0,
     "sk_outer__dof": 2.0,
+    "sk_outer__solve_status": 0.0,
     "sk_groove__fully_constrained": 0.0,
-    "sk_groove__dof": 8.0
+    "sk_groove__dof": 8.0,
+    "sk_groove__solve_status": 0.0
   },
   "holes": [],
   "faces": [
@@ -227,6 +229,9 @@
   ],
   "spec_deviation": {},
   "measurements_available": true,
+  "body_solids": {
+    "body_1": 1
+  },
   "text": "model: accept_e (v0)\nfeature chain (2):\n  1. cylinder [pad] length=40.0 type=Length\n  2. groove [groove] angle=360.0 type=Angle axis=V_Axis\ntopology: solids=1 faces=7 edges=9 vertexes=6 shells=1\nbbox: x=30.0000 y=30.0000 z=40.0000 (min x=-15.0000 y=-15.0000 z=0.0000)\nvolume: 26703.537556  area: 5843.362336\nshape_type: Compound  valid: True\nmin_wall_thickness: 4.0000 (closest opposed-face distance with material between)\nholes measured on the BRep: none (no concave cylindrical face)\nsketches:\n  outer: fully_constrained=no dof=2 solve_status=0\n  groove_profile: fully_constrained=no dof=8 solve_status=0",
-  "elapsed_s": 0.292
+  "elapsed_s": 0.1525
 }

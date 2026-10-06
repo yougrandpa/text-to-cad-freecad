@@ -49,8 +49,10 @@
     "min_wall_thickness": 7.0,
     "sk_plate__fully_constrained": 0.0,
     "sk_plate__dof": 6.0,
+    "sk_plate__solve_status": 0.0,
     "sk_holes__fully_constrained": 0.0,
-    "sk_holes__dof": 8.0
+    "sk_holes__dof": 8.0,
+    "sk_holes__solve_status": 0.0
   },
   "holes": [
     {
@@ -544,6 +546,9 @@
   ],
   "spec_deviation": {},
   "measurements_available": true,
+  "body_solids": {
+    "body_1": 1
+  },
   "text": "model: accept_b (v0)\nfeature chain (2):\n  1. pad [pad] length=8 type=Length\n  2. holes [pocket] type=ThroughAll reversed=True\ntopology: solids=1 faces=10 edges=24 vertexes=16 shells=1\nbbox: x=80.0000 y=50.0000 z=8.0000 (min x=0.0000 y=0.0000 z=0.0000)\nvolume: 31095.221316  area: 10456.991118\nshape_type: Compound  valid: True\nmin_wall_thickness: 7.0000 (closest opposed-face distance with material between)\nholes measured on the BRep (4):\n  #0 d=6.0000 axis=(+0.00,+0.00,+1.00) through (10.000,10.000,0.000) depth=8.0000 THROUGH\n  #1 d=6.0000 axis=(+0.00,+0.00,+1.00) through (10.000,40.000,0.000) depth=8.0000 THROUGH\n  #2 d=6.0000 axis=(+0.00,+0.00,+1.00) through (70.000,10.000,0.000) depth=8.0000 THROUGH\n  #3 d=6.0000 axis=(+0.00,+0.00,+1.00) through (70.000,40.000,0.000) depth=8.0000 THROUGH\nsketches:\n  profile: fully_constrained=no dof=6 solve_status=0\n  holes: fully_constrained=no dof=8 solve_status=0",
-  "elapsed_s": 0.2526
+  "elapsed_s": 0.1305
 }

@@ -39,7 +39,8 @@
     "z": 40.0,
     "min_wall_thickness": 20.0,
     "sk_shaft__fully_constrained": 0.0,
-    "sk_shaft__dof": 12.0
+    "sk_shaft__dof": 12.0,
+    "sk_shaft__solve_status": 0.0
   },
   "holes": [],
   "faces": [
@@ -268,6 +269,9 @@
   ],
   "spec_deviation": {},
   "measurements_available": true,
+  "body_solids": {
+    "body_1": 1
+  },
   "text": "model: accept_d_v2 (v0)\nfeature chain (1):\n  1. shaft [revolution] angle=180.0 type=Angle axis=V_Axis\ntopology: solids=1 faces=6 edges=12 vertexes=8 shells=1\nbbox: x=20.0000 y=10.0000 z=40.0000 (min x=-10.0000 y=0.0000 z=-0.0000)\nvolume: 4272.566009  area: 1959.468915\nshape_type: Solid  valid: True\nmin_wall_thickness: 20.0000 (closest opposed-face distance with material between)\nholes measured on the BRep: none (no concave cylindrical face)\nsketches:\n  shaft_profile: fully_constrained=no dof=12 solve_status=0",
-  "elapsed_s": 0.0865
+  "elapsed_s": 0.0464
 }

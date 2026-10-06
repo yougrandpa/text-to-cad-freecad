@@ -1,0 +1,195 @@
+{
+  "model_id": "reference_plate",
+  "requirements": {
+    "raw_text": "40×30×6 毫米板，直径 6 毫米的通孔",
+    "constraints": [
+      {
+        "kind": "hole_diameter",
+        "value": 6,
+        "tol": 0.05,
+        "source_text": "直径 6 毫米",
+        "confirmed": true
+      }
+    ]
+  },
+  "bodies": [
+    {
+      "id": "plate_body",
+      "name": "板件",
+      "sketches": [
+        {
+          "id": "outline",
+          "name": "轮廓",
+          "plane": {
+            "kind": "origin_plane",
+            "plane": "XY"
+          },
+          "geometry": [
+            {
+              "id": "line0",
+              "kind": "line",
+              "points": [
+                {
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                },
+                {
+                  "x": 40,
+                  "y": 0,
+                  "z": 0
+                }
+              ]
+            },
+            {
+              "id": "line1",
+              "kind": "line",
+              "points": [
+                {
+                  "x": 40,
+                  "y": 0,
+                  "z": 0
+                },
+                {
+                  "x": 40,
+                  "y": 30,
+                  "z": 0
+                }
+              ]
+            },
+            {
+              "id": "line2",
+              "kind": "line",
+              "points": [
+                {
+                  "x": 40,
+                  "y": 30,
+                  "z": 0
+                },
+                {
+                  "x": 0,
+                  "y": 30,
+                  "z": 0
+                }
+              ]
+            },
+            {
+              "id": "line3",
+              "kind": "line",
+              "points": [
+                {
+                  "x": 0,
+                  "y": 30,
+                  "z": 0
+                },
+                {
+                  "x": 0,
+                  "y": 0,
+                  "z": 0
+                }
+              ]
+            }
+          ],
+          "constraints": [
+            {
+              "type": "Block",
+              "refs": [
+                0
+              ]
+            },
+            {
+              "type": "Block",
+              "refs": [
+                1
+              ]
+            },
+            {
+              "type": "Block",
+              "refs": [
+                2
+              ]
+            },
+            {
+              "type": "Block",
+              "refs": [
+                3
+              ]
+            }
+          ]
+        },
+        {
+          "id": "hole_circle",
+          "name": "通孔圆",
+          "plane": {
+            "kind": "origin_plane",
+            "plane": "XY"
+          },
+          "geometry": [
+            {
+              "id": "circle",
+              "kind": "circle",
+              "radius": 3,
+              "points": [
+                {
+                  "x": 20,
+                  "y": 15,
+                  "z": 0
+                }
+              ]
+            }
+          ],
+          "constraints": [
+            {
+              "type": "DistanceX",
+              "refs": [
+                0,
+                3
+              ],
+              "value": 20
+            },
+            {
+              "type": "DistanceY",
+              "refs": [
+                0,
+                3
+              ],
+              "value": 15
+            },
+            {
+              "type": "Radius",
+              "refs": [
+                0
+              ],
+              "value": 3
+            }
+          ]
+        }
+      ],
+      "features": [
+        {
+          "id": "plate",
+          "name": "板",
+          "op": "pad",
+          "profile_sketch": "outline",
+          "params": {
+            "length": 6,
+            "type": "Length"
+          }
+        },
+        {
+          "id": "bore",
+          "name": "通孔",
+          "op": "pocket",
+          "profile_sketch": "hole_circle",
+          "refs": [
+            "plate"
+          ],
+          "params": {
+            "type": "ThroughAll",
+            "reversed": true
+          }
+        }
+      ]
+    }
+  ]
+}

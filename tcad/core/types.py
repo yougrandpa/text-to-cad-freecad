@@ -227,6 +227,7 @@ class ToolContext(BaseModel):
     visual_ok: bool = False
     request_text: str | None = None  # authoritative user text; model cannot rewrite it
     access_mode: str | None = None  # operator selection, never model-controlled
+    edit_precondition: Any = None  # server-owned EditPrecondition; not model input
 
 
 ToolHandler = Any  # Callable[[dict, ToolContext], Awaitable[ToolResult]]
@@ -241,6 +242,7 @@ class ToolSpec(BaseModel):
     handler: ToolHandler
     timeout_s: float = 30.0
     concurrency_safe: bool = False
+    selection_capability: str | None = None
 
     def as_openai_tool(self) -> dict[str, Any]:
         # Some compatible gateways require an explicit required list, even

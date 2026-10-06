@@ -65,13 +65,14 @@ from typing import Any, AsyncIterator, get_args
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, Response, StreamingResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from starlette.concurrency import run_in_threadpool
 from tcad.core.access import AccessMode
 
 from tcad.config.schema import Config
 from tcad.core.types import RenderStyle, TurnKind, TurnState
 from tcad.ir.schema import IrDocument, RequirementSpec
+from tcad.selection.types import SelectionContext, SelectionError
 
 # ══════════════════════════════════════════════════════════════════════════
 # request models
@@ -126,6 +127,14 @@ class ChatRequest(BaseModel):
     model_id: str
     text: str
     thread_id: str | None = None
+    selection_context: SelectionContext | None = None
+    operation_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+    @model_validator(mode="after")
+    def require_operation_id(self):
+        if self.selection_context is not None and self.operation_id is None:
+            raise ValueError("Reference requests require operation_id for safe retries")
+        return self
 
     _validate_model_id = field_validator("model_id")(_safe_id_field("model_id"))
     _validate_thread_id = field_validator("thread_id")(_safe_id_field("thread_id"))
@@ -629,6 +638,7 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
         try:
             c = cfg()
             out["data_dir"] = str(c.storage.data_dir)
+            out["selection_enabled"] = c.selection.enabled
             from tcad.loop.budget import LIMIT_NAMES
 
             limits = {n: getattr(c.loop, n) for n in LIMIT_NAMES}
@@ -645,6 +655,16 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
         return out
 
     # ── models ────────────────────────────────────────────────────────────
+
+    @app.get("/models/{model_id}/selection-targets")
+    def reference_catalog(model_id: str) -> dict:
+        from tcad.selection.resolve import SelectionResolver
+        if not cfg().selection.enabled:
+            raise HTTPException(403, {"code": "selection_disabled", "message": "Feature references are disabled."})
+        try:
+            return SelectionResolver(cfg().storage.data_dir, session_store()).catalog(model_id)
+        except SelectionError as exc:
+            raise HTTPException(exc.status, exc.detail()) from exc
 
     @app.get("/artifact-sets/{artifact_id}")
     def get_artifact_set(artifact_id: str, model_id: str) -> dict:
@@ -982,6 +1002,35 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
             )
         model_id = existing.model_id if existing is not None else req.model_id
         turn_id = req.request_id or f"c{uuid.uuid4().hex[:12]}"
+        operations = None
+        request_hash = None
+        if req.operation_id is not None:
+            from tcad.server.operations import OperationStore, fingerprint
+            operations = OperationStore(cfg().storage.data_dir)
+            request_hash = fingerprint({**req.model_dump(mode="json", exclude={"request_id"}),
+                                        "model_id": model_id, "thread_id": thread_id})
+            try:
+                replay = operations.read(req.operation_id, request_hash)
+            except SelectionError as exc:
+                raise HTTPException(exc.status, exc.detail()) from exc
+            if replay is not None:
+                async def replay_events():
+                    yield _sse("start", {"model_id": model_id, "thread_id": thread_id,
+                                         "kind": req.kind.value, "request_id": replay["request_id"],
+                                         "operation_id": req.operation_id, "replayed": True})
+                    yield _sse(replay["event"], replay["data"])
+                return StreamingResponse(replay_events(), media_type="text/event-stream",
+                                         headers={"Cache-Control": "no-cache"})
+        if req.selection_context is not None:
+            from tcad.selection.resolve import SelectionResolver
+            try:
+                if not cfg().selection.enabled:
+                    raise SelectionError("selection_disabled", "Feature references are disabled.", 403)
+                SelectionResolver(cfg().storage.data_dir, s.store).resolve(
+                    model_id, req.selection_context,
+                    inspection=req.kind == TurnKind.INSPECT or req.access_mode == AccessMode.READ_ONLY)
+            except SelectionError as exc:
+                raise HTTPException(exc.status, exc.detail()) from exc
         # One id, one running turn. This is the *fast* refusal — a request that
         # arrives while the turn is already registered gets a clean 409. The
         # generator re-checks at registration, because between this check and
@@ -1008,6 +1057,12 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
                 409, f"thread/model already has an active turn {conflict.request_id!r}; "
                 "stop that turn or wait for it to finish before sending another message",
             )
+
+        if operations is not None:
+            try:
+                operations.begin(req.operation_id, request_hash, turn_id)
+            except SelectionError as exc:
+                raise HTTPException(exc.status, exc.detail()) from exc
 
         def remember_user() -> None:
             try:
@@ -1052,6 +1107,15 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
             task: asyncio.Task | None = None
             running = RunningTurn(turn_id, thread_id, model_id)
             registered = False
+            outcome_saved = False
+
+            def terminal(event: str, data: dict) -> str:
+                nonlocal outcome_saved
+                if operations is not None:
+                    operations.finish(req.operation_id, event, data)
+                outcome_saved = True
+                return _sse(event, data)
+
             try:
                 # Registration is the authority, not the check in `chat()`: two
                 # requests with the same id can both pass that check before
@@ -1061,7 +1125,7 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
                 # window has closed by now (the response has started), so the
                 # refusal travels as an error frame instead.
                 if turn_id in app.state.turns:
-                    yield _sse(
+                    yield terminal(
                         "error",
                         {
                             "type": "DuplicateRequestId",
@@ -1077,7 +1141,7 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
                     # The response headers have already started. Recheck at the
                     # same no-await registration boundary as duplicate ids, so
                     # two requests accepted together cannot both mutate a part.
-                    yield _sse("error", {
+                    yield terminal("error", {
                         "type": "ActiveTurnConflict",
                         "message": f"thread/model already has an active turn {conflict.request_id!r}",
                     })
@@ -1104,6 +1168,7 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
                         "kind": req.kind.value,
                         "thread_id": thread_id,
                         "request_id": turn_id,
+                        "operation_id": req.operation_id,
                     },
                 )
                 task = asyncio.create_task(
@@ -1139,11 +1204,12 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
                     yield _sse("progress", ev)
                 while agent_events:
                     yield _sse("agent", agent_events.popleft())
-                yield _sse("result", json.loads(result.model_dump_json()))
+                yield terminal("result", json.loads(result.model_dump_json()))
             except asyncio.CancelledError:  # client hung up
                 raise
             except Exception as exc:  # noqa: BLE001
-                yield _sse("error", {"type": type(exc).__name__, "message": str(exc)})
+                yield terminal("error", {"type": type(exc).__name__, "message": str(exc),
+                                         **({"code": exc.code} if isinstance(exc, SelectionError) else {})})
             finally:
                 def release_turn(_task=None) -> None:
                     if registered and app.state.turns.get(turn_id) is running:
@@ -1165,6 +1231,13 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
                     task.cancel()
                 else:
                     release_turn()
+                # Cancel/retain the active turn before writing the ledger: disk
+                # errors must not prevent worker cleanup or admit a competing edit.
+                if operations is not None and not outcome_saved:
+                    operations.finish(req.operation_id, "error", {
+                        "type": "OperationInterrupted", "code": "operation_interrupted",
+                        "message": "Connection interrupted. Inspect the current source; retrying this operation only returns this outcome.",
+                    })
                 # Nothing to unwrap: the tap was passed to the engine, never
                 # assigned onto the shared services bundle.
 
@@ -1549,7 +1622,8 @@ async def run_turn_request(
     try:
         return await engine.run_turn(
             thread, UserMessage(kind=req.kind, text=req.text,
-                                privileged_requested=req.privileged_requested, access_mode=req.access_mode)
+                                privileged_requested=req.privileged_requested, access_mode=req.access_mode,
+                                selection_context=req.selection_context)
         )
     finally:
         build_observer.reset(token)

@@ -15,6 +15,16 @@
 
 import { MeshViewport } from "./viewport.js?v=20261004-refactor";
 import { validateArtifactScene } from "../../viewer/core/artifact.js";
+import { ReferenceController } from "./references.mjs";
+
+let references = null;
+let inspectorGeneration = 0;
+function referenceUI() {
+  if (!references) references = new ReferenceController($("referenceChips"), {
+    notice: (message) => pushNotice("warn", message), focus: () => $("input").focus(), document,
+  });
+  return references;
+}
 
 const $ = (id) => document.getElementById(id);
 
@@ -607,12 +617,15 @@ async function send(text) {
     controller: new AbortController(),
     requestId: newRequestId(),
     accessMode: state.accessMode,
+    selectionContext: referenceUI().context(),
+    operationId: newRequestId(),
     stopped: false,
   };
   state.turn = turn;
   const current = () => state.turn === turn;
 
   state.busy = true;
+  referenceUI().setBusy(true);
   state.abort = turn.controller;
   assistantBody = null;
   $("sendBtn").disabled = true;
@@ -623,6 +636,9 @@ async function send(text) {
   renderSessions();   // the sidebar marks this session as running
   pushUser(trimmed);
 
+  let resultWork = Promise.resolve();
+  let needsReferenceRefresh = false;
+  let terminalReceived = false;
   try {
     await ensureModel();
     await streamChat(
@@ -632,6 +648,8 @@ async function send(text) {
         thread_id: state.threadId,
         request_id: turn.requestId,
         access_mode: turn.accessMode,
+        ...(turn.selectionContext ? { selection_context: turn.selectionContext,
+          operation_id: turn.operationId, kind: "modify" } : {}),
       },
       {
         start: (d) => {
@@ -641,11 +659,23 @@ async function send(text) {
         },
         agent: (d) => { if (current()) handleAgentEvent(d); },
         progress: (ev) => { if (current()) pushHookLine(ev); },
-        error: (d) => { if (current()) pushNotice("bad", `${d.type}: ${d.message}`); },
-        result: (r) => { if (current()) handleResult(r); },
+        error: (d) => {
+          if (current()) {
+            terminalReceived = true;
+            pushNotice("bad", `${d.type}: ${d.message}`); needsReferenceRefresh = true;
+          }
+        },
+        result: (r) => {
+          if (current()) { terminalReceived = true; resultWork = handleResult(r); }
+        },
       },
       turn.controller.signal,
     );
+    await resultWork;
+    if (current() && !terminalReceived && turn.selectionContext) {
+      needsReferenceRefresh = true;
+      pushNotice("warn", "连接结束，但修改结果未确认。请查看当前模型后重新引用对象。");
+    }
     // The terminal status is set by handleResult, from the engine's verdict —
     // not here, where we would only know that the stream ended.
   } catch (err) {
@@ -653,6 +683,7 @@ async function send(text) {
     // replaced the transcript and set the status line. This branch is exactly
     // where a deliberate switch used to be reported as a fault.
     if (!current()) return;
+    needsReferenceRefresh = true;
     if (err.name === "AbortError") {
       // Two very different reasons land here: the user left the session, or the
       // user pressed 停止 and the stop had to fall back to closing the socket.
@@ -672,6 +703,11 @@ async function send(text) {
     if (current()) {
       state.turn = null;
       state.busy = false;
+      referenceUI().setBusy(false);
+      if (needsReferenceRefresh && turn.selectionContext) {
+        referenceUI().clear();
+        refreshInspector();
+      }
       state.abort = null;
       clearLive();
       $("sendBtn").disabled = false;
@@ -990,6 +1026,7 @@ function kv(key, value) {
 async function refreshInspector() {
   const box = $("inspector");
   const token = sessionToken();
+  const generation = ++inspectorGeneration;
   box.replaceChildren();
 
   const model = el("div", { class: "sec" }, [
@@ -1001,7 +1038,8 @@ async function refreshInspector() {
   box.append(model);
 
   await renderVerdict(box, token);
-  if (stale(token)) return;   // the verdict fetch is an await like any other
+  const outdated = () => stale(token) || generation !== inspectorGeneration;
+  if (outdated()) return;
 
   // ── the last Gate verdict, verbatim ────────────────────────────────────
   if (state.lastGate) {
@@ -1034,17 +1072,30 @@ async function refreshInspector() {
     const ir = await api(`/models/${encodeURIComponent(token.modelId)}/ir`);
     // The await is where the user can switch sessions. Writing afterwards would
     // put this model's feature chain (and version) into the new session's panel.
-    if (stale(token)) return;
+    if (outdated()) return;
     state.version = ir.version;
+
+    let catalog = null;
+    try { catalog = await api(`/models/${encodeURIComponent(token.modelId)}/selection-targets`); }
+    catch { /* Browsing pending/legacy builds remains available. */ }
+    if (outdated()) return;
+    referenceUI().update(catalog, token.modelId, ir.version);
+    referenceUI().beginTree();
 
     const chain = el("div", { class: "sec" }, el("h4", { text: `源模型特征（IR v${ir.version}）` }));
     const list = el("ul", { class: "chain" });
     let count = 0;
     for (const body of ir.bodies || []) {
+      list.append(el("li", { class: "body-row" }, [
+        el("span", { class: "op", text: "Body" }),
+        el("span", { class: "nm", text: `  ${body.name || body.id}` }),
+        referenceUI().button(body.id, "body", body.id),
+      ]));
       for (const sk of body.sketches || []) {
         list.append(el("li", {}, [
           el("span", { class: "op", text: `sketch · ${sk.geometry?.length || 0} 段` }),
           el("span", { class: "nm", text: `  ${sk.name || sk.id}` }),
+          referenceUI().button(body.id, "sketch", sk.id),
           el("span", { class: "pr", text: `${sk.constraints?.length || 0} 个约束` }),
         ]));
         count++;
@@ -1055,6 +1106,7 @@ async function refreshInspector() {
         list.append(el("li", {}, [
           el("span", { class: "op", text: feat.op }),
           el("span", { class: "nm", text: `  ${feat.name || feat.id}` }),
+          referenceUI().button(body.id, "feature", feat.id),
           el("span", { class: "pr", text: params || "—" }),
         ]));
         count++;
@@ -1071,7 +1123,9 @@ async function refreshInspector() {
       ]));
     }
   } catch (err) {
-    if (stale(token)) return;
+    if (outdated()) return;
+    referenceUI().update(null, token.modelId, token.version);
+    referenceUI().beginTree();
     // "Model does not exist yet" is the normal state before the first message,
     // not a failure — reporting it as one trains people to ignore errors.
     const missing = String(err.message).startsWith("404");
@@ -1087,7 +1141,7 @@ async function refreshInspector() {
   try {
     if (!token.threadId) return;
     const { pending } = await api(`/approvals?thread_id=${encodeURIComponent(token.threadId)}`);
-    if (stale(token)) return;
+    if (outdated()) return;
     if (pending.length) {
       const sec = el("div", { class: "sec" }, el("h4", { text: `待批 (${pending.length})` }));
       for (const p of pending) {
@@ -1739,6 +1793,9 @@ async function switchSession(threadId, { force = false } = {}) {
 
   // Bump first: in-flight loaders from the previous session must not write.
   state.sessionEpoch += 1;
+  inspectorGeneration += 1;
+  referenceUI().reset();
+  referenceUI().setBusy(false);
   cancelViewRequest();
   meshViewer?.clear({ resetCamera: true });
   clearViewImage();

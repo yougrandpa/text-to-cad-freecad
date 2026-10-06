@@ -1,0 +1,84 @@
+{
+  "scope": "FreeCAD adoption plan P0/P1a rewrite",
+  "date": "2026-10-06",
+  "baseline_git_sha": "7f87826af4677eab736e18bfa4029a5b4ce8415f",
+  "source": {
+    "roots": [
+      "tcad",
+      "tests",
+      "tools",
+      "configs"
+    ],
+    "extensions": [
+      ".py",
+      ".js",
+      ".mjs",
+      ".html",
+      ".css",
+      ".yaml",
+      ".json"
+    ],
+    "files": 288,
+    "sha256": "88d6ed41700e3cd7be1c271f1e909b432a71c57d47f332e0646509af4bb1d21e",
+    "method": "sha256 over sorted <path>\\0<sha256>\\n lines"
+  },
+  "environment": {
+    "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+    "python": "3.13.12",
+    "geometry_kernel": "FreeCAD 26.3.0 Revision 48708",
+    "browser": "Playwright Chromium"
+  },
+  "checks": [
+    {
+      "command": ".venv/bin/python -m pytest tests/unit tests/contract -q --basetemp=.pytest_tmp_reference_complete",
+      "passed": 1517,
+      "warnings": 1,
+      "duration_s": 77.75,
+      "skipped": 0
+    },
+    {
+      "command": "node --test tests/frontend/*.test.mjs",
+      "passed": 41,
+      "skipped": 0
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    },
+    {
+      "command": ".venv/bin/python tools/build_acceptance_artifacts.py --check",
+      "result": "passed"
+    }
+  ],
+  "real_provider_e2e": {
+    "status": "not_run",
+    "reason": "Outside this verification run; deterministic model replies are used for geometry and browser contracts."
+  },
+  "artifact": {
+    "artifact_id": "sha256:e37cb4c7e78f531e367beb60d95363ff5ba3fe275bc2e7b95aa5f2095f263893",
+    "ir_version": 3,
+    "status": "verified",
+    "gate_passed": true,
+    "diameter_mm": 8.0,
+    "depth_mm": 6.0,
+    "through": true,
+    "center": [
+      20.0,
+      15.0,
+      0.0
+    ],
+    "solids": 1,
+    "volume_mm3": 6898.40710525538,
+    "path": "artifact",
+    "screenshot": "browser.png"
+  },
+  "validated_scenarios": [
+    "real browser reference/send/rebuild/invalidate/re-reference",
+    "real FreeCAD Gate and STEP round-trip",
+    "real HTTP disconnect after persisted patch",
+    "interrupted operation replay after server restart",
+    "version/source/attempt conflicts",
+    "read-only imported components",
+    "disable switch and legacy digests"
+  ]
+}

@@ -49,8 +49,10 @@
     "min_wall_thickness": 8.0,
     "sk_plate__fully_constrained": 0.0,
     "sk_plate__dof": 6.0,
+    "sk_plate__solve_status": 0.0,
     "sk_slot__fully_constrained": 0.0,
-    "sk_slot__dof": 8.0
+    "sk_slot__dof": 8.0,
+    "sk_slot__solve_status": 0.0
   },
   "holes": [],
   "faces": [
@@ -559,6 +561,9 @@
   ],
   "spec_deviation": {},
   "measurements_available": true,
+  "body_solids": {
+    "body_1": 1
+  },
   "text": "model: accept_a (v0)\nfeature chain (2):\n  1. pad [pad] length=8 type=Length\n  2. slot [pocket] type=ThroughAll reversed=True\ntopology: solids=1 faces=10 edges=24 vertexes=16 shells=1\nbbox: x=80.0000 y=50.0000 z=8.0000 (min x=0.0000 y=0.0000 z=0.0000)\nvolume: 25600.000000  area: 9440.000000\nshape_type: Compound  valid: True\nmin_wall_thickness: 8.0000 (closest opposed-face distance with material between)\nholes measured on the BRep: none (no concave cylindrical face)\nsketches:\n  profile: fully_constrained=no dof=6 solve_status=0\n  slot: fully_constrained=no dof=8 solve_status=0",
-  "elapsed_s": 0.1889
+  "elapsed_s": 0.099
 }

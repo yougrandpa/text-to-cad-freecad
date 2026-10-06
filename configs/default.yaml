@@ -4,6 +4,9 @@
 
 version: 1
 
+selection:
+  enabled: true
+
 runtime:
   # Where FreeCADCmd lives. Override without editing this file:
   #   export TCAD_FREECAD_CMD=/opt/freecad/bin/FreeCADCmd          (Linux / macOS)

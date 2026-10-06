@@ -679,7 +679,7 @@ _REFS_ONLY_SAFE: frozenset[tuple[str, int]] = frozenset({
 
 
 def _constraint_args(
-    con_type: str, refs: list, value: float | None
+    con_type: str, refs: list, value: float | None, geometry: list | None = None
 ) -> tuple[tuple, bool]:
     """``(Constraint args, apply the value with setDatum)``.
 
@@ -715,7 +715,13 @@ def _constraint_args(
                 f'{con_type} needs a numeric value (e.g. "value": 4.0); it is a '
                 f"dimension, and FreeCAD cannot express it without one."
             )
-        if (con_type, len(refs)) in _REFS_ONLY_SAFE:
+        # Two numeric arguments otherwise select FreeCAD's line-length form.
+        # Circle/arc centres require an explicit PointPos::mid and value.
+        centre_dimension = (con_type in {"DistanceX", "DistanceY"} and len(refs) == 2
+                            and refs[1] == 3 and geometry is not None
+                            and 0 <= refs[0] < len(geometry)
+                            and geometry[refs[0]].get("kind") in {"circle", "arc"})
+        if (con_type, len(refs)) in _REFS_ONLY_SAFE and not centre_dimension:
             return (con_type, *refs), True
         # Only where the refs-only form crashes: the value goes in the
         # constructor. FreeCAD then skips the redundancy validation for this
@@ -906,7 +912,7 @@ def _add_sketch(doc, body, s: dict, ref_objects: dict) -> dict:
             con_type = con.get("type")
             refs = list(con.get("refs") or [])
             value = con.get("value")
-            args, via_setdatum = _constraint_args(con_type, refs, value)
+            args, via_setdatum = _constraint_args(con_type, refs, value, s.get("geometry"))
             idx = sk.addConstraint(Sketcher.Constraint(*args))
             if via_setdatum:
                 # `setDatum` is not merely how the value gets applied — it is what
@@ -952,6 +958,11 @@ def _add_sketch(doc, body, s: dict, ref_objects: dict) -> dict:
     except Exception:  # noqa: BLE001
         state["fully_constrained"] = None
 
+    # SketchObject.solve() returns SketchSolveStatus (success=0), not the
+    # lower-level GCS SolveStatus enum. FullyConstrained can be true on failure.
+    if state.get("solve_status") not in (None, 0):
+        state["errors"].append({"kind": "solver", "feature_id": s.get("id"),
+                                "message": f"Sketch {s.get('id')} did not solve (solve()={state['solve_status']})."})
     return state
 
 

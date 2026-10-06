@@ -109,6 +109,13 @@ async def ir_patch_handler(services: "Any", args: dict, ctx: ToolContext) -> Too
     except Exception as e:  # malformed tool args
         return _err(ToolErrorKind.SCHEMA, f"invalid patch payload: {e}")
 
+    if ctx.edit_precondition is not None:
+        from tcad.selection.types import SelectionError
+        try:
+            ctx.edit_precondition.check(services.store, ctx.model_id, patch.base_version)
+        except SelectionError as exc:
+            return _err(ToolErrorKind.SEMANTIC, f"{exc.code}: {exc}")
+
     if ctx.request_text is not None:
         for op in patch.ops:
             if (op.op == "update_requirement" and "raw_text" in op.payload
@@ -125,6 +132,9 @@ async def ir_patch_handler(services: "Any", args: dict, ctx: ToolContext) -> Too
         new_doc, _event = services.store.apply_patch(ctx.model_id, patch)
     except Exception as e:  # optimistic-concurrency / IO failure
         return _err(ToolErrorKind.SEMANTIC, f"patch rejected: {e}")
+
+    if ctx.edit_precondition is not None:
+        ctx.edit_precondition.advance(new_doc)
 
     summary = patch.summary or f"applied {len(patch.ops)} op(s)"
     content = (
@@ -163,6 +173,13 @@ async def ir_commit_handler(services: "Any", args: dict, ctx: ToolContext) -> "A
     """
     from tcad.loop.commit import run_commit  # local import keeps layers clean
     from tcad.tools.base import ToolOutcome
+
+    if ctx.edit_precondition is not None:
+        from tcad.selection.types import SelectionError
+        try:
+            ctx.edit_precondition.check(services.store, ctx.model_id)
+        except SelectionError as exc:
+            return ToolOutcome(result=_err(ToolErrorKind.SEMANTIC, f"{exc.code}: {exc}"))
 
     message = args.get("message", "") if isinstance(args, dict) else ""
     version = services.store.current_version(ctx.model_id)
@@ -527,8 +544,10 @@ def build_ir_tools(services: "Any") -> dict[str, ToolSpec]:
     from tcad.loop.completion import DesignReview
     from tcad.ir.assembly import AssemblySpec
     from tcad.tools.authoring import build_authoring_tools
+    from tcad.selection.tools import build_selection_tools
     return {
         **build_authoring_tools(services),
+        **build_selection_tools(services),
         "assembly_configure": ToolSpec(
             name="assembly_configure", tier=ToolTier.WRITE,
             description="Configure native FreeCAD Assembly: grounded body IDs, all 13 joint types, world connector positions/axes/roll, limits and time drivers. Replaces assembly declaration; null clears it. Clear prescribed body.motion first. Angular drivers target Revolute/Cylindrical; Linear target Slider/Cylindrical. Formula is native math in time (seconds); Angular uses radians (e.g. pi/2*time for 90 degrees/s), Linear mm, initialValue is supported. Gears/Belt distance and distance2 are positive pitch radii; RackPinion distance=pitch radius; Screw distance=native pitch. Native constraints must make the mechanism solvable; grounding graph alone does not prove solvability. Then ir_commit to build and save actual solver frames; assembly_simulate reads them. ir_commit still grades zero-pose part geometry separately.",
