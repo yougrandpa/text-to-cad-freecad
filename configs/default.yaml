@@ -1,5 +1,5 @@
 # tcad default configuration
-# Every key maps to a field in tcad/config/schema.py. See docs/02-架构设计.md §8.
+# Every key maps to a field in tcad/config/schema.py. This schema is the source of truth for configuration fields.
 # ${VAR} and ${VAR:-default} are interpolated from the environment.
 
 version: 1

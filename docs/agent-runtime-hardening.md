@@ -64,7 +64,7 @@ pass→failed-recommit cases across all three strategies.
 
 The complete native FreeCAD contract suite is rerun with the Linux adapter.
 The first phase's real-agent two-turn CAD test remains documented separately in
-`interactive-preview-acceptance.md`; this optimization's deterministic transport
+[historical preview acceptance](../review/history/interactive-preview-acceptance.md); this optimization's deterministic transport
 and loop tests must not be described as a fresh commercial-provider test.
 
 Final integrated run (2026-10-02): **1,252 Python tests passed, 6 skipped**;

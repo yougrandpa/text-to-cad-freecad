@@ -2,7 +2,7 @@
 
 Builds the reference part in a live FreeCADCmd worker, pulls the triangle mesh
 across the process boundary, rasterises it in the supervisor, and writes the four
-standard views to ``docs/renders/``.
+standard views to ``output/renders/``.
 
 Run from anywhere:
     .venv/bin/python tools/render_sample.py
@@ -23,7 +23,7 @@ from tcad.render.png import backend_in_use, write_png
 from tcad.render.raster import render_views
 from tests.contract.test_e2e_pipeline import FREECAD_CMD, make_ir
 
-out = REPO_ROOT / "docs" / "renders"
+out = REPO_ROOT / "output" / "renders"
 out.mkdir(parents=True, exist_ok=True)
 
 handle = WorkerHandle(FREECAD_CMD, REPO_ROOT, worker_id="rnd",

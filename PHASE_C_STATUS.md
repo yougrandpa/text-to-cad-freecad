@@ -44,5 +44,5 @@ Node 前端运行时测试：**17 passed**；compileall 与空白检查通过。
 
 原记录中的 `928 passed, 2 skipped`、手动会话管理 14/14、断连继续运行、
 游标重连及旧库迁移验收，没有对应的当前实现或脚本，撤回其作为当前完成证据的引用。
-交互预览历史验收保留在 [验收记录](docs/interactive-preview-acceptance.md)，
+交互预览历史验收保留在 [验收记录](review/history/interactive-preview-acceptance.md)，
 其中的内核和测试环境不应当作为本次环境的默认结论。

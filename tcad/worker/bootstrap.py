@@ -5,7 +5,7 @@ process would normally exit, so we enter a blocking JSON-Lines RPC loop over
 stdin/stdout. The supervisor keeps the pipe open; when it closes stdin (EOF), we
 exit cleanly.
 
-Worker start command (verified, docs/02-架构设计.md §3.2):
+Worker start command (verified, review/history/02-架构设计.md §3.2):
     FreeCADCmd --console -P <cwd> <cwd>/tcad/worker/bootstrap.py --worker-id=w0
 
 IMPORT BAN: stdlib + FreeCAD only. We import rpc/protocol which are also

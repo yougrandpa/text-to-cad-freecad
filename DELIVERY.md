@@ -6,7 +6,7 @@
 可恢复运行、完整会话管理、参数表单、对象选择和像素级浏览器验收，
 其对应接口、脚本或依赖不在当前仓库中，现撤回这些已交付、已验证的结论。
 原始文字可从 Git 历史查看；当前交互预览的历史验收记录见
-[交互预览验收](docs/interactive-preview-acceptance.md)。
+[交互预览验收](review/history/interactive-preview-acceptance.md)。
 
 ## 当前实现
 

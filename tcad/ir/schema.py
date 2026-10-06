@@ -4,7 +4,7 @@ FROZEN CONTRACT. Every module in this project imports these types; nobody
 redefines them. Changing this file changes the wire format between supervisor
 and worker, so treat it as a public API.
 
-Design rule (see docs/02-架构设计.md §2): the model NEVER touches a FreeCAD
+Design rule (see review/history/02-架构设计.md §2): the model NEVER touches a FreeCAD
 document directly. It only mutates this IR; FreeCAD is a compiler backend.
 """
 

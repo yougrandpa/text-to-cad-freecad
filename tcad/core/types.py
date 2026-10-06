@@ -2,7 +2,7 @@
 
 Every subsystem (loop / tools / context / store / hooks / verify / worker /
 render / server) imports from here. Do not redefine these elsewhere; do not
-change field names without updating docs/02-架构设计.md §7.
+change field names without updating the affected consumers and contract tests.
 """
 
 from __future__ import annotations

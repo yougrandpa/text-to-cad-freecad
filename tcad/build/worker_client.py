@@ -14,7 +14,7 @@ request id. A daemon thread doing blocking reads is the simplest thing that is
 actually correct here; every public entry point is async and hops to it via
 ``asyncio.to_thread`` so the event loop is never blocked.
 
-Verified interface facts (docs/02-架构设计.md 附录 B):
+Verified interface facts (review/history/02-架构设计.md 附录 B):
   * CLI options: ``-c/--console``, ``-P/--python-path``, positional script
     (src/App/Application.cpp:2429-2460, executed via processFiles() -> runFile())
   * ``tcad/worker/**`` runs on FreeCAD's interpreter: stdlib + FreeCAD only.

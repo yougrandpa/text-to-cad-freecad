@@ -9,7 +9,7 @@ This module owns the shared ``_build`` core. The other worker modules
 document is constructed exactly once per RPC call and identically for every
 measurement/export path.
 
-Design facts used here (verified, see docs/02-架构设计.md 附录 A/B):
+Design facts used here (verified, see review/history/02-架构设计.md 附录 A/B):
   * ``App = FreeCAD``  (``from FreeCAD import App`` raises ImportError)
   * ``doc.addObject(type, name)`` + ``body.addObject(obj)`` (NOT body.newObject)
   * sketch attach: ``sk.AttachmentSupport = (target, [sub])`` + ``sk.MapMode = "FlatFace"``

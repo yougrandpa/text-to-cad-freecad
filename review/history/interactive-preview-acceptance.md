@@ -1,5 +1,7 @@
 # Interactive CAD preview acceptance
 
+> 历史归档：包含已被后续实现替代的描述。现行说明见 [文档索引](../../docs/README.md)；测试及验收结论仅适用于原记录。
+
 Historical acceptance date: 2026-10-02. Base before the implementation:
 `ea9b193229d94a7c39a719ccba4aee933e856a22`.
 
@@ -11,7 +13,7 @@ No browser/GPU or live-model acceptance was repeated in this verification.
 The figures, native-kernel environment, live-model examples and browser blocking
 result below belong to the earlier acceptance run. They are retained as historical
 records and are not measurements of the current environment. Current delivery
-scope and corrected status are in [DELIVERY.md](../DELIVERY.md).
+scope and corrected status are in [DELIVERY.md](../../DELIVERY.md).
 
 ## Delivered scope
 

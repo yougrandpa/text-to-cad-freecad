@@ -104,7 +104,7 @@ node --test tests/frontend/*.test.mjs            # 前端运行时测试
 ```
 
 runner 保存脱敏事件、结果与 HTTP 交付检查；`delivery_passed` 可包含待验收草稿。
-各阶段测试范围见[构建重构记录](docs/build-runtime-refactor.md)和[交互预览验收](docs/interactive-preview-acceptance.md)。
+各阶段测试范围见[构建重构记录](docs/build-runtime-refactor.md)和[交互预览验收](review/history/interactive-preview-acceptance.md)。
 
 目录分工：
 
@@ -123,11 +123,12 @@ runner 保存脱敏事件、结果与 HTTP 交付检查；`delivery_passed` 可�
 
 ## 详细文档
 
-- [架构设计](docs/02-架构设计.md)与[界面及模型配置](docs/03-交互界面与模型配置.md)
+- [文档索引](docs/README.md)
 - [构建运行时与 Viewer](docs/build-runtime-refactor.md)、[产物查询边界](docs/artifact-boundary-refactor.md)
 - [原生装配：关节、驱动与示例](docs/native-assembly.md)
 - [功能验收与完成条件](docs/functional-acceptance.md)、[Agent 运行时加固](docs/agent-runtime-hardening.md)
-- [权限模式](docs/access-modes.md)与[交互预览验收](docs/interactive-preview-acceptance.md)
+- [权限模式](docs/access-modes.md)、[特征引用](docs/feature-references.md)与[原生草图曲线](docs/native-sketch-curves.md)
+- [历史设计与验收记录](review/history/README.md)
 
 ## 许可
 
