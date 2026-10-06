@@ -52,6 +52,7 @@ class MeshPreviewResponse(BaseModel):
     mesh: PreviewMesh
     motion: list[PreviewMotion] = Field(default_factory=list)
     animation: dict | None = None
+    pick_mapping: dict | None = None
 
 
 def _checked_animation(result: dict, ir_data: dict, vertex_count: int) -> dict:
@@ -228,6 +229,8 @@ def mesh_preview(
         mesh = _checked_mesh(scene.mesh.model_dump(mode="json"))
         payload = {"model_id": manifest.model_id, "version": manifest.ir_version,
                    "artifact_id": manifest.artifact_id, "status": manifest.status.value, "mesh": mesh}
+        if scene.pick_mapping:
+            payload["pick_mapping"] = scene.pick_mapping.model_dump(mode="json")
         if scene.motion:
             payload["motion"] = [part.model_dump(mode="json") for part in scene.motion]
         if scene.animation:

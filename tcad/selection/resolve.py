@@ -2,6 +2,8 @@
 
 import math
 from dataclasses import dataclass
+from functools import cached_property
+from tcad.render.picking import PickMapping
 
 from tcad.artifacts.manifest import ArtifactSet, ArtifactStatus
 from tcad.core.types import GeometryDigest
@@ -51,11 +53,23 @@ class SelectionSnapshot:
     manifest: ArtifactSet
     ir: IrDocument
     digest: GeometryDigest
+    pick_mapping: PickMapping | None = None
+
+    @cached_property
+    def entities(self):
+        return {(e.body_id, e.entity_kind, e.local_sub_id): e for e in self.pick_mapping.entities} if self.pick_mapping else {}
 
     def resolve(self, ref: SelectionRef) -> ResolvedSelection:
         body = next((b for b in self.ir.bodies if b.id == ref.body_id), None)
         if body is None:
             raise SelectionError("unmapped_entity", "Selected body is absent from this publication.", 422)
+        if ref.entity_kind in {"face", "edge"}:
+            entity = self.entities.get((ref.body_id, ref.entity_kind, ref.local_sub_id))
+            if entity is None:
+                raise SelectionError("unmapped_entity", "This publication has no mapping for that entity.", 422)
+            return ResolvedSelection(ref=ref, label=f"{body.name} · {ref.local_sub_id}", editable=False,
+                                     capabilities=["inspect"], evidence={"source": "scene.json", "mapping": self.pick_mapping.generator,
+                                         "mesh_digest": self.pick_mapping.mesh_digest, "semantic_source": "unknown"})
         objects = {"body": [body], "sketch": body.sketches, "feature": body.features}[ref.entity_kind]
         matches = [obj for obj in objects if obj.id == ref.target_id]
         if len(matches) != 1:
@@ -100,7 +114,8 @@ class SelectionResolver:
                 raise SelectionError("unmapped_entity", "Frozen source identity does not match the publication.", 422)
             if self.store.load(model_id).model_dump() != ir.model_dump():
                 raise SelectionError("stale_selection", "Source changed; commit and select again.")
-            return SelectionSnapshot(manifest, ir, self.reader.digest(manifest, root))
+            mapping = self.reader.scene(manifest, root).pick_mapping if "scene.json" in manifest.files else None
+            return SelectionSnapshot(manifest, ir, self.reader.digest(manifest, root), mapping)
         except SelectionError:
             raise
         except (ArtifactReadError, FileNotFoundError, ValueError) as exc:
@@ -115,7 +130,7 @@ class SelectionResolver:
             raise SelectionError("stale_selection", "Reference version differs from its publication.")
         resolved = tuple(snapshot.resolve(ref) for ref in context.selection_refs)
         if not inspection and any(not r.editable for r in resolved):
-            raise SelectionError("forbidden", "Imported components can only be inspected.", 403)
+            raise SelectionError("forbidden", "This geometry has no proven editable source; inspect it or reference a feature.", 403)
         return snapshot, resolved
 
     def catalog(self, model_id: str) -> dict:
@@ -128,6 +143,12 @@ class SelectionResolver:
                                        ir_version=snapshot.ir.version, body_id=body.id, entity_kind=kind,
                                        **({f"{kind}_id": obj.id} if kind != "body" else {}))
                     targets.append(snapshot.resolve(ref).model_dump(mode="json"))
+        if snapshot.pick_mapping:
+            for entity in snapshot.pick_mapping.entities:
+                ref = SelectionRef(model_id=model_id, artifact_id=snapshot.manifest.artifact_id,
+                    ir_version=snapshot.ir.version, body_id=entity.body_id,
+                    entity_kind=entity.entity_kind, local_sub_id=entity.local_sub_id)
+                targets.append(snapshot.resolve(ref).model_dump(mode="json"))
         return {"schema_version": 1, "model_id": model_id,
                 "artifact_id": snapshot.manifest.artifact_id, "ir_version": snapshot.ir.version,
                 "targets": targets}

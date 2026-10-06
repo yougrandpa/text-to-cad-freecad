@@ -1,4 +1,4 @@
-"""Public feature-reference protocol (v1 intentionally has no face/edge IDs)."""
+"""Artifact-bound semantic and local geometry references."""
 
 from typing import Literal
 
@@ -23,9 +23,11 @@ class SelectionRef(BaseModel):
     artifact_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     ir_version: int = Field(ge=0)
     body_id: str = Field(min_length=1, max_length=128)
-    entity_kind: Literal["body", "sketch", "feature"]
+    entity_kind: Literal["body", "sketch", "feature", "face", "edge"]
     sketch_id: str | None = Field(default=None, min_length=1, max_length=128)
     feature_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+    local_sub_id: str | None = Field(default=None, pattern=r"^(Face|Edge)[1-9][0-9]*$")
 
     @model_validator(mode="after")
     def target_matches_kind(self):
@@ -33,11 +35,15 @@ class SelectionRef(BaseModel):
             raise ValueError("sketch_id is required only for sketches")
         if (self.feature_id is not None) != (self.entity_kind == "feature"):
             raise ValueError("feature_id is required only for features")
+        if (self.local_sub_id is not None) != (self.entity_kind in {"face", "edge"}):
+            raise ValueError("local_sub_id is required only for geometry")
+        if self.local_sub_id and not self.local_sub_id.startswith(self.entity_kind.title()):
+            raise ValueError("local_sub_id does not match entity kind")
         return self
 
     @property
     def target_id(self) -> str:
-        return self.sketch_id or self.feature_id or self.body_id
+        return self.local_sub_id or self.sketch_id or self.feature_id or self.body_id
 
 
 class SelectionContext(BaseModel):

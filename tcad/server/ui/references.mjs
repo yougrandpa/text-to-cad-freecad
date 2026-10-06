@@ -1,10 +1,11 @@
 // One owner for reference chips, catalog identity and button availability.
 export class ReferenceController {
-  constructor(container, { notice, focus, document = globalThis.document }) {
+  constructor(container, { notice, focus, onChange = () => {}, document = globalThis.document }) {
     this.container = container;
     this.document = document;
     this.notice = notice;
     this.focus = focus;
+    this.onChange = onChange;
     this.catalog = null;
     this.selected = new Map();
     this.buttons = new Set();
@@ -12,7 +13,7 @@ export class ReferenceController {
   }
 
   key(ref) {
-    return JSON.stringify([ref.body_id, ref.entity_kind, ref.sketch_id || ref.feature_id || ref.body_id]);
+    return JSON.stringify([ref.body_id, ref.entity_kind, ref.local_sub_id || ref.sketch_id || ref.feature_id || ref.body_id]);
   }
 
   update(catalog, modelId, version) {
@@ -55,7 +56,7 @@ export class ReferenceController {
 
   button(bodyId, kind, id) {
     const target = this.catalog?.targets.find(({ ref }) => ref.body_id === bodyId && ref.entity_kind === kind
-      && (ref.sketch_id || ref.feature_id || ref.body_id) === id);
+      && (ref.local_sub_id || ref.sketch_id || ref.feature_id || ref.body_id) === id);
     if (!target) return null;
     const button = this.document.createElement("button");
     button.type = "button";
@@ -79,7 +80,26 @@ export class ReferenceController {
     return button;
   }
 
+  selectGeometry(entity, artifactId) {
+    if (this.busy || !entity || this.catalog?.artifact_id !== artifactId) return false;
+    const target = this.catalog.targets.find(({ ref }) => ref.body_id === entity.body_id &&
+      ref.entity_kind === entity.entity_kind && (entity.entity_kind === "body" || ref.local_sub_id === entity.local_sub_id));
+    if (!target) { this.notice("当前产物没有可用的几何映射，请重新构建后选择。"); return false; }
+    if (this.selected.size >= 8 && !this.selected.has(this.key(target.ref))) {
+      this.notice("最多引用 8 个对象，请先移除其他引用。"); return false;
+    }
+    this.selected.set(this.key(target.ref), target);
+    this.render(); this.focus();
+    if (!target.editable) this.notice("该几何对象仅用于查看和解释，请引用特征树中的可编辑对象来修改参数。");
+    return true;
+  }
+
+  inspectionOnly() {
+    return [...this.selected.values()].some(target => !target.editable);
+  }
+
   render() {
+    this.onChange([...this.selected.values()].map(target => target.ref));
     if (!this.container) return;
     this.container.replaceChildren();
     this.container.hidden = this.selected.size === 0;

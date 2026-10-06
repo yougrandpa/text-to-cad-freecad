@@ -1,10 +1,11 @@
 import { TAU, clamp, dot, sub, cross, length } from "./math.js";
 import { OrbitCamera } from "./camera.js";
 import { poseMesh, poseAnimation, prepareMesh, prepareScene, motionScopeNote } from "./scene.js";
+import { pickEntity, highlightVertices } from "./picking.js";
 import { VERTEX, FRAGMENT } from "./shaders.js";
 
 export class MeshViewport {
-  constructor(canvas, { axes = null, motionControls = null, onChange = () => {}, onError = () => {}, background = [0, 0, 0, 0] } = {}) {
+  constructor(canvas, { axes = null, motionControls = null, onChange = () => {}, onError = () => {}, onSelectionChange = () => {}, background = [0, 0, 0, 0] } = {}) {
     this.canvas = canvas;
     this.axes = axes;
     this.motionControls = motionControls;
@@ -13,6 +14,10 @@ export class MeshViewport {
     this.onChange = onChange;
     this.onError = onError;
     this.background = background;
+    this.onSelectionChange = onSelectionChange;
+    this.pickMode = null;
+    this.pickMapping = null;
+    this.selectedEntity = null;
     this.style = "flat_edges";
     this.camera = new OrbitCamera();
     this.available = false;
@@ -73,10 +78,11 @@ export class MeshViewport {
       if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program) || "着色器链接失败");
       this.program = program;
       this.attributes = Object.fromEntries(["aPosition", "aNormal"].map((name) => [name, gl.getAttribLocation(program, name)]));
-      this.uniforms = Object.fromEntries(["uTarget", "uRight", "uUp", "uLook", "uHalfHeight", "uAspect", "uDepth", "uLines"].map((name) => [name, gl.getUniformLocation(program, name)]));
+      this.uniforms = Object.fromEntries(["uTarget", "uRight", "uUp", "uLook", "uHalfHeight", "uAspect", "uDepth", "uLines", "uSelected"].map((name) => [name, gl.getUniformLocation(program, name)]));
       this.triangleBuffer = gl.createBuffer();
       this.edgeBuffer = gl.createBuffer();
-      if (!this.triangleBuffer || !this.edgeBuffer) throw new Error("无法分配网格缓冲区");
+      this.highlightBuffer = gl.createBuffer();
+      if (!this.triangleBuffer || !this.edgeBuffer || !this.highlightBuffer) throw new Error("无法分配网格缓冲区");
     } catch (error) { gl.deleteProgram(program); throw error; }
     finally { for (const shader of shaders) gl.deleteShader(shader); }
   }
@@ -121,7 +127,9 @@ export class MeshViewport {
     };
     this.playbackFrame = requestAnimationFrame(tick);
   }
-  setMesh(mesh, motion = [], animation = null) {
+  setMesh(mesh, motion = [], animation = null, mapping = null) {
+    this.pickMapping = mapping;
+    this.selectedEntity = null;
     poseMesh(mesh, motion, 0); // Validate before replacing the displayed model.
     if (animation) {
       if (!animation.frames?.length || !animation.parts?.length || !(animation.step > 0)) throw new Error("动画数据无效");
@@ -154,6 +162,7 @@ export class MeshViewport {
   }
   _uploadMesh(mesh) {
     if (!this.available) throw new Error(this.error || "WebGL 不可用");
+    this.posedMesh = mesh;
     const data = prepareMesh(mesh), gl = this.gl;
     gl.bindBuffer(gl.ARRAY_BUFFER, this.triangleBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, data.triangles, gl.STATIC_DRAW);
@@ -179,6 +188,8 @@ export class MeshViewport {
     this.animation = null;
     this.motion = [];
     this.motionSource = null;
+    this.pickMapping = null;
+    this.selectedEntity = null;
     if (this.motionControls) this.motionControls.root.hidden = true;
     this.pointers.clear();
     this.canvas.classList.remove("dragging");
@@ -233,6 +244,7 @@ export class MeshViewport {
     gl.enableVertexAttribArray(aPosition); gl.enableVertexAttribArray(aNormal);
     gl.vertexAttribPointer(aPosition, 3, gl.FLOAT, false, 24, 0);
     gl.vertexAttribPointer(aNormal, 3, gl.FLOAT, false, 24, 12);
+    gl.uniform1i(u.uSelected, 0);
     gl.uniform1i(u.uLines, 0);
     gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(1, 1);
     if (this.style === "edges_only") gl.colorMask(false, false, false, false);
@@ -245,6 +257,16 @@ export class MeshViewport {
       gl.disableVertexAttribArray(aNormal); gl.vertexAttrib3f(aNormal, 0, 0, 1);
       gl.uniform1i(u.uLines, 1);
       gl.drawArrays(gl.LINES, 0, this.edgeVertices);
+    }
+    if (this.selectedEntity) {
+      const highlight = highlightVertices(this.posedMesh, this.pickMapping, this.selectedEntity, this.origin);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.highlightBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, highlight, gl.STATIC_DRAW);
+      gl.vertexAttribPointer(aPosition, 3, gl.FLOAT, false, 12, 0);
+      gl.disableVertexAttribArray(aNormal); gl.vertexAttrib3f(aNormal, 0, 0, 1);
+      gl.uniform1i(u.uSelected, 1);
+      gl.drawArrays(gl.LINES, 0, highlight.length/3);
+      gl.uniform1i(u.uSelected, 0);
     }
     this.drawAxes(right, up, look);
   }
@@ -269,7 +291,8 @@ export class MeshViewport {
     this.listen(canvas, "pointerdown", (e) => {
       if (!this.hasMesh || e.button > 2) return;
       e.preventDefault(); canvas.focus({ preventScroll: true });
-      this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, pan: e.button !== 0 || e.shiftKey });
+      if (this.pointers.size) for (const pointer of this.pointers.values()) pointer.moved = true;
+      this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, pan: e.button !== 0 || e.shiftKey, startX: e.clientX, startY: e.clientY, moved: this.pointers.size > 0 });
       canvas.setPointerCapture(e.pointerId);
       canvas.classList.add("dragging");
     });
@@ -277,7 +300,7 @@ export class MeshViewport {
       const previous = this.pointers.get(e.pointerId);
       if (!previous || !this.hasMesh) return;
       const before = [...this.pointers.values()];
-      this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, pan: previous.pan });
+      this.pointers.set(e.pointerId, { ...previous, x: e.clientX, y: e.clientY, moved: previous.moved || Math.hypot(e.clientX-previous.startX,e.clientY-previous.startY) > 4 });
       const after = [...this.pointers.values()];
       if (before.length === 2) {
         const distance = (p) => Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y);
@@ -291,6 +314,15 @@ export class MeshViewport {
       this.changed();
     });
     const release = (e) => {
+      const pointer = this.pointers.get(e.pointerId);
+      if (e.type === "pointerup" && pointer && !pointer.moved && !pointer.pan && this.pointers.size === 1 && this.pickMode) {
+        const rect = canvas.getBoundingClientRect();
+        const previousSelection = this.selectedEntity;
+        this.selectedEntity = pickEntity(this.posedMesh, this.pickMapping, this.camera,
+          rect.width, rect.height, e.clientX-rect.left, e.clientY-rect.top, this.pickMode);
+        if (this.onSelectionChange(this.selectedEntity) === false) this.selectedEntity = previousSelection;
+        this.schedule();
+      }
       this.pointers.delete(e.pointerId);
       if (!this.pointers.size) canvas.classList.remove("dragging");
     };
@@ -323,6 +355,7 @@ export class MeshViewport {
     for (const remove of this.listeners) remove();
     if (this.gl) {
       this.gl.deleteBuffer(this.triangleBuffer); this.gl.deleteBuffer(this.edgeBuffer);
+      this.gl.deleteBuffer(this.highlightBuffer);
       this.gl.deleteProgram(this.program);
     }
   }

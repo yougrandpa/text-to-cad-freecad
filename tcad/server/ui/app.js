@@ -21,6 +21,12 @@ let references = null;
 let inspectorGeneration = 0;
 function referenceUI() {
   if (!references) references = new ReferenceController($("referenceChips"), {
+    onChange: refs => {
+      if (!meshViewer) return;
+      meshViewer.selectedEntity = refs.filter(ref => ref.artifact_id === meshViewer.artifactId &&
+        ["body", "face", "edge"].includes(ref.entity_kind)).at(-1) || null;
+      meshViewer.schedule();
+    },
     notice: (message) => pushNotice("warn", message), focus: () => $("input").focus(), document,
   });
   return references;
@@ -618,6 +624,7 @@ async function send(text) {
     requestId: newRequestId(),
     accessMode: state.accessMode,
     selectionContext: referenceUI().context(),
+    inspectionOnly: referenceUI().inspectionOnly(),
     operationId: newRequestId(),
     stopped: false,
   };
@@ -647,9 +654,9 @@ async function send(text) {
         text: trimmed,
         thread_id: state.threadId,
         request_id: turn.requestId,
-        access_mode: turn.accessMode,
+        access_mode: turn.inspectionOnly ? "read_only" : turn.accessMode,
         ...(turn.selectionContext ? { selection_context: turn.selectionContext,
-          operation_id: turn.operationId, kind: "modify" } : {}),
+          operation_id: turn.operationId, kind: turn.inspectionOnly ? "inspect" : "modify" } : {}),
       },
       {
         start: (d) => {
@@ -886,7 +893,10 @@ async function loadView(force, { version = null } = {}) {
       if (!current()) return;
       validateArtifactScene(body, { modelId: token.modelId, version });
       params.set("artifact_id", body.artifact_id);
-      const count = meshViewer.setMesh(body.mesh, body.motion || [], body.animation || null);
+      const count = meshViewer.setMesh(body.mesh, body.motion || [], body.animation || null, body.pick_mapping || null);
+      meshViewer.artifactId = body.artifact_id;
+      $("pickKind").disabled = state.selectionEnabled === false || !body.pick_mapping || body.status !== "verified";
+      meshViewer.pickMode = $("pickKind").disabled ? null : $("pickKind").value || null;
       clearViewImage();
       placeholder.hidden = true;
       const status = body.status === "verified" ? "几何已验证" : "几何未验证";
@@ -1489,10 +1499,12 @@ function wire() {
     axes: $("viewAxes"),
     motionControls: { root: $("motionControls"), input: $("crankAngle"), output: $("crankAngleValue"), play: $("animationPlay"), reset: $("animationReset"), speed: $("animationSpeed"), loop: $("animationLoop"), label: $("motionLabel"), note: $("motionNote") },
     onChange: ({ view }) => selectView(view),
+    onSelectionChange: entity => referenceUI().selectGeometry(entity, meshViewer.artifactId),
     onError: () => loadView(false),
   });
   setViewMode(meshViewer.available, meshViewer.available
     ? "真实网格 · 自由旋转 / 缩放 / 平移" : "静态预览 · " + meshViewer.error, !meshViewer.available);
+  $("pickKind").addEventListener("change", () => { meshViewer.pickMode = $("pickKind").value || null; });
   $("fitView").addEventListener("click", () => meshViewer.fit());
 
   $("composer").addEventListener("submit", (e) => {
@@ -1889,6 +1901,7 @@ async function boot() {
     const health = await api("/health");
     state.apiOk = true;
     state.dataDir = health.data_dir || null;
+    state.selectionEnabled = health.selection_enabled;
     renderBudgetBadge(health.budget);
     const alive = health.worker_alive;
     if (alive === null || alive === undefined) {

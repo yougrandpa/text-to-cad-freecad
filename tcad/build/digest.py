@@ -21,7 +21,7 @@ def compiler_identity() -> str:
     paths = sorted((root / "worker").glob("*.py"))
     paths += sorted((root / "ir").glob("*.py"))
     paths += [root / "build" / "components.py", root / "build" / "digest.py",
-              root / "build" / "graph.py", root / "render" / "scene.py"]
+              root / "build" / "graph.py", root / "render" / "scene.py", root / "render" / "picking.py"]
     return content_hash({str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
                          for p in paths})
 

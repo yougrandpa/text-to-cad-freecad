@@ -4,7 +4,9 @@ import { loadArtifactScene } from "../core/artifact.js";
 
 export class ArtifactViewport {
   constructor(canvas, options = {}) {
-    this.viewport = new MeshViewport(canvas, options);
+    this.viewport = new MeshViewport(canvas, { ...options, onSelectionChange: entity => {
+      if (!this.disposed && this.artifact) options.onSelectionChange?.(entity ? { ...this.artifact, ...entity } : null);
+    } });
     this.sequence = 0;
     this.request = null;
     this.artifact = null;
@@ -17,9 +19,14 @@ export class ArtifactViewport {
     const request = this.request = new AbortController();
     const scene = await loadArtifactScene({ ...selection, signal: request.signal });
     if (sequence !== this.sequence) return null;
-    this.viewport.setMesh(scene.mesh, scene.motion || [], scene.animation || null);
+    this.viewport.setMesh(scene.mesh, scene.motion || [], scene.animation || null, scene.pick_mapping || null);
     this.artifact = Object.freeze({ id: scene.artifact_id, version: scene.version, status: scene.status });
     return this.artifact;
+  }
+  setPickMode(kind) {
+    if (this.disposed) return;
+    if (kind !== null && !["body", "face", "edge"].includes(kind)) throw new Error("Unknown pick kind");
+    this.viewport.pickMode = kind;
   }
   capture() {
     if (this.disposed || !this.artifact) throw new Error("Load an active artifact before capture");

@@ -51,18 +51,17 @@ def simulate_assembly(ir=None, out_dir='', check_pairs=None, check_stride=1, sol
         doc = built['doc']
         assembly = doc.addObject('Assembly::AssemblyObject', 'Assembly')
         group = assembly.newObject('Assembly::JointGroup', 'Joints')
-        parts, initial, ranges, vertices, facets = {}, {}, [], [], []
+        from tcad.worker.pick_mapping import PickMesh
+        indexed = PickMesh()
+        vertices, facets, ranges = indexed.vertices, indexed.facets, indexed.parts
+        parts, initial = {}, {}
         for body in built['body_results']:
             part = assembly.newObject('Part::Feature', 'Component')
             part.Label = body['id']
             part.Shape = body['shape'].copy()
             parts[body['id']] = part
             initial[body['id']] = part.Placement.copy()
-            verts, tris = part.Shape.tessellate(0.5)
-            start = len(vertices)
-            vertices.extend([[float(v.x), float(v.y), float(v.z)] for v in verts])
-            facets.extend([[int(a)+start, int(b)+start, int(c)+start] for a,b,c in tris])
-            ranges.append({'body_id': body['id'], 'vertex_start': start, 'vertex_count': len(verts)})
+            indexed.add(body['id'], part.Shape, 0.5)
         for id in spec['grounded']:
             obj = group.newObject('App::FeaturePython', 'GroundedJoint')
             JointObject.GroundedJoint(obj, parts[id])
@@ -147,7 +146,7 @@ def simulate_assembly(ir=None, out_dir='', check_pairs=None, check_stride=1, sol
         path = os.path.join(out_dir, 'assembly.FCStd')
         doc.recompute()
         doc.saveAs(path)
-        return {'ok': True, 'mesh': {'vertices': vertices, 'facets': facets, 'vertex_count':len(vertices), 'facet_count':len(facets), 'bbox': _measure(built['result_shape'])['bbox'], 'volume': _measure(built['result_shape'])['volume'], 'tolerance':0.5}, 'parts': ranges,
+        return {'ok': True, 'mesh': {'vertices': vertices, 'facets': facets, 'vertex_count':len(vertices), 'facet_count':len(facets), 'bbox': _measure(built['result_shape'])['bbox'], 'volume': _measure(built['result_shape'])['volume'], 'tolerance':0.5}, 'pick_mapping': indexed.mapping(), 'parts': ranges,
                 'frames': frames, 'interferences':interferences if selected else None, 'frames_checked':frames_checked, 'start': spec['start'], 'step': spec['step'], 'export': path,
                 'solver': 'FreeCAD Assembly / OndselSolver',
                 'scope': 'Native kinematic joint solution; no contact forces or material removal.'}

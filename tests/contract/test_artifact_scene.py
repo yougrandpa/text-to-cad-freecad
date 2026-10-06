@@ -61,6 +61,9 @@ def test_saved_scene_survives_source_changes_and_worker_unavailability(services,
     reader = ArtifactReader(services.config.storage.data_dir)
     manifest, root = reader.resolve(model_id, 0)
     scene = reader.scene(manifest, root)
+    assert scene.pick_mapping is not None
+    assert set(p.body_id for p in scene.pick_mapping.parts) == set(scene.body_ids)
+    assert sum(e.triangle_count for e in scene.pick_mapping.entities) == len(scene.mesh.facets)
     assert bool(scene.animation) == kind.startswith("native")
     assert bool(scene.motion) == (kind == "prescribed")
     # Changing source cannot change artifact geometry or captured native poses.

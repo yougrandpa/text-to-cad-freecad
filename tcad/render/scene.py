@@ -8,6 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from tcad.core.types import BBox, Mesh
+from tcad.render.picking import PickMapping
 from tcad.ir.animation import pose_frame
 from tcad.ir.motion import pose_vertices
 from tcad.ir.schema import RotaryMotionSpec
@@ -30,6 +31,7 @@ class SceneModel(BaseModel):
     body_ids: list[str] = Field(default_factory=list)
     motion: list[SceneMotion] = Field(default_factory=list)
     animation: dict | None = None
+    pick_mapping: PickMapping | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -70,6 +72,13 @@ class SceneModel(BaseModel):
             if self.motion:
                 raise ValueError("a scene cannot mix prescribed and native motion")
             self._check_animation()
+        if self.pick_mapping is not None:
+            self.pick_mapping.check(mesh, self.body_ids)
+            for part in self.motion or (self.animation or {}).get("parts", []):
+                raw = part.model_dump() if hasattr(part, "model_dump") else part
+                if not any(p.model_dump() == {k: raw[k] for k in ("body_id", "vertex_start", "vertex_count")}
+                           for p in self.pick_mapping.parts):
+                    raise ValueError("pick mapping disagrees with pose ranges")
         return self
 
     def _check_animation(self) -> None:
@@ -113,7 +122,8 @@ class SceneModel(BaseModel):
             animation = {k: result[k] for k in ("parts", "frames", "start", "step", "solver")}
             animation.update({k: result[k] for k in ('scope','suspension_angles_deg','max_swing_deg') if k in result})
         scene = cls(mesh=result["mesh"], body_ids=[body["id"] for body in ir.get("bodies", [])],
-                    motion=[] if assembly else result.get("motion", []), animation=animation)
+                    motion=[] if assembly else result.get("motion", []), animation=animation,
+                    pick_mapping=result.get("pick_mapping"))
         if assembly is None:
             declared = {b["id"]: b["motion"] for b in ir.get("bodies", []) if b.get("motion")}
             actual = {p.body_id: {k: p.model_dump()[k] for k in ("pivot", "axis", "ratio")}

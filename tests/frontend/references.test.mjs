@@ -91,3 +91,22 @@ test("app sends pinned context and unlocks a tree rebuilt during its result hand
   assert.equal(c.context(), null); assert.equal(rebuilt.disabled, false);
   rebuilt.click(); assert.equal(c.context().selection_refs[0].ir_version, 1);
 });
+
+test("geometry chips validate publication, remain read-only and clear their highlight", () => {
+  const {controller:c,box} = harness();
+  const targets = catalog();
+  const ref = {...targets.targets[0].ref,entity_kind:"face",sketch_id:null,local_sub_id:"Face1"};
+  targets.targets.push({ref,label:"面 Face1",editable:false});
+  targets.targets.push({ref:{...ref,entity_kind:"body",local_sub_id:null},label:"板",editable:true});
+  let highlighted=[];
+  c.onChange = refs => { highlighted=refs; };
+  c.update(targets,"plate",0);
+  const hit = {body_id:"body",entity_kind:"face",local_sub_id:"Face1"};
+  c.selectGeometry(hit,"sha256:"+"b".repeat(64)); assert.equal(c.context(),null);
+  c.selectGeometry(hit,targets.artifact_id);
+  assert.equal(c.inspectionOnly(),true); assert.equal(highlighted[0].local_sub_id,"Face1");
+  c.setBusy(true); box.children[0].click(); assert.equal(highlighted.length,1);
+  c.setBusy(false); box.children[0].click(); assert.equal(highlighted.length,0);
+  assert.equal(c.selectGeometry({body_id:"body",entity_kind:"body"},targets.artifact_id),true);
+  assert.equal(c.inspectionOnly(),false);
+});

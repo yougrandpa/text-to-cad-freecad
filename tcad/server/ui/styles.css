@@ -680,3 +680,9 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); 
 .motion-player input { width: auto; }
 
 .motion-player select { background: var(--panel-2); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+
+/* Compact entity selection follows the existing CAD toolbar palette. */
+#pickKind { max-width: 142px; padding: 4px 6px; font: inherit; font-size: 11px;
+  background: var(--panel-2); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; }
+#pickKind:disabled { opacity: .45; }
+#pickKind:focus-visible { outline: 2px solid #80baf0; outline-offset: 2px; }
