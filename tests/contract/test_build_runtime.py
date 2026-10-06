@@ -97,10 +97,17 @@ def test_parallel_components_preserve_parametric_fcstd_and_pinned_partref(servic
     services.worker.request = record
     result, report = commit(services, model_id)
     services.worker.request = original
-    assert report and report.passed, result.content
+    assert report and report.passed, result.error or result.content
     assert set(child_calls) == {base.bodies[0].id, second.id}
     reader = ArtifactReader(services.store.data_dir)
     manifest, root = reader.resolve(model_id, 0)
+    digest = reader.digest(manifest, root)
+    owners = {base.bodies[0].features[-1].id, second.features[-1].id}
+    assert {face.feature_id for face in digest.faces} == owners
+    assert {edge.feature_id for edge in digest.edges} == owners
+    for owner in owners:
+        assert [face.name for face in digest.feature_geometry[owner].faces] == [
+            face.name for face in digest.faces if face.feature_id == owner]
     graph = json.loads(reader.read_file(manifest, root, "components.json"))
     assert len(graph["nodes"]) == 3
     fcstd = root / (model_id + ".FCStd")
@@ -190,3 +197,82 @@ def test_cancelled_real_build_cannot_publish_and_pool_recovers(services):
     services.build_runtime.geometry = original
     result, report = commit(services, model_id)
     assert report and report.passed, result.content
+
+
+def test_component_geometry_error_keeps_the_sketch_id_and_compile_kind(services):
+    from tests.contract.test_sketch_curves import curve_ir
+    raw = curve_ir("XY", "bspline")
+    raw["model_id"] = "component-error"
+    for geometry in raw["bodies"][0]["sketches"][0]["geometry"]:
+        for point in geometry["points"]:
+            point["z"] = 24
+    raw["bodies"].append({"id": "support", "name": "support", "features": [
+        {"id": "support_box", "name": "support", "op": "additive_box",
+         "params": {"length": 10, "width": 10, "height": 5}}]})
+    services.store.create(raw["model_id"], IrDocument.model_validate(raw))
+    result, report = commit(services, raw["model_id"])
+    assert report is None and not result.ok
+    assert result.error.kind.value == "compile"
+    assert result.error.feature_id == "sk"
+    assert "body b:" in result.error.message
+    assert "off the attached sketch plane" in result.error.message
+
+
+def test_cross_body_face_attachment_uses_one_document_and_preserves_elevation(services):
+    ir = IrDocument.model_validate({"model_id": "face-dependency", "bodies": [
+        {"id": "support", "name": "support", "features": [
+            {"id": "support_box", "name": "support", "op": "additive_box",
+             "params": {"length": 20, "width": 10, "height": 5}}]}]})
+    services.store.create(ir.model_id, ir)
+    result, report = commit(services, ir.model_id)
+    assert report and report.passed, result.error
+    reader = ArtifactReader(services.store.data_dir)
+    manifest, root = reader.resolve(ir.model_id)
+    top = next(face.name for face in reader.digest(manifest, root).faces
+               if face.normal[2] > 0.99)
+    points = [{"x": x, "y": y, "z": 5} for x, y in [(2, 2), (6, 2), (6, 6), (2, 6)]]
+    body = {"id": "button", "name": "button", "sketches": [
+        {"id": "button_outline", "name": "outline",
+         "plane": {"kind": "face", "feature_id": "support_box", "sub": top},
+         "geometry": [{"id": f"line{i}", "kind": "line", "points": [points[i], points[(i + 1) % 4]]} for i in range(4)],
+         "constraints": [{"type": "Block", "refs": [i]} for i in range(4)]}],
+        "features": [{"id": "button_pad", "name": "button", "op": "pad",
+                      "profile_sketch": "button_outline", "params": {"length": 3}}]}
+    services.store.apply_patch(ir.model_id, IrPatch(base_version=0, ops=[
+        IrPatchOp(op="add_body", payload={"id": body["id"], "name": body["name"]}),
+        IrPatchOp(op="add_sketch", payload={**body["sketches"][0], "body_id": body["id"]}),
+        IrPatchOp(op="add_feature", payload={**body["features"][0], "body_id": body["id"]}),
+    ]))
+    calls = []
+    original = services.worker.request
+    def record(method, params=None, **kwargs):
+        if method == "build_artifacts":
+            calls.append(params["ir"]["model_id"])
+        return original(method, params, **kwargs)
+    services.worker.request = record
+    result, report = commit(services, ir.model_id, 1)
+    assert report and report.passed, result.error
+    assert calls == [ir.model_id]
+    manifest, root = reader.resolve(ir.model_id)
+    digest = reader.digest(manifest, root)
+    assert digest.is_valid and digest.bbox.z == pytest.approx(8)
+    assert digest.volume == pytest.approx(20 * 10 * 5 + 4 * 4 * 3)
+    assert digest.body_solids == {"support": 1, "button": 1}
+    assert {face.feature_id for face in digest.faces} == {"support_box", "button_pad"}
+    # Reuse the measured names as actual feature-local attachments, even though
+    # the assembled compound's button faces have different global indices.
+    from tcad.tools.ir_tools import ir_digest_handler
+    ctx = ToolContext(model_id=ir.model_id, thread_id="t", turn_id="t")
+    scoped = asyncio.run(ir_digest_handler(services, {"feature_id": "button_pad"}, ctx))
+    assert scoped.ok and "button_pad/Face" in scoped.content
+    assert "support_box/Face" not in scoped.content
+    # The attachment remains a native dependency when reopening the exported
+    # document: raising the support moves the separate button, without fusing
+    # another copy of the support into it.
+    reopened = services.worker.request("reopen_edit_measure", {
+        "fcstd_path": str(root / (ir.model_id + ".FCStd")),
+        "edits": [{"object": "support_box", "property": "Height", "value": 7}]})
+    assert reopened["ok"], reopened
+    measured = reopened["result"]["measurements"]
+    assert measured["volume"] == pytest.approx(20 * 10 * 7 + 4 * 4 * 3)
+    assert measured["bbox"]["z"] == pytest.approx(10)

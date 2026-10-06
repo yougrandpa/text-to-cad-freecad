@@ -136,11 +136,13 @@ def render_digest_text(digest: GeometryDigest, ir: IrDocument) -> str:
     if faces:
         out.append(
             f"planar faces ({len(faces)}; attach a sketch with "
-            'plane={"kind":"face","feature_id":<feature>,"sub":"<name>"}):'
+            'plane={"kind":"face","feature_id":<listed owner>,"sub":"<name>"}; '
+            'ir_digest(feature_id=...) lists an earlier feature):'
         )
         for f in faces:
             name, area, normal, center = _face_fields(f)
-            line = f"  - {name}: area={area:g}"
+            owner = f.get("feature_id") if isinstance(f, dict) else getattr(f, "feature_id", None)
+            line = f"  - {owner + '/' if owner else '[legacy owner unknown] '}{name}: area={area:g}"
             if normal and center:
                 line += (f" normal=({normal[0]:g}, {normal[1]:g}, {normal[2]:g})"
                          f" center=({center[0]:g}, {center[1]:g}, {center[2]:g})")
@@ -161,7 +163,8 @@ def render_digest_text(digest: GeometryDigest, ir: IrDocument) -> str:
             mid = (e.get("mid") if isinstance(e, dict) else getattr(e, "mid", None)) or []
             direction = ((e.get("direction") if isinstance(e, dict)
                           else getattr(e, "direction", None)) or [])
-            line = f"  - {name}: {kind} length={length:g}"
+            owner = e.get("feature_id") if isinstance(e, dict) else getattr(e, "feature_id", None)
+            line = f"  - {owner + '/' if owner else '[legacy owner unknown] '}{name}: {kind} length={length:g}"
             if mid:
                 line += f" mid=({mid[0]:g}, {mid[1]:g}, {mid[2]:g})"
             if direction:

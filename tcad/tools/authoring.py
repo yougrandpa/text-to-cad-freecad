@@ -118,22 +118,57 @@ async def help_handler(services,args,ctx):
     schema=_ir_patch_schema(); branches=schema['properties']['ops']['items']['anyOf']
     selected={'sketch':['add_sketch','update_sketch'],'feature':['add_feature','update_feature'],'requirements':['update_requirement'],'assembly':['set_assembly'],'patch':[]}[topic]
     data={'schema':[b for b in branches if b['properties']['op']['enum'][0] in selected]}
+    data['unlocks']='Successful scoped help exposes matching ir_patch operations in the next model request.'
     if topic=='sketch':
-        data['rules']='World coordinates: XY uses x,y,z=0; XZ uses x,z,y=0; YZ uses y,z,x=0. Pad normals XY:+Z, XZ:-Y, YZ:+X. Fully fixed geometry uses constraints [{type:Block,refs:[index]}]. For an editable circle use DistanceX/DistanceY on refs [index,3] (centre) and Radius on refs [index], each with a numeric value. Block also fixes the radius; it does not support diameter editing.'
+        data['rules']='Profile points are WORLD coordinates. On origin planes: XY uses x,y,z=0; XZ uses x,z,y=0; YZ uses y,z,x=0. Pad normals XY:+Z, XZ:-Y, YZ:+X. For an elevated profile, commit first and use ir_digest to choose an actual planar face, then set plane={kind:face,feature_id:existing_feature,sub:FaceN}; write points at that measured face location in world coordinates. FaceN is a placeholder, not a guessed name. Nonzero sketch.offset is refused; do not use it to raise a profile. A body may reference a previously created feature face; keep the dependency order valid. Native ellipse and bspline curves are supported; do not approximate curved outlines with stacked boxes. Ellipse major_radius/minor_radius are semi-axes in mm; rotation is local-plane degrees. BSpline points are WORLD interpolation points, not control poles; periodic=true closes the curve smoothly without repeating the first point. An open spline needs other edges to close a pad/pocket profile. Fully fixed geometry uses constraints [{type:Block,refs:[index]}], including ellipse/bspline. For an editable circle use DistanceX/DistanceY on refs [index,3] (centre) and Radius on refs [index], each with a numeric value. Block also fixes the radius; it does not support diameter editing.'
         data['example']={'op':'add_sketch','payload':{'id':'sk','name':'sk','body_id':'base','plane':{'kind':'origin_plane','plane':'XY'},'geometry':[{'id':'c','kind':'circle','points':[{'x':0,'y':0,'z':0}],'radius':10}],'constraints':[{'type':'Block','refs':[0]}]},'reason':'Circle for pad'}
     elif topic=='feature':
-        data['params']=sorted(_VERIFIED_OP_PARAMS.get(args.get('feature_op','pad'),[]))
-        data['example']={'op':'add_feature','payload':{'id':'pad','name':'pad','body_id':'base','op':'pad','profile_sketch':'sk','params':{'length':5}},'reason':'Extrude profile'}
+        from tcad.ir.capability import capability
+        op=args.get('feature_op','pad')
+        data['feature_op']=op
+        data['params']=sorted(_VERIFIED_OP_PARAMS.get(op,[]))
+        cap=capability(op)
+        if cap is None:
+            return error(ValueError(f'Unknown feature_op: {op}'), 'Choose feature_op from the declared operation enum.')
+        data['capability']=cap.tier
+        if op in {'pad','pocket'}:
+            data['example']={'op':'add_feature','payload':{'id':op,'name':op,'body_id':'base','op':op,'profile_sketch':'sk','params':{'length':5}},'reason':'Extrude profile' if op=='pad' else 'Cut profile'}
+        elif op in {'fillet','chamfer'}:
+            key='radius' if op=='fillet' else 'size'
+            data['rules']='First commit the base geometry, then read ir_digest for actual Edge names, lengths and mid-points. Set base_feature to the feature owning those edges and sub_elements to the selected Edge names. Values are mm. Edge1 below is only a placeholder: select the measured edge matching your intent, and re-read after topology changes. A build can fail for an impossible radius/size; use the reported feature and edge geometry to revise it.'
+            data['example']={'op':'add_feature','payload':{'id':op,'name':op,'body_id':'base','op':op,'base_feature':'existing_feature','sub_elements':['Edge1'],'params':{key:1}},'reason':'Round measured edges' if op=='fillet' else 'Bevel measured edges'}
+        elif op in {'additive_loft','subtractive_loft'}:
+            data['rules']='Native parametric loft: profile_sketch is the first closed section; sections is an ordered list of additional distinct sketch IDs in the SAME body. Smooth mode ruled=false blends through the sections; ruled=true connects them with straight generators. closed=false caps the end profiles; closed=true loops last back to first, not cap ends. Keep matching edge counts, starting points and winding across sections to avoid twist. For separated section planes, create datum_plane features with typed world placement and attach each sketch using plane={kind:datum_plane,feature_id:plane_id}; points remain WORLD coordinates on that plane. Subtractive loft needs existing intersecting material. This builds native CAD features, not a mesh or arbitrary code.'
+            data['example']={'op':'add_feature','payload':{'id':op,'name':op,'body_id':'base','op':op,'profile_sketch':'section_start','sections':['section_middle','section_end'],'params':{'ruled':False,'closed':False}},'reason':'Blend closed profiles into a continuous solid' if op=='additive_loft' else 'Cut material with a section loft'}
+        elif op=='datum_plane':
+            data['rules']='Unattached native datum plane, default normal world +Z. Typed placement.position places its origin; placement.axis and angle rotate the plane in world space (degrees). For XZ cross-sections at y=a, use position={x:0,y:a,z:0}, axis={x:1,y:0,z:0}, angle=90. For XY cross-sections at z=a, use position={x:0,y:0,z:a}. Attach sketches via plane={kind:datum_plane,feature_id:plane_id}, using WORLD points that lie on this plane. Do not apply sketch.offset; a datum plane contains no solid.'
+            data['example']={'op':'add_feature','payload':{'id':'section_plane','name':'section_plane','body_id':'base','op':'datum_plane','placement':{'position':{'x':0,'y':0,'z':10}}},'reason':'Place a native cross-section plane'}
+        elif op.startswith(('additive_','subtractive_')):
+            shape=op.split('_',1)[1]
+            recipes={
+                'box':({'length':10,'width':8,'height':4}, 'placement.position is the local minimum corner; length/width/height extend along positive local X/Y/Z, not around a centre.'),
+                'cylinder':({'radius':4,'height':10}, 'placement.position is the base centre; height extends along positive local Z before rotation.'),
+                'sphere':({'radius':6}, 'placement.position is the sphere centre. A full sphere extends by radius in both directions on every axis, including below the centre; it is not automatically a dome clipped at the base plane.'),
+                'cone':({'radius1':5,'radius2':2,'height':10}, 'placement.position is the base centre; height extends along positive local Z, from radius1 at the base to radius2 at the top.'),
+            }
+            if shape in recipes:
+                params,rule=recipes[shape]
+                data['params']=sorted(params)
+                data['params_note']='Basic scalar recipe, not an exhaustive native property table. Use typed placement for position/rotation, not params.center.'
+                data['rules']=rule+' Additions must intersect the existing solid; subtraction must intersect material. Measure the resulting bbox, including minima, and render after commit.'
+                data['example']={'op':'add_feature','payload':{'id':op,'name':op,'body_id':'base','op':op,'params':params,'placement':{'position':{'x':0,'y':0,'z':0}}},'reason':'Place native primitive; adapt dimensions and position to measured existing material'}
     elif topic=='requirements':
         data['rules']='raw_text is immutable. Qualitative motion/functionality is not a geometry constraint. Do not invent kind=note/motion/dimension or user-confirmed dimensions.'
         data['example']={'constraints':[{'kind':'bbox','value':{'x':80,'y':50,'z':8},'source_text':'80×50×8','confirmed':True}],'reason':'Record explicit user dimensions'}
     elif topic=='patch':
         data={'operations':[b['properties']['op']['enum'][0] for b in branches],
-              'next':'Prefer cad_build_parts / cad_wheel / assembly_motion. For exact low-level shapes request topic=sketch, feature, requirements or assembly; do not fetch all schemas.'}
+              'rules':'Use update_body with target_id=body_id and payload={name:new_name} to rename a body. The rename operation accepts sketch or feature IDs only. Use update_feature/update_sketch to change geometry; their target_id identifies the existing node, so do not include body_id in the partial payload.',
+              'next':'Common primitives use cad_build_parts. Native ellipse/bspline profiles, pad/pocket and fillet/chamfer are available through scoped sketch/feature help, which exposes matching ir_patch operations in the next request. For exact contracts request topic=sketch, feature, requirements or assembly; do not fetch all schemas.'}
     return ToolResult(ok=True,content=json.dumps(data,ensure_ascii=False,separators=(',',':')))
 
 
 def build_authoring_tools(services):
+    from tcad.ir.capability import all_ops
     part_schema=inline_schema(BuildParts.model_json_schema())
     item=part_schema['properties']['parts']['items']
     common={'id','body_id','shape','operation','copies'}
@@ -169,8 +204,8 @@ def build_authoring_tools(services):
             description='Configure constant-speed horizontal wheel/rotor and passive gravity-hanging cabins (Z up, mm/s). rotating_body_ids revolve about center/axis. For cad_cabins use hanging_body_ids directly: uniform-density COM/inertia and highest vertical hanger endpoint are measured automatically. Or use suspensions with explicit body_ids/pivot. Bodies must be upright, COM below hinge. Omit com_distance_mm/inertia_factor to use measured mass properties. RK4 integrates gravity, moving-hinge acceleration and damping; cabins swing naturally, never rotate rigidly with the wheel. Other bodies are fixed. duration_s/frames set saved playback. Commit, assembly_simulate for evidence/collision samples, assembly_export for GIF. Not contact/structural analysis.',
             params_schema=inline_schema(RotationCall.model_json_schema()),handler=functools.partial(rotation_handler,services)),
         'ir_help':ToolSpec(name='ir_help',tier=ToolTier.READ,
-            description='Fetch exact scoped schemas and a working example BEFORE unfamiliar low-level ir_patch. Common shapes already have complete schemas: use cad_build_parts/cad_wheel directly. topic=patch lists editing operations; specific topics expose only necessary editing contracts.',
-            params_schema={'type':'object','additionalProperties':False,'required':['topic'],'properties':{'topic':{'type':'string','enum':['sketch','feature','requirements','assembly','patch']},'feature_op':{'type':'string'}}},handler=functools.partial(help_handler,services),concurrency_safe=True),
+            description='Discover advanced native CAD before falling back to primitive approximations: topic=sketch exposes ellipse/bspline profiles; topic=feature with feature_op=additive_loft/subtractive_loft/datum_plane exposes smooth section solids and positioned section planes; fillet/chamfer/pad/pocket expose native edge and profile features. Successful scoped help unlocks matching ir_patch edits in the next request; their absence from the initial tool table is not a capability limit. Common primitives use cad_build_parts/cad_wheel directly. topic=patch lists editing operations.',
+            params_schema={'type':'object','additionalProperties':False,'required':['topic'],'properties':{'topic':{'type':'string','enum':['sketch','feature','requirements','assembly','patch']},'feature_op':{'type':'string','enum':list(all_ops())}}},handler=functools.partial(help_handler,services),concurrency_safe=True),
     }
 
 class RadialWheel(BaseModel):

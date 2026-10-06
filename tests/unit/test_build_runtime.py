@@ -16,6 +16,37 @@ from tcad.build.pool import worker_cancellation
 from tcad.build.worker_client import WorkerAborted
 
 
+@pytest.mark.parametrize("reference", ["plane", "refs", "base_feature", "profile_sketch"])
+def test_cross_body_dependencies_require_joint_build(reference):
+    from tcad.build.components import requires_joint_build
+    ir = {"bodies": [{"id": "a", "features": [{"id": "support"}]},
+                     {"id": "b", "features": [{"id": "button"}]}]}
+    assert not requires_joint_build(ir)
+    node = ir["bodies"][1]["features"][0]
+    node[reference] = {"feature_id": "support"} if reference == "plane" else ["support"] if reference == "refs" else "support"
+    assert requires_joint_build(ir)
+    node[reference] = {"feature_id": "button"} if reference == "plane" else ["button"] if reference == "refs" else "button"
+    assert not requires_joint_build(ir)
+
+
+def test_component_preview_limit_error_names_body_and_retains_actionable_hint(tmp_path):
+    from tcad.build.components import compile_components, ComponentBuildFailed
+    from tcad.render.scene import MAX_SCENE_VERTICES
+    runtime = SimpleNamespace(compiler="test", pool=SimpleNamespace(handles=[1], cancel_owner=lambda *a: None),
+        cache=GeometryCache(tmp_path / "cache"), worker=SimpleNamespace(request=lambda *a, **kw: {
+            "ok": True, "result": {"scene": {"mesh": {"vertices": [[0, 0, 0]] * (MAX_SCENE_VERTICES + 1)}}}}))
+    ir = {"model_id": "mouse", "bodies": [{"id": "left_key", "name": "left key"},
+                                          {"id": "right_key", "name": "right key"}]}
+    with pytest.raises(ComponentBuildFailed) as caught:
+        compile_components(runtime, ir, ["1", "0"], tmp_path, {})
+    error = caught.value.error
+    assert "body left_key" in error["message"] and "allocation limits" in error["message"]
+    assert error["kind"] == "runtime" and "CAD body compiled" in error["hint"]
+    assert len(error["message"]) < 300
+    from tcad.loop.commit import _worker_error
+    assert _worker_error(error).error.hint == error["hint"]
+
+
 def test_digest_ignores_version_but_keeps_geometry_backend_and_asset_identity():
     ir = {"model_id": "a", "version": 1, "bodies": [{"id": "b", "size": 10}], "requirements": {}}
     kwargs = dict(compiler="c1", freecad=["1", "0"], exports=["stl", "step"], assets={"part": "h1"})

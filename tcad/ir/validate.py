@@ -103,6 +103,9 @@ _VERIFIED_OP_PARAMS: dict[str, frozenset[str]] = {
         "reversed", "start_type", "start_offset", "allow_multi_face",
         "operation",
     }),
+    "additive_loft": frozenset({"ruled", "closed", "refine"}),
+    "subtractive_loft": frozenset({"ruled", "closed", "refine"}),
+    "datum_plane": frozenset(),
     "hole": frozenset({
         "depth", "diameter", "drill_point", "drill_point_angle", "midplane",
         "reversed", "tapered", "tapered_angle", "base_profile_type",
@@ -249,6 +252,7 @@ _PLANE_OPS: dict[str, str] = {"mirrored": "MirrorPlane", "draft": "NeutralPlane"
 _PLACEMENT_OPS: frozenset[str] = frozenset({
     "additive_box", "additive_cylinder", "additive_sphere", "additive_cone",
     "subtractive_box", "subtractive_cylinder", "subtractive_sphere", "subtractive_cone",
+    "datum_plane",
 })
 
 #: Ops that repeat features and therefore need ``params.axis`` to say along/about
@@ -258,7 +262,7 @@ _PATTERN_AXIS_VALUES: frozenset[str] = frozenset({"x", "y", "z"})
 _ORIGIN_PLANE_NAMES: frozenset[str] = frozenset({"XY", "XZ", "YZ"})
 
 _UNVERIFIED_OPS: frozenset[str] = frozenset({
-    "multi_transform", "datum_plane",
+    "multi_transform",
     "additive_box", "additive_cylinder", "additive_sphere", "additive_cone",
     "subtractive_box", "subtractive_cylinder", "subtractive_sphere", "subtractive_cone",
 })
@@ -375,6 +379,21 @@ def validate_ir(ir: IrDocument) -> list[ValidationIssue]:
                 target_id=f.id))
 
     # 3) feature.refs[] resolve to existing feature ids
+    for body in ir.bodies:
+        local_sketches = {s.id for s in body.sketches}
+        for f in body.features:
+            if f.op in {"additive_loft", "subtractive_loft"}:
+                profiles = [f.profile_sketch, *f.sections]
+                if not f.profile_sketch or not f.sections:
+                    issues.append(ValidationIssue(code="loft_sections_missing", severity="error",
+                        message=f"loft '{f.id}' needs profile_sketch and at least one additional sections sketch", target_id=f.id))
+                elif len(set(profiles)) != len(profiles) or any(s not in local_sketches for s in profiles):
+                    issues.append(ValidationIssue(code="loft_sections_invalid", severity="error",
+                        message=f"loft '{f.id}' profiles must be distinct sketch IDs in the same body, ordered along the loft", target_id=f.id))
+            elif f.sections:
+                issues.append(ValidationIssue(code="loft_sections_unused", severity="error",
+                    message=f"feature '{f.id}' has sections but only additive_loft/subtractive_loft use them", target_id=f.id))
+
     for f in features:
         for r in f.refs:
             if r not in feature_ids:

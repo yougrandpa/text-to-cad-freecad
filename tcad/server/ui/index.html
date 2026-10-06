@@ -62,7 +62,20 @@
 
 <div class="apibanner" id="apiBanner" hidden></div>
 
-<main class="layout" id="layout">
+<nav class="workspace-nav" id="workspaceNav" role="tablist" aria-label="工作区">
+  <button id="workspaceChat" type="button" role="tab" aria-selected="true" aria-controls="chatPane">
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M3 3h14v10H8l-5 4V3Z"/><path d="M6 7h8M6 10h5"/></svg>设计对话
+  </button>
+  <button id="workspaceModel" type="button" role="tab" aria-selected="false" aria-controls="modelPane" tabindex="-1">
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="m10 2 7 4v8l-7 4-7-4V6l7-4ZM3 6l7 4 7-4M10 10v8"/></svg>三维模型
+  </button>
+  <button id="workspaceInspect" type="button" role="tab" aria-selected="false" aria-controls="inspectPane" tabindex="-1">
+    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M4 3v13h4M4 7h4M4 12h4M8 5h9v4H8zM8 10h9v4H8zM8 15h9v3H8z"/></svg>结构检查
+  </button>
+</nav>
+
+<main class="layout" id="layout" data-workspace="chat">
+  <button class="session-backdrop" id="sessionBackdrop" type="button" aria-label="关闭会话列表" tabindex="-1"></button>
 
   <!-- ── 会话列表 ───────────────────────────────────────────── -->
   <aside class="col col-sessions" id="sessionPane">
@@ -70,6 +83,7 @@
       <span class="pane-label">设计项目</span>
       <div class="grow"></div>
       <button class="mini new-session" id="newSessionBtn" title="新建会话（⌘/Ctrl+K）">＋ 新建</button>
+      <button class="mini compact-only" id="closeSessions" type="button" aria-label="关闭会话列表">关闭</button>
     </div>
     <div class="session-list" id="sessionList">
       <div class="session-empty" id="sessionEmpty">每一个想法，都从这里开始。<br>新建会话，或直接描述你的设计。</div>
@@ -77,7 +91,7 @@
   </aside>
 
   <!-- ── 会话 ───────────────────────────────────────────────── -->
-  <section class="col court-chat">
+  <section class="col court-chat" id="chatPane">
     <div class="col-head">
       <span id="sessionTitle">设计对话</span>
       <span class="hint" id="threadLabel"></span>
@@ -116,7 +130,7 @@
   </section>
 
   <!-- ── 视图 ───────────────────────────────────────────────── -->
-  <section class="col col-view">
+  <section class="col col-view" id="modelPane">
     <div class="col-head">
       <span class="pane-label">模型空间 <small>3D VIEW</small></span>
       <div class="grow"></div>
@@ -170,13 +184,33 @@
   </section>
 
   <!-- ── 检查器 ─────────────────────────────────────────────── -->
-  <section class="col col-inspect">
+  <section class="col col-inspect" id="inspectPane">
     <div class="col-head">
-      <span class="pane-label">设计检查 <small>INSPECTOR</small></span>
+      <span class="pane-label">模型结构 <small>MODEL</small></span>
       <div class="grow"></div>
+      <button class="mini compact-only" id="showModelFromStructure" type="button">看模型 ↗</button>
       <button class="mini" id="refreshInspect" title="刷新">刷新</button>
     </div>
-    <div class="inspect" id="inspector">
+    <div class="model-panel-tabs" role="tablist" aria-label="模型信息">
+      <button id="structureTab" type="button" role="tab" aria-selected="true" aria-controls="structurePanel">结构树</button>
+      <button id="checksTab" type="button" role="tab" aria-selected="false" aria-controls="inspector" tabindex="-1">设计检查</button>
+    </div>
+    <div class="structure-panel" id="structurePanel" role="tabpanel" aria-labelledby="structureTab">
+      <div class="structure-meta" id="structureMeta">等待生成模型</div>
+      <div class="structure-toolbar">
+        <input id="structureSearch" type="search" placeholder="搜索名称或特征类型…" aria-label="搜索模型结构" disabled>
+        <div class="structure-actions">
+          <span id="structureCount">0 个零件</span>
+          <button id="expandStructure" type="button" title="展开全部结构" disabled>展开</button>
+          <button id="collapseStructure" type="button" title="折叠全部结构" disabled>折叠</button>
+        </div>
+      </div>
+      <div class="structure-scroll" id="structureTree" aria-label="零件与建模特征">
+        <div class="structure-empty">生成模型后，在这里查看零件、特征与草图的关系。</div>
+      </div>
+      <div class="structure-detail" id="structureDetail" hidden></div>
+    </div>
+    <div class="inspect" id="inspector" role="tabpanel" aria-labelledby="checksTab" hidden>
       <div class="inspector-empty"><span class="empty-symbol" aria-hidden="true">✓</span><strong>设计的每一步，都有据可查</strong><p>生成后在这里查看几何摘要、特征历史与检查结果。</p></div>
     </div>
   </section>

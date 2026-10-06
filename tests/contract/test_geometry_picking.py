@@ -94,7 +94,10 @@ def test_browser_pick_highlight_remove_and_inspect(published):
         try:
             page.goto(f"{base}/ui/?thread={THREAD}")
             playwright.expect(page.locator("#pickKind")).to_be_enabled(timeout=30_000)
-            playwright.expect(page.locator("li",has_text="通孔圆").locator(".reference-button")).to_be_enabled()
+            playwright.expect(page.locator("#expandStructure")).to_be_enabled()
+            page.locator("#expandStructure").click()
+            page.locator("#structureTree .structure-select",has_text="通孔圆").click()
+            playwright.expect(page.locator("#structureDetail .reference-button")).to_be_enabled()
             page.locator('[data-view="top"]').click()
             canvas = page.locator("#viewCanvas")
             canvas.focus(); page.keyboard.press("f")

@@ -18,6 +18,8 @@ from dataclasses import dataclass
 import json
 from typing import Any
 
+from tcad.context.tool_images import is_render_message
+
 
 _REQUEST_OVERHEAD = 32
 _ITEM_OVERHEAD = 16
@@ -78,8 +80,23 @@ def _item_tokens(item: Mapping[str, Any]) -> int:
     # Count every wire field, including tool arguments and reasoning_content.
     # Three UTF-8 bytes/token is deliberately more cautious than four characters
     # per token, especially for CJK text. Framing overhead is small and linear.
+    image_tokens = 0
+    content = item.get("content")
+    if isinstance(content, list):
+        # Image bytes are not tokenized as base64 text. Reserve a conservative
+        # 8192 tokens per full image (85 at low detail), independently of file
+        # compression. This remains an estimate, not a provider token guarantee.
+        item = dict(item)
+        item["content"] = []
+        for part in content:
+            if isinstance(part, Mapping) and part.get("type") == "image_url":
+                image = part.get("image_url", {})
+                image_tokens += 85 if image.get("detail") == "low" else 8192
+                item["content"].append({"type": "image_url", "image_url": {"detail": image.get("detail", "auto")}})
+            else:
+                item["content"].append(part)
     payload = json.dumps(item, ensure_ascii=False, separators=(",", ":"))
-    return _ITEM_OVERHEAD + (len(payload.encode("utf-8")) + 2) // 3
+    return _ITEM_OVERHEAD + (len(payload.encode("utf-8")) + 2) // 3 + image_tokens
 
 
 def estimate_request_tokens(
@@ -89,7 +106,8 @@ def estimate_request_tokens(
     """Estimate the whole request, including tool schemas and protocol framing.
 
     This heuristic deliberately has no exact-token-count claim. Inputs must be
-    JSON-serializable provider wire dictionaries; all their fields are counted.
+    JSON-serializable provider wire dictionaries. Text and protocol fields are
+    counted by bytes; image payloads receive a separate vision token allowance.
     """
     return (
         _REQUEST_OVERHEAD
@@ -119,8 +137,8 @@ def compact_turn(
 ) -> CompactionResult:
     """Omit oldest complete batches until the request fits, without slicing.
 
-    A batch is one assistant message and *all* matching tool results, or a
-    standalone assistant narration. The newest ``keep_recent_batches`` are
+    A batch is one assistant message, *all* matching tool results and generated
+    image feedback, or a standalone assistant narration. The newest ``keep_recent_batches`` are
     preferred; they may be reduced further when necessary. The latest complete
     tool-call batch and any later narration are mandatory. If there are no tool
     calls, the latest narration is mandatory. The prefix is always preserved.
@@ -242,6 +260,11 @@ def _complete_batches(
                 )
             del pending[call_id]
             batch.append(result)
+            index += 1
+        # Generated render feedback belongs to this whole tool round, so it is
+        # retained or omitted together with its calls and results.
+        while index < len(messages) and is_render_message(messages[index]):
+            batch.append(messages[index])
             index += 1
         batches.append(batch)
     return batches

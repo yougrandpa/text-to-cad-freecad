@@ -62,6 +62,18 @@ async def ir_get_handler(services: "Any", args: dict, ctx: ToolContext) -> ToolR
 async def ir_digest_handler(services: "Any", args: dict, ctx: ToolContext) -> ToolResult:
     version = services.store.current_version(ctx.model_id)
     digest = services.context.digest(ctx.model_id, version)
+    feature_id = args.get("feature_id")
+    if feature_id:
+        geometry = digest.feature_geometry.get(feature_id)
+        if geometry is None:
+            return _err(ToolErrorKind.NOT_FOUND,
+                        f"no measured sub-elements for feature {feature_id!r} in v{version}",
+                        hint="Commit the current version first. Older artifacts without feature-local topology need a fresh commit.")
+        from tcad.context.digest import render_digest_text
+        digest = digest.model_copy(update={"faces": geometry.faces, "edges": geometry.edges})
+        ir = services.store.load(ctx.model_id, version)
+        text = render_digest_text(digest, ir)
+        return _ok(f"Sub-element scope: feature_id={feature_id}; overall measurements remain the whole model.\n{text}")
     text = getattr(digest, "text", "") or digest.model_dump_json()
     return _ok(text)
 
@@ -480,7 +492,8 @@ op names and their payload shapes:
                      mode the engine preserves raw_text as the user's original request;
                      leave it unchanged. Guessed or derived dimensions are not user-confirmed.
                      Use source_text verbatim.
-  rename             target_id = entity id; payload = {"name": "<new stable name>"}
+  rename             target_id = sketch or feature id; payload = {"name": "<new stable name>"}
+                     For a body name, use update_body instead.
                      Names must be unique — an ambiguous name cannot be referenced later.
 
 base_version: pass the integer IR version you last read, or the string "current" to
@@ -612,8 +625,11 @@ def build_ir_tools(services: "Any") -> dict[str, ToolSpec]:
             tier=ToolTier.READ,
             description=("Return a compact program-generated geometry digest (feature chain, "
                          "topology, bbox, volume, key dimensions, BRep-measured holes and the "
-                         "planar faces you can attach a sketch to). Cheaper than ir_get."),
-            params_schema={"type": "object", "properties": {}},
+                         "planar faces and edges with their owning feature_id). FaceN/EdgeN are local "
+                         "to that owner, never interchangeable between features. Defaults to body tips; "
+                         "feature_id selects an earlier feature for attachments or fillets. Cheaper than ir_get."),
+            params_schema={"type": "object", "additionalProperties": False,
+                           "properties": {"feature_id": {"type": "string"}}},
             handler=functools.partial(ir_digest_handler, services),
             concurrency_safe=True,
         ),

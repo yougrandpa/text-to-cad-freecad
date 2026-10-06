@@ -37,3 +37,15 @@ def test_underconstrained_sketch_reported():
     ir = make_ir()
     text = render_digest_text(d, ir)
     assert "UNDER-CONSTRAINED" in text
+
+
+def test_sub_element_names_show_the_feature_that_owns_the_number():
+    from tcad.core.types import FaceInfo, EdgeInfo
+    d = make_digest()
+    d.faces = [FaceInfo(name="Face6", feature_id="base", normal=[0, 0, 1], center=[0, 0, 8])]
+    d.edges = [EdgeInfo(name="Edge1", feature_id="button", kind="Line", length=3)]
+    text = render_digest_text(d, make_ir())
+    assert "base/Face6" in text
+    assert "button/Edge1" in text
+    d.faces[0].feature_id = None
+    assert "[legacy owner unknown] Face6" in render_digest_text(d, make_ir())

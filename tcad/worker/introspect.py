@@ -424,8 +424,34 @@ def digest_built(ir, built):
     shape = built["result_shape"]
     measure = _measure(shape)
     holes = _measure_holes(shape)
-    faces = _measure_faces(shape)
-    edges = _measure_edges(shape)
+    feature_geometry = {}
+    faces, edges = [], []
+    for body in ir.get("bodies") or []:
+        tip_geometry = None
+        for feature in body.get("features") or []:
+            if feature.get("suppress"):
+                continue
+            obj = built.get("ref_objects", {}).get(feature["id"])
+            feature_shape = getattr(obj, "Shape", None)
+            if feature_shape is None or feature_shape.isNull():
+                continue
+            owner = {"feature_id": feature["id"], "body_id": body["id"]}
+            geometry = {
+                "faces": [{**row, **owner} for row in _measure_faces(feature_shape)],
+                "edges": [{**row, **owner} for row in _measure_edges(feature_shape)],
+            }
+            feature_geometry[feature["id"]] = geometry
+            # Datum planes have a non-null face Shape too, but do not replace
+            # the body's solid tip. Keep them available only in scoped queries.
+            if feature_shape.Solids:
+                tip_geometry = geometry
+        if tip_geometry:
+            faces.extend(tip_geometry["faces"])
+            edges.extend(tip_geometry["edges"])
+    # The assembled compound has different sub-element indices. Never advertise
+    # its FaceN/EdgeN as names that can be applied to an individual feature.
+    faces = faces[:_FACE_LIMIT]
+    edges = edges[:_EDGE_LIMIT]
     min_wall = _measure_min_wall_thickness(shape)
 
     digest = {
@@ -450,6 +476,7 @@ def digest_built(ir, built):
         "holes": holes,
         "faces": faces,
         "edges": edges,
+        "feature_geometry": feature_geometry,
         "spec_deviation": {},
         "measurements_available": shape is not None and not shape.isNull(),
         "body_solids": {b["id"]: len(b["shape"].Solids) for b in built["body_results"]},

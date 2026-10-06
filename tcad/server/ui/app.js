@@ -16,18 +16,64 @@
 import { MeshViewport } from "./viewport.js?v=20261004-refactor";
 import { validateArtifactScene } from "../../viewer/core/artifact.js";
 import { ReferenceController } from "./references.mjs";
+import { StructureController } from "./structure.mjs";
+import { WorkspaceController } from "./workspace.mjs";
 
 let references = null;
 let inspectorGeneration = 0;
+let structure = null;
+let workspace = null;
+let compactMedia = null;
+let sourceIr = null;
+let displayedArtifact = null;
+let structureRequest = 0;
+
+function clearDisplayedStructure() {
+  displayedArtifact = null;
+  structureRequest += 1;
+  structure?.update(sourceIr);
+}
+
+async function syncDisplayedStructure(artifact = displayedArtifact) {
+  if (!structure) return;
+  if (!artifact) { structure.update(sourceIr); return; }
+  const token = sessionToken();
+  const request = ++structureRequest;
+  const current = () => !stale(token) && request === structureRequest && displayedArtifact === artifact;
+  if (structure.artifactId === artifact.artifactId) {
+    structure.setSourceVersion(sourceIr?.version);
+    structure.render();
+    return;
+  }
+  structure.message("正在读取画布构建的结构…");
+  try {
+    const ir = await api(`/artifact-sets/${encodeURIComponent(artifact.artifactId)}/files/ir.json`);
+    if (!current()) return;
+    if (ir.model_id !== token.modelId || ir.version !== artifact.version) throw new Error("结构与画布构建不匹配");
+    structure.update(ir, { artifactId: artifact.artifactId, status: artifact.status, sourceVersion: sourceIr?.version });
+  } catch (err) {
+    if (current()) structure.message(`构建结构读取失败：${err.message}。点击刷新重试。`);
+  }
+}
+
+function displayStructureArtifact(modelId, artifactId, version, status) {
+  if (!artifactId || version == null) { clearDisplayedStructure(); return; }
+  displayedArtifact = { modelId, artifactId, version, status };
+  workspace?.showModel();
+  syncDisplayedStructure();
+}
 function referenceUI() {
   if (!references) references = new ReferenceController($("referenceChips"), {
     onChange: refs => {
       if (!meshViewer) return;
-      meshViewer.selectedEntity = refs.filter(ref => ref.artifact_id === meshViewer.artifactId &&
-        ["body", "face", "edge"].includes(ref.entity_kind)).at(-1) || null;
+      const latest = refs.filter(ref => ref.artifact_id === meshViewer.artifactId).at(-1);
+      meshViewer.selectedEntity = latest && ["body", "face", "edge"].includes(latest.entity_kind) ? latest
+        : latest && meshViewer.pickMapping?.entities.some(entity => entity.body_id === latest.body_id)
+          ? { body_id: latest.body_id, entity_kind: "body" } : null;
       meshViewer.schedule();
+      if (latest) structure?.selectReference(latest);
     },
-    notice: (message) => pushNotice("warn", message), focus: () => $("input").focus(), document,
+    notice: (message) => pushNotice("warn", message), focus: () => { workspace?.select("chat"); $("input").focus(); }, document,
   });
   return references;
 }
@@ -793,6 +839,7 @@ function setViewMode(interactive, message = "", warning = false) {
   $("fitView").disabled = !interactive || !meshViewer?.hasMesh;
   $("viewHelp").hidden = !interactive || !meshViewer?.hasMesh;
   $("viewStatus").textContent = message;
+  $("viewStatus").title = message;
   $("viewStatus").classList.toggle("warn", warning);
   // The headless PNG API supports these four views. Do not offer buttons that
   // would request unsupported views when WebGL or mesh loading is unavailable.
@@ -846,6 +893,7 @@ async function loadView(force, { version = null } = {}) {
 
   if (!token.modelId) {
     meshViewer?.clear();
+    clearDisplayedStructure();
     clearViewImage();
     placeholder.hidden = false;
     placeholder.textContent = "还没有会话 —— 左侧点「＋ 新建」，或直接在下面描述一个零件";
@@ -879,7 +927,7 @@ async function loadView(force, { version = null } = {}) {
           return;
         }
         if (res.status === 404 || (res.status === 422 && /no solid|empty mesh|no triangles/i.test(detail))) {
-          meshViewer.clear(); clearViewImage();
+          meshViewer.clear(); clearViewImage(); clearDisplayedStructure();
           placeholder.hidden = false;
           placeholder.textContent = res.status === 404
             ? "还没有已发布的几何 —— 构建并验证通过后这里会自动显示"
@@ -895,6 +943,7 @@ async function loadView(force, { version = null } = {}) {
       params.set("artifact_id", body.artifact_id);
       const count = meshViewer.setMesh(body.mesh, body.motion || [], body.animation || null, body.pick_mapping || null);
       meshViewer.artifactId = body.artifact_id;
+      displayStructureArtifact(body.model_id, body.artifact_id, body.version, body.status);
       $("pickKind").disabled = state.selectionEnabled === false || !body.pick_mapping || body.status !== "verified";
       meshViewer.pickMode = $("pickKind").disabled ? null : $("pickKind").value || null;
       clearViewImage();
@@ -912,7 +961,7 @@ async function loadView(force, { version = null } = {}) {
   // Never label this image as an interactive model, or leave the prior version
   // on screen after a failed refresh.
   if (!current()) return;
-  meshViewer?.clear(); clearViewImage();
+  meshViewer?.clear(); clearViewImage(); clearDisplayedStructure();
   placeholder.hidden = false;
   placeholder.textContent = "正在加载静态预览…";
   setViewMode(false, `静态预览 · ${fallbackReason}`, true);
@@ -941,6 +990,7 @@ async function loadView(force, { version = null } = {}) {
       if (version != null && Number(renderedVersion) !== version) throw new Error("预览与请求的构建版本不匹配");
       setViewMode(false, `静态预览 · 构建 v${renderedVersion} · ${renderedStatus === "verified" ? "几何已验证" : "几何未验证"}`);
     }
+    displayStructureArtifact(token.modelId, renderedId, renderedVersion == null ? null : Number(renderedVersion), renderedStatus);
     displayImage(URL.createObjectURL(blob));
   } catch (err) {
     if (!current() || err.name === "AbortError") return;
@@ -969,11 +1019,14 @@ async function loadArtifacts() {
     }
     // Link with the identity the RESPONSE described, not with whatever the
     // session variable holds now — those differ exactly when they must not.
+    bar.append(el("span", { class: "export-label", text: "导出" }));
     for (const name of files) {
+      const format = name.endsWith("animation.json") ? "动画数据" : name.split(".").at(-1);
       bar.append(el("a", {
         href: `/models/${encodeURIComponent(token.modelId)}/artifacts/${name}` +
               `?version=${body.version}`,
-        text: name,
+        text: format === "FCStd" ? "FreeCAD" : format.toUpperCase(),
+        title: name,
         download: "",
       }));
     }
@@ -1073,7 +1126,7 @@ async function refreshInspector() {
     box.append(sec);
   }
 
-  // ── the IR feature chain ───────────────────────────────────────────────
+  // ── source version and the current publication's reference catalog ──────
   if (!token.modelId) {
     box.append(el("div", { class: "muted small", text: "未选择会话。" }));
     return;
@@ -1092,39 +1145,8 @@ async function refreshInspector() {
     referenceUI().update(catalog, token.modelId, ir.version);
     referenceUI().beginTree();
 
-    const chain = el("div", { class: "sec" }, el("h4", { text: `源模型特征（IR v${ir.version}）` }));
-    const list = el("ul", { class: "chain" });
-    let count = 0;
-    for (const body of ir.bodies || []) {
-      list.append(el("li", { class: "body-row" }, [
-        el("span", { class: "op", text: "Body" }),
-        el("span", { class: "nm", text: `  ${body.name || body.id}` }),
-        referenceUI().button(body.id, "body", body.id),
-      ]));
-      for (const sk of body.sketches || []) {
-        list.append(el("li", {}, [
-          el("span", { class: "op", text: `sketch · ${sk.geometry?.length || 0} 段` }),
-          el("span", { class: "nm", text: `  ${sk.name || sk.id}` }),
-          referenceUI().button(body.id, "sketch", sk.id),
-          el("span", { class: "pr", text: `${sk.constraints?.length || 0} 个约束` }),
-        ]));
-        count++;
-      }
-      for (const feat of body.features || []) {
-        const params = Object.entries(feat.params || {})
-          .map(([k, v]) => `${k}=${v}`).join(" ");
-        list.append(el("li", {}, [
-          el("span", { class: "op", text: feat.op }),
-          el("span", { class: "nm", text: `  ${feat.name || feat.id}` }),
-          referenceUI().button(body.id, "feature", feat.id),
-          el("span", { class: "pr", text: params || "—" }),
-        ]));
-        count++;
-      }
-    }
-    if (!count) list.append(el("li", { class: "muted", text: "（空模型）" }));
-    chain.append(list);
-    box.append(chain);
+    sourceIr = ir;
+    syncDisplayedStructure();
 
     if (ir.requirements?.raw_text) {
       box.append(el("div", { class: "sec" }, [
@@ -1136,6 +1158,10 @@ async function refreshInspector() {
     if (outdated()) return;
     referenceUI().update(null, token.modelId, token.version);
     referenceUI().beginTree();
+    if (!displayedArtifact) {
+      sourceIr = null;
+      structure?.message(String(err.message).startsWith("404") ? "模型尚未创建，发送第一条设计要求后会自动生成。" : `模型结构读取失败：${err.message}`);
+    }
     // "Model does not exist yet" is the normal state before the first message,
     // not a failure — reporting it as one trains people to ignore errors.
     const missing = String(err.message).startsWith("404");
@@ -1534,7 +1560,10 @@ function wire() {
     axes: $("viewAxes"),
     motionControls: { root: $("motionControls"), input: $("crankAngle"), output: $("crankAngleValue"), play: $("animationPlay"), reset: $("animationReset"), speed: $("animationSpeed"), loop: $("animationLoop"), label: $("motionLabel"), note: $("motionNote") },
     onChange: ({ view }) => selectView(view),
-    onSelectionChange: entity => referenceUI().selectGeometry(entity, meshViewer.artifactId),
+    onSelectionChange: entity => {
+      if (entity) structure?.selectBody(entity.body_id, meshViewer.artifactId);
+      return referenceUI().selectGeometry(entity, meshViewer.artifactId);
+    },
     onError: () => loadView(false),
   });
   setViewMode(meshViewer.available, meshViewer.available
@@ -1542,6 +1571,41 @@ function wire() {
   $("pickKind").addEventListener("change", () => { meshViewer.pickMode = $("pickKind").value || null; });
   $("fitView").addEventListener("click", () => meshViewer.fit());
 
+  structure = new StructureController({
+    tree: $("structureTree"), detail: $("structureDetail"), search: $("structureSearch"),
+    meta: $("structureMeta"), count: $("structureCount"), expand: $("expandStructure"), collapse: $("collapseStructure"),
+  }, {
+    beginReferences: () => referenceUI().beginTree(),
+    referenceButton: (node, artifactId) => artifactId && referenceUI().catalog?.artifact_id === artifactId
+      ? referenceUI().button(node.bodyId, node.kind, node.id) : null,
+    onSelect: (node, artifactId) => {
+      if (!meshViewer?.hasMesh) return;
+      const mapped = node && artifactId === meshViewer.artifactId &&
+        meshViewer.pickMapping?.entities.some(entity => entity.body_id === node.bodyId);
+      meshViewer.selectedEntity = mapped ? { body_id: node.bodyId, entity_kind: "body" } : null;
+      meshViewer.schedule();
+    },
+  });
+  const panelTabs = [$("structureTab"), $("checksTab")];
+  const selectPanel = index => {
+    for (const [i, tab] of panelTabs.entries()) {
+      tab.setAttribute("aria-selected", String(i === index));
+      tab.tabIndex = i === index ? 0 : -1;
+    }
+    $("structurePanel").hidden = index !== 0;
+    $("inspector").hidden = index !== 1;
+  };
+  for (const [index, tab] of panelTabs.entries()) {
+    tab.addEventListener("click", () => selectPanel(index));
+    tab.addEventListener("keydown", event => {
+      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+      event.preventDefault();
+      const target = event.key === "Home" ? 0 : event.key === "End" ? 1 : 1 - index;
+      selectPanel(target); panelTabs[target].focus();
+    });
+  }
+
+  bindWorkspace();
   bindComposer();
 
   $("viewTabs").addEventListener("click", (e) => {
@@ -1576,6 +1640,7 @@ function wire() {
 
   // ⌘/Ctrl+K for a new session, the shortcut people already have in their fingers.
   document.addEventListener("keydown", (e) => {
+    if (e.defaultPrevented) return;
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
       e.preventDefault();
       $("newSessionBtn").click();
@@ -1791,6 +1856,7 @@ function syncUrl() {
 /** Load one session: transcript, then everything derived from its model. */
 async function switchSession(threadId, { force = false } = {}) {
   if (!threadId) return;
+  if (compactMedia?.matches) toggleSidebar(true, { persist: false });
   if (threadId === state.threadId && !force) return;
 
   // A turn may be mid-flight. Its frames would otherwise keep arriving and
@@ -1816,6 +1882,8 @@ async function switchSession(threadId, { force = false } = {}) {
   // Bump first: in-flight loaders from the previous session must not write.
   state.sessionEpoch += 1;
   inspectorGeneration += 1;
+  sourceIr = null;
+  clearDisplayedStructure();
   referenceUI().reset();
   referenceUI().setBusy(false);
   cancelViewRequest();
@@ -1891,6 +1959,7 @@ async function newSession({ announce = true } = {}) {
   await loadSessions();
   await switchSession(created.thread_id, { force: true });
   if (announce) pushNotice("info", "已新建会话。直接描述你要的零件即可。");
+  workspace?.select("chat");
   $("input").focus();
   return created;
 }
@@ -1928,18 +1997,66 @@ function bindComposer() {
   }
 }
 
-function toggleSidebar(force) {
+function toggleSidebar(force, { persist = !compactMedia?.matches } = {}) {
   state.sidebarHidden = force === undefined ? !state.sidebarHidden : force;
   $("layout").classList.toggle("no-sidebar", state.sidebarHidden);
   $("sidebarToggle").setAttribute("aria-expanded", String(!state.sidebarHidden));
-  try { localStorage.setItem("tcad.sidebarHidden", state.sidebarHidden ? "1" : "0"); } catch { /* private mode */ }
+  if (compactMedia?.matches) {
+    for (const id of ["chatPane", "modelPane", "inspectPane"]) $(id).inert = !state.sidebarHidden;
+    $("sessionPane").setAttribute("aria-modal", String(!state.sidebarHidden));
+    if (!state.sidebarHidden && force === undefined) $("newSessionBtn").focus();
+  }
+  if (persist) {
+    try { localStorage.setItem("tcad.sidebarHidden", state.sidebarHidden ? "1" : "0"); } catch { /* private mode */ }
+  }
+}
+
+function bindWorkspace() {
+  compactMedia = window.matchMedia("(max-width: 980px)");
+  workspace = new WorkspaceController({
+    layout: $("layout"), media: compactMedia,
+    tabs: { chat: $("workspaceChat"), model: $("workspaceModel"), inspect: $("workspaceInspect") },
+    panels: { chat: $("chatPane"), model: $("modelPane"), inspect: $("inspectPane") },
+    onSelect: (name, compact) => { if (compact) toggleSidebar(true, { persist: false }); },
+    onModeChange: compact => {
+      const pane = $("sessionPane");
+      if (compact) {
+        pane.setAttribute("role", "dialog"); pane.setAttribute("aria-label", "设计项目");
+        $("sidebarToggle").setAttribute("aria-haspopup", "dialog");
+        toggleSidebar(true, { persist: false });
+      } else {
+        pane.removeAttribute("role"); pane.removeAttribute("aria-modal"); pane.removeAttribute("aria-label");
+        $("sidebarToggle").removeAttribute("aria-haspopup");
+        for (const id of ["chatPane", "modelPane", "inspectPane"]) $(id).inert = false;
+        let hidden = false;
+        try { hidden = localStorage.getItem("tcad.sidebarHidden") === "1"; } catch { /* private mode */ }
+        toggleSidebar(hidden, { persist: false });
+      }
+    },
+  });
+  const close = () => { toggleSidebar(true, { persist: false }); $("sidebarToggle").focus(); };
+  $("sessionBackdrop").addEventListener("click", close);
+  $("closeSessions").addEventListener("click", close);
+  $("showModelFromStructure").addEventListener("click", () => workspace.select("model"));
+  $("sessionPane").addEventListener("keydown", event => {
+    if (!compactMedia.matches || event.key !== "Tab") return;
+    const buttons = Array.from($("sessionPane").querySelectorAll("button"))
+      .filter(button => !button.disabled && button.getClientRects().length);
+    if (event.shiftKey && document.activeElement === buttons[0]) {
+      event.preventDefault(); buttons.at(-1)?.focus();
+    } else if (!event.shiftKey && document.activeElement === buttons.at(-1)) {
+      event.preventDefault(); buttons[0]?.focus();
+    }
+  });
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape" && compactMedia.matches && !state.sidebarHidden && $("settingsModal").hidden) {
+      event.preventDefault(); close();
+    }
+  });
 }
 
 async function boot() {
   wire();
-  // Restore the collapse state before the first paint of the list, so the
-  // sidebar does not flash open for people who keep it closed.
-  try { toggleSidebar(localStorage.getItem("tcad.sidebarHidden") === "1"); } catch { /* private mode */ }
   setStatus("", "连接中…");
   try {
     const health = await api("/health");

@@ -414,27 +414,31 @@ class MeasuredHole(BaseModel):
 
 
 class FaceInfo(BaseModel):
-    """One planar face of the built shape, with the name a sketch attaches to.
+    """One planar face, numbered locally on its owning feature.
 
     This exists because the tool description tells the model to attach a sketch to
     a face by name ("look the face number up with ir_digest — do not guess it")
     while ``ir_digest`` listed only a *count*. The model had no way to learn that
     ``Face6`` is the top one, so the instruction was unfollowable.
 
-    Measured off the BRep, like the holes: the name is FreeCAD's ``Face<N>`` index
+    Measured off the feature BRep: the name is FreeCAD's ``Face<N>`` index
     (1-based, matching ``shape.Faces[N-1]``), and ``normal``/``center``/``area``
     are what let a reader pick the face by *intent* ("the top face") instead of by
-    a number that shifts when the model changes.
+    a number that shifts when the model changes. Compound indices cannot be
+    applied to a feature; older digests without an owner remain readable but
+    cannot identify a reliable attachment target.
     """
 
     name: str
+    feature_id: str | None = None
+    body_id: str | None = None
     area: float = 0.0
     normal: list[float] = Field(default_factory=list)
     center: list[float] = Field(default_factory=list)
 
 
 class EdgeInfo(BaseModel):
-    """One edge of the built shape, with the name an edge-based feature uses.
+    """One edge, numbered locally on its owning feature.
 
     Same reason as :class:`FaceInfo`: ``fillet``/``chamfer`` select edges by name
     (``Edge<N>``), and a count of edges is not something a model can act on.
@@ -443,10 +447,19 @@ class EdgeInfo(BaseModel):
     """
 
     name: str
+    feature_id: str | None = None
+    body_id: str | None = None
     kind: str = ""                                  # "Line", "Circle", …
     length: float = 0.0
     mid: list[float] = Field(default_factory=list)  # midpoint
     direction: list[float] = Field(default_factory=list)  # tangent at mid (lines)
+
+
+class FeatureGeometry(BaseModel):
+    """Sub-elements measured in the owning feature's local numbering."""
+
+    faces: list[FaceInfo] = Field(default_factory=list)
+    edges: list[EdgeInfo] = Field(default_factory=list)
 
 
 class GeometryDigest(BaseModel):
@@ -468,6 +481,7 @@ class GeometryDigest(BaseModel):
     faces: list[FaceInfo] = Field(default_factory=list)
     #: Edges, so a model can name one for ``base_feature`` + ``sub_elements``.
     edges: list[EdgeInfo] = Field(default_factory=list)
+    feature_geometry: dict[str, FeatureGeometry] = Field(default_factory=dict)
     measurements_available: bool = True  # False -> digest is structure-only
     body_solids: dict[str, int] = Field(default_factory=dict)
     text: str = ""  # rendered, <= ~2000 tokens

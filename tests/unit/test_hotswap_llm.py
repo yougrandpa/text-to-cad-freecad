@@ -106,6 +106,12 @@ def test_descriptor_reports_the_resolved_values():
     d = holder.descriptor
     assert d["base_url"] == "https://api.deepseek.com/v1"
     assert d["model"] == "deepseek-v4-flash"
+    assert d["supports_vision"] is False
+
+
+def test_descriptor_reports_provider_vision_support():
+    holder = HotSwapLlm(LlmSettings(provider="openai"), client=RecordingLlm("a"))
+    assert holder.descriptor["supports_vision"] is True
 
 
 @pytest.mark.asyncio

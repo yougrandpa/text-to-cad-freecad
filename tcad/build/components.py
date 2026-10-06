@@ -16,6 +16,29 @@ from tcad.build.pool import check_cancelled, worker_owner
 from tcad.inspect.artifact import ArtifactReader
 
 
+class ComponentBuildFailed(RuntimeError):
+    """Preserve the worker's actionable error instead of erasing its feature ID."""
+
+    def __init__(self, body_id, error):
+        self.error = dict(error or {})
+        self.error.setdefault("kind", "compile")
+        self.error["message"] = f"body {body_id}: " + self.error.get("message", "component build failed")
+        super().__init__(self.error["message"])
+
+
+def requires_joint_build(ir):
+    """A body attached to another body's face cannot compile in isolation."""
+    owners = {node["id"]: body["id"] for body in ir["bodies"]
+              for node in [*body.get("sketches", []), *body.get("features", [])]}
+    for body in ir["bodies"]:
+        for node in [*body.get("sketches", []), *body.get("features", [])]:
+            references = [*node.get("refs", []), node.get("profile_sketch"),
+                          node.get("base_feature"), (node.get("plane") or {}).get("feature_id")]
+            if any(ref in owners and owners[ref] != body["id"] for ref in references):
+                return True
+    return False
+
+
 def reference_components(data_dir, ir):
     reader = ArtifactReader(data_dir)
     components = {}
@@ -43,8 +66,10 @@ def compile_components(runtime, ir, backend, directory, references):
     nodes = []
     components = dict(references)
     inline = [b for b in ir["bodies"] if not b.get("part_ref")]
-    if len(ir["bodies"]) < 2:
-        inline = []  # Single parts remain one sequential build.
+    if len(ir["bodies"]) < 2 or requires_joint_build(ir):
+        # Cross-body attachments need their supporting geometry in the same
+        # document. Retain parallel compilation for genuinely independent parts.
+        inline = []
 
     def compile_body(body):
         check_cancelled()
@@ -59,10 +84,19 @@ def compile_components(runtime, ir, backend, directory, references):
                 response = runtime.worker.request("build_artifacts", {
                     "ir": part_ir, "out_dir": str(target), "exports": ["fcstd"]}, timeout_s=240)
                 if not response.get("ok"):
-                    raise ValueError(response.get("error", {}).get("message", "component build failed"))
+                    raise ComponentBuildFailed(body["id"], response.get("error"))
                 check_cancelled()
                 from tcad.render.scene import SceneModel
-                scene = SceneModel.from_build(response["result"]["scene"], part_ir)
+                try:
+                    scene = SceneModel.from_build(response["result"]["scene"], part_ir)
+                except ValueError as exc:
+                    issues = exc.errors() if hasattr(exc, "errors") else []
+                    message = "; ".join(issue["msg"] for issue in issues) if issues else str(exc)
+                    raise ComponentBuildFailed(body["id"], {
+                        "kind": "runtime", "message": "preview scene validation failed: " + message,
+                        "hint": "The CAD body compiled, but its preview could not be published. "
+                                "For mesh allocation limits, simplify tightly curved or near-coincident profile edges before retrying.",
+                    }) from exc
                 (target / "scene.json").write_text(scene.model_dump_json(), encoding="utf-8")
                 runtime.cache.store(digest, target, part_ir["model_id"])
         document = target / (part_ir["model_id"] + ".FCStd")

@@ -355,8 +355,8 @@ def _merge_feature(f: FeatureSpec, payload: dict) -> None:
                 raise _reject(kind=ToolErrorKind.SCHEMA,
                               message=f"params must be an object, got {type(v).__name__}")
             f.params = {**f.params, **v}
-        elif k == "sub_elements":
-            f.sub_elements = _require_str_list(v, field="sub_elements")
+        elif k in ("sub_elements", "sections"):
+            setattr(f, k, _require_str_list(v, field=k))
         elif k == "placement":
             # Same reason as ``plane`` on a sketch: the payload arrives as a raw
             # dict and the field is a typed model. ``None`` clears it, sending

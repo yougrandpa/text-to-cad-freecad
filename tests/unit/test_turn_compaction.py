@@ -336,6 +336,35 @@ def test_trace_rejects_user_context_instead_of_accidentally_dropping_it():
         _compact([], [{"role": "user", "content": "important"}])
 
 
+def _render_feedback(payload="pixels"):
+    return {"role": "user", "content": [
+        {"type": "text", "text": "[Tool render images] geo_view, artifact_id=v4"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + payload, "detail": "high"}},
+    ]}
+
+
+def test_image_estimate_counts_vision_budget_instead_of_base64_characters():
+    short = estimate_request_tokens([_render_feedback("x")], [])
+    huge = estimate_request_tokens([_render_feedback("x" * 2_000_000)], [])
+    assert huge == short
+    assert 8192 < short < 8500
+
+
+def test_compaction_keeps_or_drops_render_pixels_with_their_complete_tool_round():
+    first = [*_batch(0), _render_feedback("first")]
+    last = [*_batch(1), _render_feedback("last")]
+    result = _compact(_prefix(), [*first, *last], budget=10_000)
+    assert result.dropped_batches == 1
+    assert result.messages[-len(last):] == last
+    assert _render_feedback("first") not in result.messages
+    assert result.estimated_tokens == estimate_request_tokens(result.messages, [])
+
+
+def test_orphan_render_feedback_is_not_a_valid_tool_round():
+    with pytest.raises(ToolProtocolError):
+        _compact([], [_render_feedback()], budget=10_000)
+
+
 def test_prefix_can_contain_completed_tool_history_but_cannot_split_a_batch():
     history = _batch(0)
     prefix = [*_prefix(), *history, {"role": "user", "content": "now change it"}]

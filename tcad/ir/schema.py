@@ -216,6 +216,8 @@ FEATURE_TYPE_MAP: dict[str, str] = {
     "pocket": "PartDesign::Pocket",
     "revolution": "PartDesign::Revolution",
     "groove": "PartDesign::Groove",
+    "additive_loft": "PartDesign::AdditiveLoft",
+    "subtractive_loft": "PartDesign::SubtractiveLoft",
     "fillet": "PartDesign::Fillet",
     "chamfer": "PartDesign::Chamfer",
     "draft": "PartDesign::Draft",
@@ -238,7 +240,7 @@ FEATURE_TYPE_MAP: dict[str, str] = {
 }
 
 FeatureOp = Literal[
-    "pad", "pocket", "revolution", "groove", "fillet", "chamfer", "draft",
+    "pad", "pocket", "revolution", "groove", "additive_loft", "subtractive_loft", "fillet", "chamfer", "draft",
     "thickness", "hole", "mirrored", "linear_pattern", "circular_pattern",
     "polar_pattern", "multi_transform", "datum_plane",
     "additive_box", "additive_cylinder", "additive_sphere", "additive_cone",
@@ -251,6 +253,7 @@ class FeatureSpec(BaseModel):
     name: str  # stable, human readable, e.g. "mounting_hole_1"
     op: FeatureOp
     profile_sketch: str | None = None  # -> SketchSpec.id
+    sections: list[str] = Field(default_factory=list)  # ordered additional loft SketchSpec IDs
     params: dict[str, Any] = Field(default_factory=dict)
     refs: list[str] = Field(default_factory=list)  # -> FeatureSpec.id, forms a DAG
     suppress: bool = False
@@ -278,7 +281,7 @@ class FeatureSpec(BaseModel):
     # One mental model for "a plane reference in this IR", two places that need it.
     plane: PlaneRef | None = None
 
-    # ── world placement (primitives only) ───────────────────────────────
+    # ── world placement (primitives and unattached datum planes) ────────
     #
     # Everything else takes its position from a sketch or a reference. The
     # primitives carry their own size and nothing else, so they need somewhere

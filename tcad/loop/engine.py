@@ -257,6 +257,12 @@ class LoopEngine:
                 "cad_wheel_support builds a connected rear A-frame and matching shaft; prefer it to manual disconnected braces. "
                 "Use assembly_motion for a horizontal rotor with gravity-hanging cabins, then ir_commit, "
                 "assembly_simulate and assembly_export. Use ir_help before unfamiliar low-level ir_patch fields. "
+                "The initial tool table is compact, not a limit to primitives: ir_help(topic=sketch) exposes "
+                "native ellipse/BSpline curves, and ir_help(topic=feature, feature_op=fillet) exposes edge rounding. "
+                "For continuous product shells use native additive_loft with multiple closed sections on placed "
+                "datum_plane features; scoped feature help explains the typed sections and world-coordinate placement. "
+                "Successful scoped help unlocks matching ir_patch operations in the next request. Use native "
+                "curves and rounded features for curved product silhouettes instead of stacking boxes. "
                 "Record genuine user-stated numeric geometry requirements via ir_requirements; never encode "
                 "qualitative goals as invented constraint kinds (note, motion, dimension). If no numeric "
                 "dimensions were stated, skip requirements tools and keep goals in the final review. Unknown dimensions "
@@ -715,6 +721,11 @@ class LoopEngine:
         self._idle_steps = 0
 
         ctx = self._make_tool_context(turn)
+        from tcad.context.tool_images import tool_image_feedback
+
+        render_messages: list[dict] = []
+        descriptor = getattr(self.services.llm, "descriptor", {})
+        supports_vision = isinstance(descriptor, dict) and descriptor.get("supports_vision") is True
         halt_after_this = False
         for idx, tc in enumerate(reply.tool_calls):
             spec = self.registry.get(tc.name)
@@ -866,12 +877,18 @@ class LoopEngine:
                     "turn_id": turn.turn_id,
                 },
             )
+            render_message, render_note = tool_image_feedback(
+                outcome.result, name=tc.name, call_id=tc.id,
+                data_dir=self.config.data_dir, supports_vision=supports_vision,
+            )
+            if render_message is not None:
+                render_messages.append(render_message)
             messages.append(
                 {
                     "role": "tool",
                     "tool_call_id": tc.id,
                     "name": tc.name,
-                    "content": _result_text(outcome.result),
+                    "content": _result_text(outcome.result) + render_note,
                 }
             )
 
@@ -1001,6 +1018,9 @@ class LoopEngine:
                             turn.error = "too many consecutive compile failures"
                             return StepYield()
 
+        # User image blocks must follow the entire tool-result batch; placing
+        # them between results would violate the provider's tool-call protocol.
+        messages.extend(render_messages)
         self.budget.check_step_timeout(step_start)
         turn.steps = self.budget.steps
         return StepYield(gate_report=gate_report)

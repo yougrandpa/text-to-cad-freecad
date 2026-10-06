@@ -110,3 +110,30 @@ test("geometry chips validate publication, remain read-only and clear their high
   assert.equal(c.selectGeometry({body_id:"body",entity_kind:"body"},targets.artifact_id),true);
   assert.equal(c.inspectionOnly(),false);
 });
+
+test("app safely clears empty references and retains a feature selection when referencing it", async () => {
+  const source = (await readFile(new URL("../../tcad/server/ui/app.js", import.meta.url), "utf8"))
+    .replace(/^import .*;$/gm, "").replace(/\nboot\(\);\s*$/, "");
+  const viewer = { schedule() {}, pickMapping: { entities: [{ body_id: "body" }] } };
+  const selected = [];
+  const context = vm.createContext({ ReferenceController, console,
+    document: { getElementById: () => new Node(), createElement: () => new Node() } });
+  vm.runInContext(source + `
+    globalThis.testing = {referenceUI, stub(viewer, selected) {
+      meshViewer=viewer; structure={selectReference: ref => selected.push(ref)};
+    }};`, context);
+  const h = context.testing; h.stub(viewer, selected);
+  const c = h.referenceUI();
+  assert.doesNotThrow(() => c.reset());
+  assert.equal(viewer.selectedEntity, null);
+  const targets = catalog();
+  targets.targets.push({ ref: { ...targets.targets[0].ref, entity_kind: "feature", sketch_id: null, feature_id: "pad" },
+    label: "拉伸", editable: true });
+  viewer.artifactId = targets.artifact_id;
+  c.update(targets, "plate", 0);
+  c.button("body", "feature", "pad").click();
+  assert.equal(viewer.selectedEntity.body_id, "body");
+  assert.equal(viewer.selectedEntity.entity_kind, "body");
+  assert.equal(selected.at(-1).feature_id, "pad");
+  c.clear(); assert.equal(viewer.selectedEntity, null);
+});

@@ -618,6 +618,19 @@ def test_a_non_zero_offset_is_refused_by_the_ir_layer():
     assert "sketch_offset_unsupported" not in {i.code for i in validate_ir(zero)}
 
 
+@pytest.mark.parametrize("plane, perpendicular", [("XY", "z"), ("XZ", "y"), ("YZ", "x")])
+def test_world_points_off_the_attached_plane_are_refused_instead_of_projected(worker, tmp_path, plane, perpendicular):
+    ir = rect_ir(plane, 40.0, 20.0, 5.0)
+    for geometry in ir["bodies"][0]["sketches"][0]["geometry"]:
+        for point in geometry.get("points", []):
+            point[perpendicular] = 24.0
+    kind, feature_id, message = compile_error(worker, ir, tmp_path)
+    assert kind == "compile"
+    assert feature_id == ir["bodies"][0]["sketches"][0]["id"]
+    assert "off the attached sketch plane" in message
+    assert "ir_digest" in message and "planar face" in message
+
+
 # `offset` does not position a profile, and it deforms one whose geometry is
 # bound to the sketch origin — which is exactly the recipe the ir_patch
 # description used to recommend, so this was the *advised* path, not an exotic

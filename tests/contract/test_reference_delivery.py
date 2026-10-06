@@ -130,7 +130,11 @@ def test_browser_reference_send_clear_and_reference_again(published):
         page.on("pageerror", lambda exc: errors.append(str(exc)))
         try:
             page.goto(f"{base}/ui/?thread={THREAD}")
-            button = page.locator("li", has_text="通孔圆").locator(".reference-button")
+            playwright.expect(page.locator("#expandStructure")).to_be_enabled(timeout=30_000)
+            page.locator("#expandStructure").click()
+            circle = page.locator("#structureTree .structure-select", has_text="通孔圆")
+            circle.click()
+            button = page.locator("#structureDetail .reference-button")
             playwright.expect(button).to_be_enabled(timeout=30_000)
             button.click()
             chip = page.locator("#referenceChips .reference-chip")
@@ -143,9 +147,14 @@ def test_browser_reference_send_clear_and_reference_again(published):
             assert sent["operation_id"] != sent["request_id"]
             playwright.expect(page.locator("#sendBtn")).to_be_enabled(timeout=60_000)
             playwright.expect(page.locator("#referenceChips")).to_be_hidden()
+            current, manifest = assert_eight_mm_publication(services, reader)
+            playwright.expect(page.locator("#structureMeta")).to_contain_text(f"画布构建 v{current.version}")
+            # A new artifact clears the detail selection. Re-select its sketch
+            # before referencing it, as the current structure-tree flow requires.
+            page.locator("#expandStructure").click()
+            circle.click()
             playwright.expect(button).to_be_enabled()
             button.click()
-            current, manifest = assert_eight_mm_publication(services, reader)
             playwright.expect(chip).to_contain_text(f"v{current.version}")
             assert current.version > 0 and model.calls == 2 and not errors, errors
             # Save a reviewable screenshot of the actual UI and final artifact.

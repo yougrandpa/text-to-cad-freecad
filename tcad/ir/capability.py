@@ -70,6 +70,10 @@ _CAPABILITIES: dict[str, OpCapability] = {
         "tests/contract/test_groove.py (a revolved cut removes its analytic ring, "
         "half an Angle removes half of it, a cut that misses the material errors, "
         "STEP read-back, FCStd reopen + Angle edit)"),
+    "additive_loft": OpCapability(VERIFIED,
+        "tests/contract/test_loft.py — native multi-section loft, analytic volume, STEP read-back and live datum-plane edit"),
+    "subtractive_loft": OpCapability(VERIFIED,
+        "tests/contract/test_loft.py — a native tapered bore removes its analytic volume and rejects missing sections"),
     "additive_cylinder": OpCapability(
         VERIFIED,
         "tests/contract/test_primitive_placement.py — r6 h20 at (10,10,0) merges "
@@ -157,8 +161,7 @@ _CAPABILITIES: dict[str, OpCapability] = {
         ""),
     "multi_transform": OpCapability(EXPERIMENTAL, "no real-kernel test"),
     "datum_plane": OpCapability(
-        EXPERIMENTAL, "no real-kernel test",
-        "created and usable as a sketch attachment target in unit tests only"),
+        VERIFIED, "tests/contract/test_loft.py — placed and rotated native datum planes position world-coordinate profiles and remain live in FCStd"),
 }
 
 

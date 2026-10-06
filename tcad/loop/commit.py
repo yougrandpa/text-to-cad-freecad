@@ -67,7 +67,7 @@ def _worker_error(payload: dict | None) -> ToolResult:
         _ekind(e.get("kind")),
         e.get("message", "worker returned an error"),
         feature_id=e.get("feature_id"),
-        hint="Repair the named feature and re-patch, then re-commit.",
+        hint=e.get("hint") or "Repair the named feature and re-patch, then re-commit.",
     )
 
 
@@ -356,10 +356,14 @@ async def _build_and_grade(
     runtime = getattr(services, "build_runtime", None)
     pipeline_notes = []
     if runtime is not None:
+        from tcad.build.components import ComponentBuildFailed
+
         try:
             response = await _off_loop(services, runtime.geometry,
                 ir.model_dump(mode="json"), artifact_dir,
                 list(services.config.storage.artifact_exports), label="build_artifacts")
+        except ComponentBuildFailed as exc:
+            return _worker_error(exc.error), None
         except Exception as exc:
             return _err(ToolErrorKind.RUNTIME, f"build runtime failed: {exc}"), None
         if not response.get("ok"):

@@ -43,6 +43,8 @@ FEATURE_TYPE_MAP = {
     "pocket": "PartDesign::Pocket",
     "revolution": "PartDesign::Revolution",
     "groove": "PartDesign::Groove",
+    "additive_loft": "PartDesign::AdditiveLoft",
+    "subtractive_loft": "PartDesign::SubtractiveLoft",
     "fillet": "PartDesign::Fillet",
     "chamfer": "PartDesign::Chamfer",
     "draft": "PartDesign::Draft",
@@ -558,10 +560,11 @@ def _node_deps(kind: str, node: dict) -> set:
     deps = set(node.get("refs") or [])
     if node.get("profile_sketch"):
         deps.add(node["profile_sketch"])
+    deps.update(node.get("sections") or [])
     return deps
 
 
-def _dependency_order(b: dict) -> tuple[list[tuple[str, dict]], list[dict]]:
+def _dependency_order(b: dict, available=()) -> tuple[list[tuple[str, dict]], list[dict]]:
     """Order one body's sketches and features so every prerequisite is built first.
 
     The IR says "features: list order = build order", with sketches as implicit
@@ -582,7 +585,7 @@ def _dependency_order(b: dict) -> tuple[list[tuple[str, dict]], list[dict]]:
     )
     known = {node.get("id") for _kind, node in nodes}
     pending = list(nodes)
-    built: set = set()
+    built: set = set(available)
     order: list[tuple[str, dict]] = []
     errors: list[dict] = []
 
@@ -599,8 +602,8 @@ def _dependency_order(b: dict) -> tuple[list[tuple[str, dict]], list[dict]]:
                 "message": (
                     f"body {body_id!r} has a circular or unresolvable dependency "
                     f"between {blocked} ({len(known)} node(s) declared) — every "
-                    f"refs/profile_sketch/plane target must name something in the "
-                    f"same body."
+                    f"refs/profile_sketch/plane target must name a node in this "
+                    f"body or an already built supporting body."
                 ),
             })
             # Emit them anyway so their own problems (if any) are reported too.
@@ -739,7 +742,7 @@ def _constraint_args(
     )
 
 
-def _sketch_point(sk, p: dict) -> "App.Vector":
+def _sketch_point(sk, p: dict, *, validate_plane: bool = False) -> "App.Vector":
     """Map one world-space IR point into the sketch's own (u, v) frame.
 
     **Sketcher takes geometry in the sketch's LOCAL 2-D frame.** The first two
@@ -765,6 +768,17 @@ def _sketch_point(sk, p: dict) -> "App.Vector":
         local = sk.Placement.inverse().multVec(world)
     except Exception:  # noqa: BLE001 — an unavailable placement must not abort the build
         return world
+    if validate_plane and abs(local.z) > 1e-7:
+        raise ValueError(
+            f"world point ({world.x:g}, {world.y:g}, {world.z:g}) is "
+            f"{abs(local.z):g} mm off the attached sketch plane. Sketcher would "
+            "silently project it onto that plane, changing the requested position. "
+            "Origin planes pass through world zero (XY: z=0; XZ: y=0; YZ: x=0). "
+            "For an elevated profile, commit the supporting solid and use ir_digest "
+            "to select an actual planar face with plane={kind:face, "
+            "feature_id:existing_feature, sub:FaceN}; write points on that face. "
+            "Do not use sketch.offset to raise an origin-plane profile."
+        )
     return App.Vector(local.x, local.y, 0.0)
 
 
@@ -773,12 +787,20 @@ def _add_geometry(sk, g: dict):
     kind = g.get("kind")
     pts = g.get("points") or []
     construction = bool(g.get("construction", False))
-    if kind in {"ellipse", "bspline"}:
-        inverse = sk.Placement.inverse()
-        for p in pts:
-            world = App.Vector(float(p["x"]), float(p["y"]), float(p["z"]))
-            if abs(inverse.multVec(world).z) > 1e-7:
-                raise ValueError(f"{kind} points must lie on the sketch plane")
+    support = getattr(sk, "AttachmentSupport", None)
+    def face_reference(link):
+        # AttachmentSupport reads back as a LinkSubList in some FreeCAD builds,
+        # and a LinkSub tuple in others; inspect the actual sub-element strings.
+        if isinstance(link, str):
+            return link.startswith("Face")
+        return isinstance(link, (tuple, list)) and any(face_reference(part) for part in link)
+    on_face = face_reference(support)
+    # Preserve normal projection for legacy simple profiles attached to faces.
+    # Origin/datum-plane points and native curves must actually lie on their
+    # plane; changing a point's third coordinate cannot elevate an XY profile.
+    if not on_face or kind in {"ellipse", "bspline"}:
+        for point in pts:
+            _sketch_point(sk, point, validate_plane=True)
     if kind == "line":
         p0 = _sketch_point(sk, pts[0])
         p1 = _sketch_point(sk, pts[1])
@@ -871,7 +893,18 @@ def _add_sketch(doc, body, s: dict, ref_objects: dict) -> dict:
                         f"Available faces: {_face_names(tgt)}. Call ir_digest to see "
                         "each face's normal and centre and pick by intent."
                     ) from exc
-            sk.AttachmentSupport = (tgt, [sub])
+            if tgt not in body.Group:
+                # ProfileBased treats a supported Part::Feature as an implicit
+                # additive base when this Body has no prior solid. A foreign
+                # face is only a positioning dependency: import its attachment
+                # frame through a non-solid datum, never its complete solid.
+                support = doc.addObject("App::Plane", "_tcad_support_" + sk.Name)
+                support.addExtension("Part::AttachExtensionPython")
+                support.AttachmentSupport = (tgt, [sub])
+                support.MapMode = "FlatFace"
+                sk.AttachmentSupport = (support, [""])
+            else:
+                sk.AttachmentSupport = (tgt, [sub])
         else:
             raise ValueError(f"unknown plane kind: {kind!r}")
         sk.MapMode = s.get("map_mode") or "FlatFace"
@@ -1160,6 +1193,16 @@ def _apply_feature(doc, body, f: dict, ref_objects: dict) -> dict:
             })
 
     # pattern / mirror -> Originals (list of referenced feature objects)
+    if op in {"additive_loft", "subtractive_loft"}:
+        section_ids = f.get("sections") or []
+        try:
+            if not profile_id or not section_ids:
+                raise ValueError("loft needs profile_sketch and at least one additional sections sketch")
+            obj.Sections = [ref_objects[sid] for sid in section_ids]
+        except Exception as exc:  # noqa: BLE001
+            state["errors"].append({"kind": "compile", "feature_id": f.get("id"),
+                                    "message": f"set loft Sections failed: {exc}"})
+
     if op in _PATTERN_OPS and "Originals" in obj.PropertiesList:
         originals = [ref_objects[r] for r in (f.get("refs") or []) if r in ref_objects]
         if not originals:
@@ -1287,7 +1330,7 @@ def _build(ir: dict, out_dir: str, components=None):
             body = doc.addObject("PartDesign::Body", _obj_name(b.get("id"), b.get("name")))
             body.Label = b.get("name") or b.get("id")
 
-            order, order_errors = _dependency_order(b)
+            order, order_errors = _dependency_order(b, available=ref_objects)
             errors.extend(order_errors)
             for kind, node in order:
                 if kind == "sketch":
@@ -1377,6 +1420,7 @@ def _build(ir: dict, out_dir: str, components=None):
         "body_results": body_results,
         "sketches": sketches,
         "feature_chain": feature_chain,
+        "ref_objects": ref_objects,
         "errors": errors,
     }
 
@@ -1414,7 +1458,10 @@ def _profile_hint(sk, s: dict) -> str:
         if g.get("construction"):
             continue
         for p in g.get("points") or []:
-            v = _sketch_point(sk, p)
+            # Diagnostics describe the projected footprint even when the input
+            # was refused for being off-plane. They must not throw a second
+            # exception that hides the original, feature-scoped compile error.
+            v = _sketch_point(sk, p, validate_plane=False)
             pts.append((round(v.x, 9), round(v.y, 9)))
     unique = sorted(set(pts))
     framing = (
