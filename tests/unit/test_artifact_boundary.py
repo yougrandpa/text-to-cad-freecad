@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -187,6 +188,30 @@ async def test_measurement_can_pin_old_build_without_loading_current_ir(tmp_path
                                                 "what": ["volume"]}, ctx)
     assert result.ok, result.error
     assert json.loads(result.content) == {"volume": 10}
+
+
+@pytest.mark.parametrize('native', [True, False])
+def test_fcstd_export_preserves_native_assembly_when_available(tmp_path, native):
+    from tcad.inspect.operations import export_artifact
+    store, staging, manifest, _ = make_artifact(tmp_path)
+    (staging/'part.FCStd').write_bytes(b'editable source parts')
+    if native:
+        (staging/'assembly.FCStd').write_bytes(b'editable source parts + native joints and drivers')
+    store.write_manifest(staging, model_id='part', version=0, attempt_id='a1',
+                         ir_sha256=manifest.ir_sha256, status='verified')
+    manifest = ArtifactSet.model_validate_json((staging/'manifest.json').read_text())
+    root = store.publish('part', 0, staging)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('Export must read the pinned built document only')
+    services = SimpleNamespace(store=SimpleNamespace(current_version=forbidden),
+                               worker=SimpleNamespace(request=forbidden))
+    ctx = ToolContext(model_id='part', thread_id='t', turn_id='turn', data_dir=str(tmp_path))
+    expected = (root/('assembly.FCStd' if native else 'part.FCStd')).read_bytes()
+    for name in ('part', 'download'):
+        exported = export_artifact(services, ctx, {'artifact_id': manifest.artifact_id,
+                                                  'fmt': 'fcstd', 'name': name})
+        assert Path(exported['path']).read_bytes() == expected
+        assert exported['artifact_id'] == manifest.artifact_id
 
 
 async def test_unbuilt_version_does_not_borrow_previous_measurements(tmp_path):

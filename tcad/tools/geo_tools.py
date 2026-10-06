@@ -264,8 +264,12 @@ def build_geo_tools(services: "Any") -> dict[str, ToolSpec]:
         ),
         "assembly_export": ToolSpec(
             name="assembly_export", tier=ToolTier.READ,
-            description="Export saved artifact animation as GIF, MP4, AVI or WebM; commit this version first or pin artifact_id. Fixed camera bounds avoid frame-to-frame zoom. stride controls frame sampling; GIF needs Pillow, video needs optional animation/PyAV dependency and the matching encoder. This is a visual export, not physical validation.",
+            description="Export saved artifact animation as GIF, MP4, AVI or WebM; commit this version first or pin artifact_id. mode=motion exports solved motion (default); mode=assemble shows separated parts converging to their saved solved pose, mode=explode reverses it. Assembly presentation keeps grounded parts fixed and uses straight eased paths; it does not solve joints or validate assembly-path collisions. duration_s (default 3), frames (default 41) and explode_distance_mm (automatic by model size) apply to assemble/explode. Fixed camera bounds avoid frame-to-frame zoom; stride samples frames and includes the final pose. GIF needs Pillow, video optional PyAV and matching encoder.",
             params_schema={"type":"object", "additionalProperties":False, "properties":{"artifact_id":{"type":"string"},
+                "mode":{"type":"string","enum":["motion","assemble","explode"]},
+                "duration_s":{"type":"number","minimum":0.1,"maximum":60},
+                "frames":{"type":"integer","minimum":2,"maximum":600},
+                "explode_distance_mm":{"type":"number","exclusiveMinimum":0},
                 "format":{"type":"string","enum":["gif","mp4","avi","webm"]},
                 "view":{"type":"string","enum":["iso","front","top","right"]},
                 "width":{"type":"integer","minimum":128,"maximum":1024},
@@ -296,6 +300,8 @@ def build_geo_tools(services: "Any") -> dict[str, ToolSpec]:
             tier=ToolTier.READ,
             description=("Render saved artifact views (iso/front/top/right) at a visual checkpoint. "
                          "Optional artifact_id pins a build; otherwise commit this version first. "
+                         "Create/modify turns require a successful ir_commit in THIS turn to open the checkpoint, "
+                         "even for an already published or pinned artifact. Inspect turns can render saved artifacts directly. "
                          "Optional driver_angle_deg poses bodies using their motion pivot/axis/ratio "
                          "or frame_index selects a saved native animation frame. This previews rigid kinematics, not collision, "
                          "contact or material removal. Default angle 0 preserves the static pose; native frame 0 shows the first solved frame."),
@@ -329,7 +335,7 @@ def build_geo_tools(services: "Any") -> dict[str, ToolSpec]:
         "asset_export": ToolSpec(
             name="asset_export",
             tier=ToolTier.READ,
-            description="Export committed step/stl/brep/fcstd artifacts and return path, size and artifact_id; commit first or pin artifact_id.",
+            description="Export committed step/stl/brep/fcstd artifacts and return path, size and artifact_id; commit first or pin artifact_id. fcstd exports the native assembly document when saved, retaining editable bodies, joints and drivers; otherwise the editable part document.",
             params_schema={
                 "type": "object",
                 "properties": {

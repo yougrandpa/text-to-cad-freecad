@@ -63,6 +63,29 @@ def _feature(out) -> FeatureSpec:
     return out.ir.bodies[0].features[0]
 
 
+def test_invalid_added_ellipse_identifies_batch_operation_and_sketch_without_mutation():
+    ir = _doc()
+    before = ir.model_dump()
+    patch = IrPatch(base_version=1, ops=[
+        IrPatchOp(op='add_body', payload={'id': 'cockpit', 'name': 'cockpit'}, reason='New part'),
+        IrPatchOp(op='add_sketch', payload={
+            'id': 'cockpit_section', 'name': 'cockpit_section', 'body_id': 'cockpit',
+            'plane': {'kind': 'origin_plane', 'plane': 'YZ'},
+            'geometry': [{'id': 'ellipse', 'kind': 'ellipse',
+                          'points': [{'x': 0, 'y': 0, 'z': 0}],
+                          'major_radius': 3, 'minor_radius': 5}],
+        }, reason='Cabin profile'),
+    ])
+    with pytest.raises(PatchError) as failure:
+        apply_patch(ir, patch)
+    error = failure.value.error
+    assert error.kind is ToolErrorKind.SCHEMA
+    assert error.feature_id == 'cockpit_section'
+    assert all(term in error.message for term in ('ops[1]', 'add_sketch', 'cockpit_section',
+                                                  'major_radius >= minor_radius'))
+    assert ir.model_dump() == before
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 1. the silent one: a wrong-typed scalar must be coerced or refused
 # ══════════════════════════════════════════════════════════════════════════

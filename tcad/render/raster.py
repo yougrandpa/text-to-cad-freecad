@@ -60,7 +60,8 @@ def render_views(
 
     out: dict[ViewName, np.ndarray] = {}
     for view in views:
-        buf = _render_one(verts, facets, mesh.bbox, view, width, height, supersample, style)
+        groups = mesh.facet_groups if len(mesh.facet_groups) == len(facets) else None
+        buf = _render_one(verts, facets, mesh.bbox, view, width, height, supersample, style, groups)
         out[view] = buf
 
     if supersample > 1:
@@ -104,7 +105,7 @@ def _mesh_arrays(mesh: Mesh):
     return verts, facets
 
 
-def _render_one(verts, facets, bbox, view, width, height, supersample, style):
+def _render_one(verts, facets, bbox, view, width, height, supersample, style, groups=None):
     W = width * supersample
     H = height * supersample
 
@@ -181,7 +182,7 @@ def _render_one(verts, facets, bbox, view, width, height, supersample, style):
         facet_buf[fj, fi] = i
         depth_buf[fj, fi] = pd[nearer]
 
-    return _compose(facet_buf, depth_buf, grey, style, H, W, fnormal)
+    return _compose(facet_buf, depth_buf, grey, style, H, W, fnormal, groups)
 
 
 def _facet_normals(verts, facets, look):
@@ -198,9 +199,9 @@ def _facet_normals(verts, facets, look):
     return fnormal
 
 
-def _compose(facet_buf, depth_buf, grey, style, H, W, fnormal):
+def _compose(facet_buf, depth_buf, grey, style, H, W, fnormal, groups=None):
     covered = facet_buf >= 0
-    edge = _edge_mask(facet_buf, covered, fnormal)
+    edge = _edge_mask(facet_buf, covered, fnormal, groups)
 
     img = np.tile(_BACKGROUND_RGB, (H, W, 1)).copy()
 
@@ -221,7 +222,7 @@ def _compose(facet_buf, depth_buf, grey, style, H, W, fnormal):
 _CREASE_COS = CONTRACT["crease_cos"]
 
 
-def _edge_mask(facet_buf, covered, fnormal):
+def _edge_mask(facet_buf, covered, fnormal, groups=None):
     """Feature edges + silhouette contour, computed on the buffers.
 
     Two rules, and deliberately only two:
@@ -258,6 +259,14 @@ def _edge_mask(facet_buf, covered, fnormal):
 
     both_r = covered[:, 1:] & covered[:, :-1]
     both_d = covered[1:, :] & covered[:-1, :]
+    if groups is not None:
+        # Curved BRep faces contain skinny tessellation triangles whose chord
+        # normals can differ sharply. They are not physical feature edges.
+        faces = np.asarray(groups)[facet_buf]
+        same_r = (faces[:, 1:] >= 0) & (faces[:, 1:] == faces[:, :-1])
+        same_d = (faces[1:, :] >= 0) & (faces[1:, :] == faces[:-1, :])
+        both_r &= ~same_r
+        both_d &= ~same_d
     crease = np.zeros_like(covered)
     crease[:, 1:] |= both_r & (dot_r[:, 1:] < _CREASE_COS)
     crease[1:, :] |= both_d & (dot_d[1:, :] < _CREASE_COS)

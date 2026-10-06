@@ -132,11 +132,22 @@ class SceneModel(BaseModel):
                 raise ValueError("scene motion does not match the build input")
         return scene
 
+    def mesh_for_render(self) -> Mesh:
+        if self.pick_mapping is None:
+            return self.mesh
+        groups = [-1]*len(self.mesh.facets)
+        for index, entity in enumerate(self.pick_mapping.entities):
+            if entity.entity_kind == 'face':
+                start, count = entity.triangle_start, entity.triangle_count
+                groups[start:start+count] = [index]*count
+        return self.mesh.model_copy(update={'facet_groups': groups})
+
     def posed_mesh(self, *, angle: float = 0, frame: int = 0) -> Mesh:
+        mesh = self.mesh_for_render()
         if not math.isfinite(angle):
             raise ValueError("driver_angle_deg must be finite")
         if self.animation is None and not angle and not frame:
-            return self.mesh
+            return mesh
         if self.animation is not None:
             if angle:
                 raise ValueError("native scenes use frame_index, not driver_angle_deg")
@@ -151,4 +162,4 @@ class SceneModel(BaseModel):
         highs = [max(p[j] for p in vertices) for j in range(3)]
         bbox = BBox(**dict(zip(("x", "y", "z", "x_min", "y_min", "z_min"),
                               [highs[j] - lows[j] for j in range(3)] + lows)))
-        return self.mesh.model_copy(update={"vertices": vertices, "bbox": bbox})
+        return mesh.model_copy(update={"vertices": vertices, "bbox": bbox})

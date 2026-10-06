@@ -296,7 +296,7 @@ class HotSwapLlm:
         return {
             "provider": self._settings.provider,
             "provider_label": preset.label if preset else self._settings.provider,
-            "supports_vision": bool(preset.supports_vision) if preset else False,
+            "supports_vision": self._settings.resolved_supports_vision(),
             "model": self._settings.resolved_model(),
             "base_url": self._settings.resolved_base_url(),
             "temperature": self._settings.temperature,

@@ -28,6 +28,22 @@ from tests.unit.test_server import make_services
 TestClient = pytest.importorskip("fastapi.testclient").TestClient
 
 
+def test_vision_setting_preserves_override_then_resets_on_provider_change(client):
+    enabled = client.put('/settings/llm', json={'provider': 'custom', 'model': 'vision-model',
+                                              'base_url': 'http://127.0.0.1:9000/v1',
+                                              'supports_vision': True})
+    assert enabled.status_code == 200
+    assert enabled.json()['settings']['supports_vision'] is True
+    client.put('/settings/llm', json={'temperature': 0.3})
+    assert client.get('/settings/llm').json()['settings']['supports_vision_override'] is True
+    client.put('/settings/llm', json={'provider': 'ollama'})
+    settings = client.get('/settings/llm').json()['settings']
+    assert settings['supports_vision_override'] is None and settings['supports_vision'] is False
+    client.put('/settings/llm', json={'supports_vision': True})
+    client.put('/settings/llm', json={'supports_vision': None})
+    assert client.get('/settings/llm').json()['settings']['supports_vision'] is False
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # fakes that can actually produce geometry
 # ══════════════════════════════════════════════════════════════════════════

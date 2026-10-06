@@ -56,6 +56,7 @@ class LlmConfig(BaseModel):
     max_tokens_per_step: int = 4096
     request_timeout_s: float = 120.0
     max_retries: int = 2
+    supports_vision: bool | None = None
 
 
 class ForkJoinConfig(BaseModel):

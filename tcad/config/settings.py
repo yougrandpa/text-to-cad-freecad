@@ -66,6 +66,8 @@ class LlmSettings(BaseModel):
     """``None`` => inherit the preset. Must stay Optional: a default of 128000
     would be indistinguishable from a user explicitly choosing 128000, and the
     budget's degradation thresholds are calibrated against this number."""
+    supports_vision: bool | None = None
+    """None inherits the provider preset; explicit values describe this model."""
 
     @field_validator("temperature")
     @classmethod
@@ -131,6 +133,12 @@ class LlmSettings(BaseModel):
 
     # ── outward shapes ────────────────────────────────────────────────────
 
+    def resolved_supports_vision(self) -> bool:
+        if self.supports_vision is not None:
+            return self.supports_vision
+        preset = get_provider(self.provider)
+        return bool(preset.supports_vision) if preset else False
+
     def masked(self) -> dict:
         """Everything a client may see. The key becomes a hint, never a value."""
         preset = get_provider(self.provider)
@@ -149,7 +157,8 @@ class LlmSettings(BaseModel):
             "api_key_set": bool(self.resolved_api_key()),
             "api_key_masked": mask_secret(self.resolved_api_key()),
             "api_key_source": self.api_key_source(),
-            "supports_vision": bool(preset.supports_vision) if preset else False,
+            "supports_vision": self.resolved_supports_vision(),
+            "supports_vision_override": self.supports_vision,
             "needs_key": self.needs_key(),
         }
 
@@ -269,6 +278,7 @@ def from_config(cfg: Config) -> RuntimeSettings:
             max_tokens_per_step=int(cfg.llm.max_tokens_per_step),
             request_timeout_s=float(cfg.llm.request_timeout_s),
             max_retries=int(cfg.llm.max_retries),
+            supports_vision=cfg.llm.supports_vision,
             use_env_proxy=bool(preset.use_env_proxy) if preset else False,
             # YAML may calibrate a local/custom model below its provider's
             # generic preset. Preserve that explicit request-window budget;
@@ -303,5 +313,6 @@ def apply_to_config(cfg: Config, settings: RuntimeSettings) -> Config:
     new.llm.max_tokens_per_step = llm.max_tokens_per_step
     new.llm.request_timeout_s = llm.request_timeout_s
     new.llm.max_retries = llm.max_retries
+    new.llm.supports_vision = llm.supports_vision
     new.context.window_tokens = llm.resolved_context_window()
     return new

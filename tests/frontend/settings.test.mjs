@@ -17,7 +17,8 @@ function harness() {
   const context = vm.createContext({ document, console });
   vm.runInContext(source + `
     el = (tag, attrs) => attrs;
-    globalThis.testing = {state, syncProviderEndpoint, fillModelOptions, bindSettingsDismissal, bindSettingsKeyboard};
+    globalThis.testing = {state, syncProviderEndpoint, fillModelOptions, bindSettingsDismissal, bindSettingsKeyboard,
+      settingsPatch, applyProviderDefaults};
   `, context);
   return { ...context.testing, node, document };
 }
@@ -40,6 +41,22 @@ test('model menu contains the entire list with an existing input value', () => {
   assert.deepEqual(Array.from(h.node('modelOptions').children, c => c.value), ['', 'kimi-k2.6', 'glm-5.1']);
   assert.equal(h.node('modelInput').value, 'kimi-k2.6');
   assert.equal(h.node('modelOptions').disabled, false);
+});
+test('vision settings preserve enable, disable, and inherited choices in the save request', () => {
+  const h = harness();
+  for (const [choice, expected] of [['true', true], ['false', false], ['', null]]) {
+    h.node('visionInput').value = choice;
+    assert.equal(h.settingsPatch().supports_vision, expected);
+  }
+});
+test('choosing another provider resets a model-specific vision override', () => {
+  const h = harness();
+  h.state.providers = [{id: 'custom', default_model: 'local-model', models: ['local-model']}];
+  h.node('providerSelect').value = 'custom';
+  h.node('visionInput').value = 'true';
+  h.applyProviderDefaults();
+  assert.equal(h.node('visionInput').value, '');
+  assert.equal(h.settingsPatch().supports_vision, null);
 });
 test('dragging from inside to backdrop keeps settings open; direct click closes', () => {
   const h = harness();

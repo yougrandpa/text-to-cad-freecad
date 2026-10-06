@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import inspect
+import json
 import os
 import time
 import uuid
@@ -90,6 +91,11 @@ def _format_report(report: GateReport, ir: Any = None) -> str:
             f"{len(report.results)} checks run, 0 blocking failures, "
             f"{len(report.advisory_findings)} advisory finding(s)."
         )
+        text += '\nChecks: ' + json.dumps([{
+            'check_id': r.check_id, 'status': r.status.value,
+            'severity': r.severity.value, 'confidence': r.confidence.value,
+            'message': r.message, 'measurements': r.measurements,
+        } for r in report.results], ensure_ascii=False, separators=(',', ':')) + '\n'
         if ir is None:
             return text + " Build checks passed; continue unfinished objectives and call design_review after the final build."
 

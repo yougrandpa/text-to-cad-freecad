@@ -673,7 +673,7 @@ def apply_patch(ir: IrDocument, patch: IrPatch, *, replay_legacy_body_routing: b
     out = PatchOutcome(version=ir.version + 1, applied=0,
                        summary=patch.summary or "ir patch")
 
-    for op in patch.ops:
+    for op_index, op in enumerate(patch.ops):
         if replay_legacy_body_routing and op.op in {"add_sketch", "add_feature"} and not op.payload.get("body_id"):
             payload = {k: v for k, v in op.payload.items() if k != "body_id"}
             if new_ir.bodies:
@@ -687,11 +687,16 @@ def apply_patch(ir: IrDocument, patch: IrPatch, *, replay_legacy_body_routing: b
             handler(new_ir, op, out)
         except ValidationError as exc:
             # A payload that does not fit its typed model is a schema error the
-            # model can fix, not a crash — and it must name the field.
+            # model can fix. Identify additions too: they have no target_id,
+            # and a batch may contain many sketches with the same field names.
+            entity_id = op.target_id or op.payload.get('id')
+            location = f"ops[{op_index}] op '{op.op}'"
+            if entity_id:
+                location += f" entity '{entity_id}'"
             raise _reject(
                 kind=ToolErrorKind.SCHEMA,
-                message=f"op '{op.op}' payload does not match the IR schema: {_brief(exc)}",
-                feature_id=op.target_id,
+                message=f"{location} payload does not match the IR schema: {_brief(exc)}",
+                feature_id=entity_id,
                 hint="fix the named field(s) and re-propose the op",
             ) from exc
         out.applied += 1

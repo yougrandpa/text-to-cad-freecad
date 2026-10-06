@@ -103,6 +103,20 @@ def test_local_provider_reports_missing_key_as_not_required():
     assert s.masked()["api_key_set"] is False
 
 
+@pytest.mark.parametrize('provider, inherited', [('custom', False), ('openai', True)])
+def test_model_vision_override_can_enable_disable_and_reset_preset(provider, inherited, tmp_path):
+    assert LlmSettings(provider=provider).masked()['supports_vision'] is inherited
+    for override in (True, False, None):
+        settings = RuntimeSettings(llm=LlmSettings(provider=provider, supports_vision=override))
+        save_runtime_settings(tmp_path, settings)
+        restored = load_runtime_settings(tmp_path)
+        masked = restored.llm.masked()
+        assert masked['supports_vision_override'] is override
+        assert masked['supports_vision'] is (inherited if override is None else override)
+        config = apply_to_config(load_default_config(), restored)
+        assert from_config(config).llm.supports_vision is override
+
+
 def test_temperature_bounds_are_enforced():
     with pytest.raises(Exception):
         LlmSettings(temperature=3.0)

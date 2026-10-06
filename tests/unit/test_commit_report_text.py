@@ -113,6 +113,19 @@ def test_the_report_still_works_without_an_ir():
     assert "GATE PASSED" in text
 
 
+def test_successful_commit_exposes_real_check_ids_status_and_measurements_for_review():
+    import json
+    report = _report()
+    report.results[0].measurements = {'solids': 16}
+    text = _format_report(report, _ir())
+    checks = json.loads(text.split('Checks: ', 1)[1].split('\n', 1)[0])
+    assert checks[0]['check_id'] == 'solid_validity'
+    assert checks[0]['status'] == 'pass' and checks[0]['severity'] == 'blocking'
+    assert checks[0]['confidence'] == 'deterministic'
+    assert checks[0]['measurements'] == {'solids': 16}
+    assert 'NOT JUDGED AGAINST ANY REQUEST' in text
+
+
 # ─── the helper ────────────────────────────────────────────────────────────
 
 

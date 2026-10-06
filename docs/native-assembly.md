@@ -42,6 +42,23 @@ Body；需要独立几何或运动的多个组件再拆成有明确名称的 Bod
 5. `assembly_export` 导出 GIF、MP4、AVI 或 WebM；重复导出复用当前 IR 的帧缓存。
    视频依赖 `pip install -e ".[animation]"` 和对应编码器；GIF 使用已有 Pillow。
 
+初始工具表保持紧凑；先调用 `ir_help(topic="assembly")`，下一次模型请求会提供
+`assembly_configure` 的完整参数契约。帮助结果提供使用规则和示例，不重复整套嵌套 schema。
+
+除默认 `mode="motion"` 的已求解运动外，`assembly_export(mode="assemble")` 可将独立
+零件从分散位置合拢到首个已保存求解姿态；`mode="explode"` 则反向展示。保持 grounded
+零件固定，其他零件沿直线缓动路径平移。`duration_s` 默认 3 秒，`frames` 默认 41，
+`explode_distance_mm` 默认按模型大小计算。导出采样始终包含最终姿态。
+这种装配过程是展示动画；路径没有执行关节求解或装配路径碰撞验证。原生旋翼、关节等
+机构运动仍使用 `mode="motion"`，其采样干涉通过 `assembly_simulate` 检查。
+
+`asset_export(fmt="fcstd")` 优先返回已保存的 `assembly.FCStd`，保留可编辑源 Body、
+原生关节和驱动。无原生装配文档时返回零件文档。两者均来自指定的不可变构建产物。
+
+支持图像输入的自定义/本地模型，可在模型设置中选择「支持图像」，或配置
+`llm.supports_vision: true`，使 `geo_view` 的真实图片进入模型上下文；选择「沿用供应商默认」
+或 `null` 恢复预设能力。仅文本模型仍会收到明确的未送图提示。
+
 ```json
 {
   "assembly": {

@@ -539,6 +539,8 @@ class Mesh(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     vertices: list[tuple[float, float, float]] = Field(default_factory=list)
     facets: list[tuple[int, int, int]] = Field(default_factory=list)
+    facet_groups: list[int] = Field(default_factory=list, exclude=True)
+    """Render-only native face IDs; not part of the mesh wire contract."""
     bbox: BBox = Field(default_factory=BBox)
     volume: float = 0.0
     tolerance: float = 0.5  # passed to TopoShape.tessellate(tolerance)

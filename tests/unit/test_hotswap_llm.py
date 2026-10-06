@@ -114,6 +114,18 @@ def test_descriptor_reports_provider_vision_support():
     assert holder.descriptor["supports_vision"] is True
 
 
+@pytest.mark.parametrize('provider, override, expected', [
+    ('custom', True, True), ('openai', False, False),
+    ('custom', None, False), ('openai', None, True),
+])
+def test_engine_descriptor_obeys_model_vision_override_after_swap(provider, override, expected):
+    holder = HotSwapLlm(LlmSettings(provider='custom'), client=RecordingLlm('first'))
+    settings = LlmSettings(provider=provider, supports_vision=override)
+    holder.adopt(settings, RecordingLlm('second'))
+    assert holder.descriptor['supports_vision'] is expected
+    assert holder.descriptor['supports_vision'] == settings.masked()['supports_vision']
+
+
 @pytest.mark.asyncio
 async def test_chat_forwards_temperature_and_tools():
     inner = RecordingLlm("a")

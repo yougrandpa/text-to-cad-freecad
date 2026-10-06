@@ -1297,6 +1297,7 @@ function applyProviderDefaults() {
   $("baseUrlInput").value = preset.base_url || "";
   syncProviderEndpoint();
   $("modelInput").value = preset.default_model || "";
+  $("visionInput").value = "";
   fillModelOptions(preset.models || [], "预设候选（点「列模型」获取实时列表）");
 }
 
@@ -1351,6 +1352,8 @@ async function openSettings() {
     $("tempInput").value = current.settings.temperature ?? 0.2;
     $("tempOut").textContent = Number(current.settings.temperature ?? 0.2).toFixed(2);
     $("proxyInput").checked = Boolean(current.settings.use_env_proxy);
+    $("visionInput").value = current.settings.supports_vision_override == null
+      ? "" : String(current.settings.supports_vision_override);
 
     const s = current.settings;
     $("keyHint").textContent = s.api_key_set
@@ -1410,6 +1413,7 @@ function settingsPatch() {
     base_url: $("baseUrlInput").value.trim(),
     temperature: Number($("tempInput").value),
     use_env_proxy: $("proxyInput").checked,
+    supports_vision: $("visionInput").value === "" ? null : $("visionInput").value === "true",
   };
   // Only send the key when one was typed: the UI never holds the stored
   // plaintext, so an empty box means "leave it alone", not "clear it".

@@ -34,6 +34,10 @@ def export_artifact(services, ctx, args):
         raise ValueError("unsupported export format")
     name = ensure_safe_id(args.get("name", ctx.model_id), kind="export name")
     original = manifest.model_id + (".FCStd" if fmt == "fcstd" else "." + fmt)
+    if fmt == 'fcstd' and 'assembly.FCStd' in manifest.files:
+        # The native document retains editable source bodies plus joints and
+        # drivers. Exporting only the source model silently loses the assembly.
+        original = 'assembly.FCStd'
     if original in manifest.files and name == manifest.model_id:
         reader.read_file(manifest, root, original)
         return {"path": str(root / original), "size_bytes": (root / original).stat().st_size,
@@ -63,7 +67,9 @@ def saved_assembly(services, ctx, args):
     scene = reader.scene(manifest, root)
     if not scene.animation:
         raise ValueError("commit a configured native assembly first")
-    result = {**scene.animation, "mesh": scene.mesh.model_dump(mode="json"),
+    render_mesh = scene.mesh_for_render()
+    result = {**scene.animation, "mesh": {**render_mesh.model_dump(mode="json"),
+        'facet_groups': render_mesh.facet_groups},
         "artifact_id": manifest.artifact_id, "scope": scene.animation.get('scope', "Saved native kinematics; not contact or cutting verification."),
         "export": str(root / ("assembly.FCStd" if (root / "assembly.FCStd").exists() else manifest.model_id + '.FCStd')), "interferences": None, "frames_checked": 0}
     if args.get("check_pairs"):
@@ -90,8 +96,18 @@ def check_motion(services, ctx, args):
 
 
 def export_saved_animation(services, ctx, args):
-    from tcad.render.animation import export_animation
+    from tcad.render.animation import assembly_transition, export_animation
     result, _ = saved_assembly(services, ctx, args)
+    mode = args.get('mode', 'motion')
+    if mode not in {'motion', 'assemble', 'explode'}:
+        raise ValueError('unknown animation mode')
+    if mode != 'motion':
+        reader, manifest, root = resolve_context(services, ctx, {'artifact_id': result['artifact_id']})
+        source = json.loads(reader.read_file(manifest, root, 'ir.json'))
+        result = assembly_transition(result, mode=mode,
+            grounded_body_ids=source['assembly']['grounded'],
+            duration_s=args.get('duration_s', 3), frames=args.get('frames', 41),
+            explode_distance_mm=args.get('explode_distance_mm'))
     fmt = args.get("format", "gif")
     if fmt not in {"gif", "mp4", "avi", "webm"}:
         raise ValueError("unknown animation format")
@@ -103,4 +119,5 @@ def export_saved_animation(services, ctx, args):
         summary = export_animation(result, candidate, view=args.get("view", "iso"),
             width=args.get("width", 480), height=args.get("height", 360), stride=args.get("stride", 2))
         candidate.replace(target)
-    return {**summary, "path": str(target), "artifact_id": result["artifact_id"]}
+    return {**summary, "path": str(target), "artifact_id": result["artifact_id"],
+            'mode': mode, 'scope': result['scope']}

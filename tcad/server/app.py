@@ -195,12 +195,13 @@ class LlmSettingsPatch(BaseModel):
     max_retries: int | None = None
     use_env_proxy: bool | None = None
     context_window: int | None = None
+    supports_vision: bool | None = None
 
 
 # Fields that should fall back to the newly-chosen preset when the provider
 # changes. Without this, switching deepseek -> ollama would keep DeepSeek's
 # base_url and quietly send the request to the wrong company.
-_PRESET_INHERITED = ("model", "base_url", "api_key_env", "context_window")
+_PRESET_INHERITED = ("model", "base_url", "api_key_env", "context_window", "supports_vision")
 
 
 def _merge_llm(current: Any, patch: LlmSettingsPatch):
@@ -216,7 +217,7 @@ def _merge_llm(current: Any, patch: LlmSettingsPatch):
     if "provider" in provided and patch.provider != current.provider:
         for key in _PRESET_INHERITED:
             if key not in provided:
-                data[key] = "" if key != "context_window" else None
+                data[key] = None if key in {"context_window", "supports_vision"} else ""
 
     try:
         return LlmSettings.model_validate(data)

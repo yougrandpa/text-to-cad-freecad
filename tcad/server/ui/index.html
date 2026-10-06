@@ -272,6 +272,16 @@
         <span>使用环境代理（HTTP(S)_PROXY）</span>
       </label>
 
+      <label class="field">
+        <span>模型图像输入</span>
+        <select id="visionInput">
+          <option value="">沿用供应商默认</option>
+          <option value="true">支持图像（发送模型截图）</option>
+          <option value="false">仅文本</option>
+        </select>
+        <small class="muted">自定义端点可按所选模型的实际能力设置。</small>
+      </label>
+
       <div class="probe-result" id="probeResult" hidden></div>
     </div>
 

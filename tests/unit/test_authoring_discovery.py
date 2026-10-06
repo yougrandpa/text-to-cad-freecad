@@ -84,6 +84,25 @@ async def test_loft_help_exposes_ordered_sections_and_datum_world_placement():
     assert not check({"base_version": "current", "ops": [plane["example"]]}, _ir_patch_schema())
 
 
+@pytest.mark.parametrize('topic', ['sketch', 'feature', 'requirements', 'assembly'])
+async def test_scoped_help_keeps_usage_guidance_without_repeating_tool_schemas(topic):
+    data = json.loads((await help_handler(None, {'topic': topic}, None)).content)
+    assert 'schema' not in data
+    assert data['operations'] and data['unlocks']
+    assert data.get('rules') or data.get('example')
+    assert len(json.dumps(data)) < 4000
+
+
+async def test_assembly_discovery_names_unlock_and_demonstrates_valid_native_driver():
+    tools = build_default_registry(SimpleNamespace())
+    description = tools.get('ir_help').description
+    assert 'topic=assembly unlocks assembly_configure' in description
+    data = json.loads((await help_handler(None, {'topic': 'assembly'}, None)).content)
+    assert 'assembly_configure' in data['unlocks'] and 'next model request' in data['unlocks']
+    assert 'WORLD coordinates' in data['coordinates'] and 'radians' in data['coordinates']
+    assert not check(data['example'], tools.get('assembly_configure').params_schema)
+
+
 @pytest.mark.parametrize("shape, params, semantic", [
     ("box", {"length", "width", "height"}, "minimum corner"),
     ("cylinder", {"radius", "height"}, "base centre"),

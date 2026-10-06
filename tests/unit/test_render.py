@@ -217,6 +217,18 @@ def test_real_feature_edges_are_still_drawn():
     assert (arr[:, :, 0] < 128).sum() > 100, "box edges vanished"
 
 
+def test_native_face_mapping_suppresses_curve_tessellation_creases_only():
+    from tcad.render.raster import _edge_mask
+    # Two sharply different chord normals on one native smooth face must not
+    # produce a phantom feature. Distinct native faces still retain the crease.
+    facets = np.array([[0, 0, 1, 1]]*4)
+    covered = np.ones((4, 4), dtype=bool)
+    normals = np.array([[0, 0, 1], [0, 1, 0]], dtype=float)
+    assert not _edge_mask(facets, covered, normals, [0, 0]).any()
+    assert _edge_mask(facets, covered, normals, [0, 1])[:, 2].all()
+    assert _edge_mask(facets, covered, normals)[:, 2].all()
+
+
 @pytest.mark.parametrize("bad_mesh", [
     Mesh(vertices=[], facets=[], bbox=BOX_BBOX),
     Mesh(vertices=[(0, 0, 0)], facets=[], bbox=BOX_BBOX),
