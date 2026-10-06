@@ -210,6 +210,21 @@ def make_uncapped_engine(services, *, strategy="loop_until_done"):
     return LoopEngine(services, reg, BudgetLimits(), cfg)
 
 
+async def test_selected_workflow_tools_are_exposed_then_reset_next_turn(tmp_path):
+    llm = ScriptedLlm([LlmReply(tool_calls=[ToolCall(
+        id="help", name="ir_help", args={"topic": "workflow", "workflow": "radial_wheel"},
+    )])])
+    services = make_services(make_ir(), llm, gate_passed=False)
+    engine = LoopEngine(services, build_default_registry(services), BudgetLimits(max_steps_per_turn=2),
+                        LoopConfig(require_design_review=True, data_dir=str(tmp_path)))
+    await engine.run_turn(Thread(thread_id="t1", model_id="m1"),
+                          UserMessage(kind=TurnKind.CREATE, text="Build a part"))
+    assert "cad_wheel_support" in {tool["function"]["name"] for tool in llm.last_tools}
+    await engine.run_turn(Thread(thread_id="t2", model_id="m1"),
+                          UserMessage(kind=TurnKind.CREATE, text="Build a different part"))
+    assert "cad_wheel_support" not in {tool["function"]["name"] for tool in llm.last_tools}
+
+
 # ─── headline: green gate required; "I'm done" is NOT a termination ────────
 
 

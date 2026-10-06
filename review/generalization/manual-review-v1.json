@@ -1,0 +1,46 @@
+{
+  "contract_sha256": "5c8db7512c563ddc48c434d40c308c2b528f35be5004078179e48be8ec592569",
+  "method": "Inspect retained artifact manifests, BRep digest edges, native IR and saved frame renders; no model reruns or prompt changes.",
+  "cases": [
+    {
+      "id": "hex_sleeve",
+      "status": "not_delivered",
+      "evidence": "No published artifact. Across-flats dimension was encoded as a three-axis bbox requirement; repeated corrections did not finish within 40 steps."
+    },
+    {
+      "id": "t_slot_disk",
+      "status": "nominal_geometry_supported",
+      "artifact_id": "sha256:82ae19fe3da169ecc9e960ef6a4f40061a52c460ad54b531f35ac711a7993202",
+      "evidence": [
+        "Top render shows a connected T opening along the disk midline.",
+        "BRep top boundary has transverse edge 24 mm, crossbar sides 6 mm, stem sides 18 mm and bottom edge 6 mm.",
+        "One valid solid; measured volume matches independent expectation; current native CAD and HTTP delivery passed."
+      ],
+      "limitations": [
+        "Exact positioning tolerance was not specified; the model ended as draft. This is a nominal geometry review."
+      ]
+    },
+    {
+      "id": "eccentric_disk",
+      "status": "not_delivered",
+      "evidence": "No published artifact. Support has two solids; the pin offset was encoded as a hole-position constraint with no measured hole. No native joint/motion delivery."
+    },
+    {
+      "id": "helicopter",
+      "status": "functional_review_failed",
+      "artifact_id": "sha256:5858c9e812816e700e06dc79a3387ecf4f12035ef6b2b04cf39f545892d5601f",
+      "artifact_gate_passed": true,
+      "artifact_matches_final_ir": true,
+      "evidence": [
+        "Latest manifest is verified at final IR version 15: five solids, two independent Angular drivers and 41 saved frames.",
+        "Tail hub cylinder is placed along world X, while its Revolute joint axis is world Y.",
+        "Saved frame 10 turns the original X shaft direction into Z; frame renders show tumbling rather than rotation about the shaft."
+      ],
+      "limitations": [
+        "The loop exhausted at 40 steps without final design_review.",
+        "Clearance has not been independently checked.",
+        "Frozen runner current_build also requires the final turn Gate report; exhausted turns omit it. Its false flag does not mean the retained verified artifact failed Gate."
+      ]
+    }
+  ]
+}

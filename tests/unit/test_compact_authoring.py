@@ -124,7 +124,8 @@ def test_op_catalog_does_not_unlock_or_repeat_all_editing_schemas():
     all_tools=registry.as_openai_tools(TurnKind.CREATE)
     initial=engine._authoring_surface(all_tools)
     names={t['function']['name'] for t in initial}
-    assert {'cad_build_parts','cad_wheel','cad_cabins','assembly_motion','ir_help'}<=names
+    assert {'cad_build_parts','cad_wheel','ir_help'}<=names
+    assert not {'cad_cabins','cad_wheel_support','assembly_motion'} & names
     assert not {'ir_patch','assembly_configure'}&names
     engine._authoring_topics={'patch'}
     catalog=engine._authoring_surface(all_tools)

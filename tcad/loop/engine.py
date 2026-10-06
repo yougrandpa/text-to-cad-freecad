@@ -122,7 +122,7 @@ class LoopConfig(BaseModel):
         "a multi-body compound alone does not establish assembly constraints. "
         "Batch dependent feature edits in one patch and commit at meaningful milestones, "
         "not after every primitive. Prefer ir_digest for measurements and ir_get(ids=[...]) "
-        "for exact targeted state. Use ir_gear_profile instead of emitting tooth coordinates. "
+        "for exact targeted state. Discover operation contracts before unfamiliar authoring. "
         "After a valid motion assembly, geo_check_motion checks multiple angles in one build; "
         "choose only needed body pairs. Render only views needed for visual evidence. "
         "Never claim success unless ir_commit returns passed=true. Read tools "
@@ -249,43 +249,8 @@ class LoopEngine:
         self.budget_limits = budget_limits
         self.config = config or LoopConfig()
         if self.config.require_design_review:
-            self.config = self.config.model_copy(update={"system_prompt": self.config.system_prompt + (
-                " Respond in the user's language. Before modeling, state the complete feature plan and "
-                "the acceptance criteria for EVERY requested function. Preserve the original request. "
-                "Do not label guessed dimensions as user-confirmed. A passed ir_commit is an intermediate "
-                "BUILD checkpoint, NOT a terminal result. Continue all planned features (for a box, a "
-                "solid base is not a cavity; an opening is not a cutting mechanism). After the final commit, "
-                "call design_review in a separate step and map each objective to real Gate evidence. "
-                "Use cad_build_parts for ordinary shapes, smooth section lofts, open-blade rotors and polar copies. "
-                "Choose the silhouette before adding details: a curved shell, fuselage or tapered boom should use "
-                "shape=loft with section_axis and sections of center+radii, rather than stacked boxes. "
-                "Use shape=rotor for propellers/fans: the tool computes the hub and all radial blades without a rim. "
-                "For corrections, call cad_build_parts again with the SAME original recipe id/body_id and revised "
-                "dimensions/center/sections; it updates every generated feature. New IDs add more material, they "
-                "do not replace old parts. Removing a Body breaks any assembly referencing it. "
-                "cad_wheel is for wheels with rims, not a substitute for rotor blades. "
-                "These tools already carry complete argument schemas; use them "
-                "directly, without ir_help(topic=patch) or reading empty IR first. Do not hand-write primitive sketches. "
-                "For Ferris-wheel tasks, repeated hanging cabins use cad_cabins once and assembly_motion with hanging_body_ids; "
-                "do not calculate every cabin coordinate or build duplicated first/second drafts. "
-                "cad_wheel_support builds a connected rear A-frame and matching shaft; prefer it to manual disconnected braces. "
-                "Use assembly_motion for horizontal wheels with gravity-hanging cabins, then ir_commit, "
-                "assembly_simulate and assembly_export. Use ir_help before unfamiliar low-level ir_patch fields. "
-                "The initial tool table is compact, not a limit to primitives: ir_help(topic=sketch) exposes "
-                "native ellipse/BSpline curves, and ir_help(topic=feature, feature_op=fillet) exposes edge rounding. "
-                "For continuous product shells use native additive_loft with multiple closed sections on placed "
-                "datum_plane features; scoped feature help explains the typed sections and world-coordinate placement. "
-                "For ordinary native assembly connections first ir_help(topic=assembly), then assembly_configure; "
-                "connector position/axis belong inside BOTH side1 and side2, never at the joint top level. "
-                "Successful scoped help unlocks matching ir_patch operations in the next request. Use native "
-                "curves and rounded features for curved product silhouettes instead of stacking boxes. "
-                "Record genuine user-stated numeric geometry requirements via ir_requirements; never encode "
-                "qualitative goals as invented constraint kinds (note, motion, dimension). If no numeric "
-                "dimensions were stated, skip requirements tools and keep goals in the final review. Unknown dimensions "
-                "may be draft assumptions. List unresolved work and physical tests honestly; unsupported "
-                "functional claims remain a draft pending user acceptance. Never claim unmeasured functionality. "
-                "Every ir_patch op must contain reason. Send complete JSON and small patches."
-            )})
+            from tcad.agent.prompts import with_design_review
+            self.config = self.config.model_copy(update={"system_prompt": with_design_review(self.config.system_prompt)})
         self.budget = Budget(budget_limits)
         self.strategy = make_strategy(self.config.default_strategy)
         self._candidate_reports: list[GateReport] = []
@@ -317,6 +282,7 @@ class LoopEngine:
         self._base_hooks = hooks if hooks is not None else getattr(services, "hooks", None)
         self._access_mode = None
         self._authoring_topics = set()
+        self._authoring_workflows = set()
 
     # ─── hook dispatch ────────────────────────────────────────────────────
 
@@ -324,6 +290,8 @@ class LoopEngine:
         if not self.config.require_design_review:
             return tools
         import copy
+        from tcad.agent.workflows import WORKFLOWS, SPECIALIZED_TOOLS
+        workflow_tools=set().union(*(set(WORKFLOWS[name]['tools']) for name in self._authoring_workflows))
         scopes={'sketch':{'add_sketch','update_sketch'},
                 'feature':{'add_feature','update_feature'},
                 'requirements':{'update_requirement'}}
@@ -339,6 +307,8 @@ class LoopEngine:
                 pass
         for tool in tools:
             name=tool['function']['name']
+            if name in SPECIALIZED_TOOLS and name not in workflow_tools:
+                continue
             if saved_animation and name=='geo_check_motion':
                 continue  # Saved frames use assembly_simulate(check_pairs), not crank angles.
             if name=='assembly_configure' and not self._authoring_topics & {'assembly','patch'}:
@@ -477,6 +447,7 @@ class LoopEngine:
         # numbers are only cosmetic, which is why nothing caught it.
         self.budget = Budget(self.budget_limits)
         self._authoring_topics = set()
+        self._authoring_workflows = set()
 
         # pre_turn hook (quota / content-safety pre-check).
         #
@@ -854,6 +825,8 @@ class LoopEngine:
 
             if tc.name == 'ir_help' and outcome.result.ok:
                 self._authoring_topics.add(tc.args.get('topic'))
+                if tc.args.get('topic') == 'workflow' and tc.args.get('workflow'):
+                    self._authoring_workflows.add(tc.args['workflow'])
             if tc.name == "design_review" and outcome.result.ok:
                 if not self.config.require_design_review:
                     outcome.result = ToolResult(ok=False, error=ToolError(

@@ -20,7 +20,7 @@ import time
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 
 
-async def run(args):
+async def run(args, *, settings_override=None, contract_check=None):
     from tcad.config.loader import load_default_config, resolve_paths
     from tcad.config.settings import effective
     from tcad.core.wiring import build_services, apply_llm_settings
@@ -28,7 +28,7 @@ async def run(args):
     from tcad.inspect.artifact import ArtifactReader
     from tcad.server.app import ChatRequest, run_turn_request, create_app
     cfg=load_default_config(); resolve_paths(cfg)
-    settings=effective(cfg,cfg.storage.data_dir)
+    settings=settings_override or effective(cfg,cfg.storage.data_dir)
     secret=settings.llm.resolved_api_key()
     def redact(value):
         if isinstance(value,str): return value.replace(secret,'[REDACTED]') if secret else value
@@ -56,18 +56,30 @@ async def run(args):
                 failures.append(failure)
                 print('  error:',failure.get('message','')[:500],flush=True)
     try:
+        if contract_check is not None:
+            contract_check(services)
         print('model:',settings.llm.resolved_model(),'output:',root,flush=True)
         result=await run_turn_request(services,ChatRequest(model_id='e2e-model',text=request),observer=observer)
         (root/'result.json').write_text(json.dumps(redact(result.model_dump(mode='json')),ensure_ascii=False,indent=2),encoding='utf-8')
         summary={'model':settings.llm.resolved_model(),'state':result.state.value,'steps':result.steps,
             'tokens_in':result.tokens_in,'tokens_out':result.tokens_out,'elapsed_s':round(time.monotonic()-start,2),
-            'tool_calls':dict(calls),'tool_errors':failures,'build_passed':bool(result.gate_report and result.gate_report.passed)}
+            'tool_calls':dict(calls),'tool_errors':failures,'build_passed':bool(result.gate_report and result.gate_report.passed),
+            'final_ir_version':services.store.current_version('e2e-model'),'turn_error':redact(result.error)}
         reader=ArtifactReader(root)
         try:
             manifest,artifact_root=reader.resolve('e2e-model')
             scene=reader.scene(manifest,artifact_root)
+            digest=reader.digest(manifest,artifact_root)
+            built_ir=json.loads(reader.read_file(manifest,artifact_root,'ir.json'))
+            assembly=built_ir.get('assembly') or {}
             summary.update({'artifact_id':manifest.artifact_id,'artifact_dir':str(artifact_root),
+                'artifact_ir_version':manifest.ir_version,
+                'current_build':bool(summary['build_passed'] and manifest.ir_version==summary['final_ir_version']
+                    and result.gate_report.ir_version==manifest.ir_version),
+                'measurements':{'is_valid':digest.is_valid,'volume':digest.volume,'solids':digest.topology.solids,
+                                'bbox':digest.bbox.model_dump(mode='json')},
                 'bodies':len(scene.body_ids),'animation_frames':len(scene.animation['frames']) if scene.animation else 0,
+                'native_joint_count':len(assembly.get('joints') or []),'native_driver_count':len(assembly.get('drivers') or []),
                 'solver':scene.animation.get('solver') if scene.animation else None,
                 'max_swing_deg':scene.animation.get('max_swing_deg') if scene.animation else None,
                 'gif_paths':[str(p) for p in root.glob('derived/animations/**/*.gif')]})
@@ -79,7 +91,7 @@ async def run(args):
                     for name in manifest.files if name.endswith(('.step','.stl','.FCStd'))}
         except (FileNotFoundError,ValueError) as exc:
             summary['artifact_error']=redact(str(exc))
-        delivered=(summary['build_passed'] and result.state.value in ('succeeded','draft')
+        delivered=(summary.get('current_build') and result.state.value in ('succeeded','draft')
                    and summary.get('http_scene_status')==200 and bool(summary.get('http_artifact_status'))
                    and all(code==200 for code in summary.get('http_artifact_status',{}).values()))
         if args.require_animation:

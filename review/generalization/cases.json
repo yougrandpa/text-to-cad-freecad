@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "hex_sleeve",
+      "role": "holdout",
+      "request": "建立正六角轴套：对边24 mm，长30 mm，同轴贯穿孔直径10 mm，作为一个整体零件交付可编辑CAD。",
+      "automated": {"solids": 1, "bodies": 1, "volume": 12608.724487202753},
+      "manual": ["正六角外轮廓与同轴贯穿孔符合请求"]
+    },
+    {
+      "id": "t_slot_disk",
+      "role": "holdout",
+      "request": "建立直径60 mm、厚8 mm的圆盘，中央有T形贯穿开口：横部24×6 mm，下接6×18 mm竖部。交付一个可编辑整体零件。",
+      "automated": {"solids": 1, "bodies": 1, "volume": 20603.46710584651},
+      "manual": ["开口为相连T形且位置符合请求"]
+    },
+    {
+      "id": "eccentric_disk",
+      "role": "holdout",
+      "request": "建立固定支座与一体带偏心销的转盘两个零件的装配，销中心距转轴8 mm，转盘转一周，交付可编辑CAD及运动预览。",
+      "automated": {"bodies": 2, "solids": 2, "motion": true, "native_motion": true},
+      "manual": ["偏心销属于转盘并随其运动", "偏心距符合请求", "连接和间隙合理"]
+    },
+    {
+      "id": "helicopter",
+      "role": "diagnostic",
+      "request": "建立直升机概念装配模型，主旋翼和尾旋翼可独立转动，交付可编辑CAD及运动预览。",
+      "automated": {"min_bodies": 3, "motion": true, "native_motion": true},
+      "manual": ["外形及部件完整性符合概念模型要求", "两个旋翼可独立运动", "旋翼与机身、支架保持间隙"]
+    }
+  ]
+}

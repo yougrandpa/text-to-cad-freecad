@@ -9,6 +9,7 @@
 - [紧凑曲面与旋翼](compact-shape-recipes.md)：用截面及尺寸生成原生 CAD，减少模型坐标计算与修复负担。
 - [特征引用](feature-references.md)：特征树、面边引用和选择身份。
 - [功能验收](functional-acceptance.md)：需求复核与完成条件。
+- [提示冻结与独立评测](generalization-evaluation.md)：按需流程、固定基线和真实模型验收边界。
 - [Agent 运行时加固](agent-runtime-hardening.md)：预算、重试和停滞检测。
 - [权限模式](access-modes.md)：访问与工具权限配置。
 

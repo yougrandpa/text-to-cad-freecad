@@ -75,6 +75,29 @@ async def test_patch_help_distinguishes_body_names_from_feature_renames():
     assert "do not include body_id in the partial payload" in rules
 
 
+async def test_workflow_catalog_and_selection_are_scoped():
+    from tcad.agent.workflows import SPECIALIZED_TOOLS
+
+    catalog = json.loads((await help_handler(None, {"topic": "workflow"}, None)).content)
+    assert catalog["workflows"] and "rules" not in catalog and "tools" not in catalog
+    services = SimpleNamespace()
+    registry = build_default_registry(services)
+    engine = LoopEngine(services, registry, BudgetLimits(), LoopConfig(require_design_review=True))
+    definitions = registry.as_openai_tools(TurnKind.CREATE)
+    engine._authoring_topics.add("workflow")
+    names = {tool["function"]["name"] for tool in engine._authoring_surface(definitions)}
+    assert not names & SPECIALIZED_TOOLS
+
+    selected = json.loads((await help_handler(None, {"topic": "workflow", "workflow": "radial_wheel"}, None)).content)
+    assert selected["rules"] and "example" not in selected
+    engine._authoring_workflows.add(selected["workflow"])
+    names = {tool["function"]["name"] for tool in engine._authoring_surface(definitions)}
+    assert "cad_wheel_support" in names
+    assert not {"cad_cabins", "assembly_motion"} & names
+    invalid = await help_handler(None, {"topic": "workflow", "workflow": "unknown"}, None)
+    assert not invalid.ok
+
+
 async def test_loft_help_exposes_ordered_sections_and_datum_world_placement():
     loft = json.loads((await help_handler(None, {"topic": "feature", "feature_op": "additive_loft"}, None)).content)
     assert loft["example"]["payload"]["sections"] == ["section_middle", "section_end"]

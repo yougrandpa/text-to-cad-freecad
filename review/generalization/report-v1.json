@@ -1,0 +1,128 @@
+{
+  "contract_sha256": "5c8db7512c563ddc48c434d40c308c2b528f35be5004078179e48be8ec592569",
+  "cases_sha256": "03d3641d60ea54ac1757a65dc0ae2cbe05cd9a4c030c44097748df666b9e1781",
+  "settings": {
+    "provider": "custom",
+    "model": "deepseek-v4.1-flash",
+    "temperature": 0.35,
+    "max_tokens_per_step": 4096,
+    "context_window": 128000,
+    "request_timeout_s": 120.0,
+    "max_retries": 2,
+    "endpoint_sha256": "58d965838136f9158860a373c281dda02b75117f0d7014ae94a2015bc8a9b1f3",
+    "supports_vision": false
+  },
+  "limits": {
+    "max_steps": 40,
+    "timeout": 600
+  },
+  "cases": [
+    {
+      "id": "hex_sleeve",
+      "role": "holdout",
+      "automated_checks": {
+        "delivery": false,
+        "current_artifact": false,
+        "valid_geometry": false,
+        "solid_count": false,
+        "body_count": false,
+        "volume": false
+      },
+      "automated_passed": false,
+      "task_verified": false,
+      "manual_review_required": [
+        "正六角外轮廓与同轴贯穿孔符合请求"
+      ],
+      "state": "exhausted",
+      "steps": 40,
+      "tokens_in": 892405,
+      "tokens_out": 10294,
+      "elapsed_s": 300.26,
+      "tool_errors": 6,
+      "artifact_dir": null,
+      "turn_error": "budget exhausted: max_steps_per_turn (limit=40)"
+    },
+    {
+      "id": "t_slot_disk",
+      "role": "holdout",
+      "automated_checks": {
+        "delivery": true,
+        "current_artifact": true,
+        "valid_geometry": true,
+        "solid_count": true,
+        "body_count": true,
+        "volume": true
+      },
+      "automated_passed": true,
+      "task_verified": false,
+      "manual_review_required": [
+        "开口为相连T形且位置符合请求"
+      ],
+      "state": "draft",
+      "steps": 22,
+      "tokens_in": 469388,
+      "tokens_out": 6513,
+      "elapsed_s": 178.02,
+      "tool_errors": 6,
+      "artifact_dir": "/Users/slg/workspace/text_to_cad/.tcad_eval/20261006-134625-930415/t_slot_disk/artifact_sets/82ae19fe3da169ecc9e960ef6a4f40061a52c460ad54b531f35ac711a7993202",
+      "turn_error": null
+    },
+    {
+      "id": "eccentric_disk",
+      "role": "holdout",
+      "automated_checks": {
+        "delivery": false,
+        "current_artifact": false,
+        "valid_geometry": false,
+        "solid_count": false,
+        "body_count": false,
+        "saved_motion": false,
+        "native_motion": false
+      },
+      "automated_passed": false,
+      "task_verified": false,
+      "manual_review_required": [
+        "偏心销属于转盘并随其运动",
+        "偏心距符合请求",
+        "连接和间隙合理"
+      ],
+      "state": "exhausted",
+      "steps": 40,
+      "tokens_in": 940311,
+      "tokens_out": 9705,
+      "elapsed_s": 309.58,
+      "tool_errors": 12,
+      "artifact_dir": null,
+      "turn_error": "budget exhausted: max_steps_per_turn (limit=40)"
+    },
+    {
+      "id": "helicopter",
+      "role": "diagnostic",
+      "automated_checks": {
+        "delivery": false,
+        "current_artifact": false,
+        "valid_geometry": true,
+        "body_count": true,
+        "saved_motion": true,
+        "native_motion": true
+      },
+      "automated_passed": false,
+      "task_verified": false,
+      "manual_review_required": [
+        "外形及部件完整性符合概念模型要求",
+        "两个旋翼可独立运动",
+        "旋翼与机身、支架保持间隙"
+      ],
+      "state": "exhausted",
+      "steps": 40,
+      "tokens_in": 1208536,
+      "tokens_out": 12617,
+      "elapsed_s": 594.12,
+      "tool_errors": 9,
+      "artifact_dir": "/Users/slg/workspace/text_to_cad/.tcad_eval/20261006-134625-930415/helicopter/artifact_sets/5858c9e812816e700e06dc79a3387ecf4f12035ef6b2b04cf39f545892d5601f",
+      "turn_error": "budget exhausted: max_steps_per_turn (limit=40)"
+    }
+  ],
+  "holdout_automated_passed": 1,
+  "holdout_evaluated": 3
+}

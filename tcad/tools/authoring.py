@@ -144,7 +144,7 @@ async def build_parts_handler(services,args,ctx):
                 'recipes':[{'id':p.id,'body_id':p.body_id,'shape':p.shape} for p in request.parts],
                 'features':[op['payload'].get('id',op.get('target_id')) for op in ops if op['op'] in ('add_feature','update_feature')],
                 'edit_hint':'To move/resize a loft or rotor, resend the same recipe id and body_id with revised parameters. The recipe id is a prefix; ir_get accepts the actual feature IDs listed above, or the body_id. A new recipe id adds material; it does not replace the old recipe.',
-                'next':'Add remaining parts, then ir_commit. For native joints/rotors use ir_help(topic=assembly), assembly_configure. assembly_motion is only for horizontal wheels with gravity-hanging cabins.'},separators=(',',':'))
+                'next':'Complete the feature plan, then ir_commit. Use scoped ir_help for unfamiliar authoring contracts or assembly connections.'},separators=(',',':'))
         return result
     except (ValueError,TypeError) as exc:
         return error(exc,'Use shape-specific fields: box center+size; cylinder/tube/beam start+end; loft section_axis+sections(center,radii); rotor center+axis+radius+blade_count+blade_width+thickness+hub_radius. Each body must be one connected solid; recipes are atomic.')
@@ -183,12 +183,24 @@ async def help_handler(services,args,ctx):
     from tcad.ir.validate import _VERIFIED_OP_PARAMS
     topic=args['topic']
     schema=_ir_patch_schema(); branches=schema['properties']['ops']['items']['anyOf']
-    selected={'sketch':['add_sketch','update_sketch'],'feature':['add_feature','update_feature'],'requirements':['update_requirement'],'assembly':['set_assembly'],'patch':[]}[topic]
+    selected={'sketch':['add_sketch','update_sketch'],'feature':['add_feature','update_feature'],'requirements':['update_requirement'],'assembly':['set_assembly'],'patch':[],'workflow':[]}[topic]
     # The next request carries the complete executable schema. Repeating it in
     # help bloats the conversation and can truncate the actual usage guidance.
     data={'operations':selected}
     data['unlocks']='Successful scoped help exposes matching ir_patch operations in the next model request.'
-    if topic=='sketch':
+    if topic=='workflow':
+        from tcad.agent.workflows import WORKFLOWS
+        workflow=args.get('workflow')
+        if workflow is None:
+            data['workflows']=[{'name':name,'description':item['description']} for name,item in WORKFLOWS.items()]
+            data['unlocks']='Choose a listed workflow to expose its specialized tools in the next model request.'
+        elif workflow not in WORKFLOWS:
+            return error(ValueError(f'Unknown workflow: {workflow}'),'Choose a workflow from the help catalog.')
+        else:
+            data.update(WORKFLOWS[workflow])
+            data['workflow']=workflow
+            data['unlocks']='These specialized tools are exposed in the next model request for this turn.'
+    elif topic=='sketch':
         data['rules']='Profile points are WORLD coordinates. On origin planes: XY uses x,y,z=0; XZ uses x,z,y=0; YZ uses y,z,x=0. Pad normals XY:+Z, XZ:-Y, YZ:+X. For an elevated profile, commit first and use ir_digest to choose an actual planar face, then set plane={kind:face,feature_id:existing_feature,sub:FaceN}; write points at that measured face location in world coordinates. FaceN is a placeholder, not a guessed name. Nonzero sketch.offset is refused; do not use it to raise a profile. A body may reference a previously created feature face; keep the dependency order valid. Native ellipse and bspline curves are supported; do not approximate curved outlines with stacked boxes. Ellipse major_radius/minor_radius are semi-axes in mm; rotation is local-plane degrees. BSpline points are WORLD interpolation points, not control poles; periodic=true closes the curve smoothly without repeating the first point. An open spline needs other edges to close a pad/pocket profile. Fully fixed geometry uses constraints [{type:Block,refs:[index]}], including ellipse/bspline. For an editable circle use DistanceX/DistanceY on refs [index,3] (centre) and Radius on refs [index], each with a numeric value. Block also fixes the radius; it does not support diameter editing.'
         data['example']={'op':'add_sketch','payload':{'id':'sk','name':'sk','body_id':'base','plane':{'kind':'origin_plane','plane':'XY'},'geometry':[{'id':'c','kind':'circle','points':[{'x':0,'y':0,'z':0}],'radius':10}],'constraints':[{'type':'Block','refs':[0]}]},'reason':'Circle for pad'}
     elif topic=='feature':
@@ -244,6 +256,7 @@ async def help_handler(services,args,ctx):
 
 
 def build_authoring_tools(services):
+    from tcad.agent.workflows import WORKFLOWS
     from tcad.ir.capability import all_ops
     part_schema=inline_schema(BuildParts.model_json_schema())
     item=part_schema['properties']['parts']['items']
@@ -273,10 +286,10 @@ def build_authoring_tools(services):
             description='Create repeated upright open-box cabins with vertical hangers around a horizontal wheel. mm: wheel_center, wheel_axis, radius, count, axial_offset, box_size [x,y,z], hanger_length (hinge to box TOP), wall. Optional hang_drop overrides center distance; omit axial_offset for automatic wheel clearance. Body IDs prefix_0..prefix_N. Same prefix atomically replaces its generated cabins and refreshes existing suspension pivots; custom added features are protected. Tool computes exact circular hinge positions and copies each cavity/hanger; no coordinate arithmetic or IR sketches needed. Explicit axial_offset must clear wheel half-thickness plus cabin half-width and 5mm. Then assembly_motion(rotating_body_ids=[wheel], hanging_body_ids=returned IDs, center=wheel_center, axis=wheel_axis), ir_commit, assembly_simulate, assembly_export. Highest hanger endpoint defines the automatic hinge; all cabins stay below it.',
             params_schema=inline_schema(CabinCopies.model_json_schema()),handler=functools.partial(cabin_copies_handler,services)),
         'cad_wheel':ToolSpec(name='cad_wheel',tier=ToolTier.WRITE,
-            description='Create one connected editable radial wheel (rim, straight spokes, hub and optional axial bore) from dimensions in mm. center/axis locate wheel; radius is outer radius; rim_width is radial wall; thickness is axial rim/hub length; spoke_width is web width. Cut fully constrained polygonal windows from one cylinder, avoiding fragile rod fusions. bore_radius must be smaller than hub_radius. Use for Ferris wheels/pulleys/structural wheels, not verified gears. Then add supports/cabins using cad_build_parts, assembly_motion and ir_commit.',
+            description='Create a connected native radial structure with rim, straight spokes, hub and optional axial bore, in mm. center/axis locate it; radius is outer radius; rim_width is radial wall; thickness is axial length; spoke_width is web width. bore_radius must be smaller than hub_radius. Geometry is editable; this does not verify meshing, loads or product functionality.',
             params_schema=inline_schema(RadialWheel.model_json_schema()),handler=functools.partial(radial_wheel_handler,services)),
         'cad_build_parts':ToolSpec(name='cad_build_parts',tier=ToolTier.WRITE,
-            description='Batch editable native CAD recipes in mm, without manual sketches. For curved fuselages, housings and tapered booms use shape=loft: section_axis X/Y/Z and 2..12 ordered sections {center:[x,y,z],radii:[u,v]}; radii are semi-axes on world Y/Z for X, X/Z for Y, X/Y for Z. Planes, fully constrained ellipses and native loft are generated automatically; ruled=false (default) is smooth. For propellers/fans/rotors use shape=rotor: center, axis, radius (blade-tip), blade_count 2..8, blade_width, thickness, hub_radius; one connected Body with hub and radial blades, NO rim. Do not use cad_wheel for propellers. box=center+size; cylinder=start+end+radius; tube adds inner_radius; beam=start+end+width+depth. Same body_id fuses connected additions; moving/disconnected components use distinct body_id. Same IDs update native geometry atomically; changing shape/ownership is rejected. cut requires existing material. Primitive polar copies gain _0,_1,... IDs; rotate=false keeps upright, separate_bodies=false fuses copies. Loft/rotor use one recipe per body. No compile yet: ir_commit at milestones, then configure native joints for requested motion.',
+            description='Batch editable native CAD recipes in mm. box=center+size; cylinder=start+end+radius; tube adds inner_radius; beam=start+end+width+depth. loft uses section_axis X/Y/Z and 2..12 ordered elliptical sections {center:[x,y,z],radii:[u,v]}; semi-axes lie on world Y/Z for X, X/Z for Y, X/Y for Z. ruled=false is smooth. rotor generates a cylindrical hub and 2..8 flat rectangular radial blades from center, axis, radius, blade_count, blade_width, thickness and hub_radius; it has no rim, pitch or airfoil. Select recipes only when these geometries fit the request; scoped sketch/feature help exposes other native operations. Same body_id fuses connected additions; separate components use distinct Bodies. Same recipe IDs update the existing history; new IDs add material. cut needs existing material. Primitive polar copies gain indexed IDs; separate_bodies=false fuses copies. No compile yet: ir_commit builds and verifies the current version.',
             params_schema=part_schema,handler=functools.partial(build_parts_handler,services)),
         'ir_requirements':ToolSpec(name='ir_requirements',tier=ToolTier.WRITE,
             description='Append typed measurable geometry constraints only. Original request is preserved automatically. confirmed=true requires explicit user-stated dimensions/source_text; guessed dimensions remain unconfirmed. Qualitative animation/gravity goals belong in design_review, not constraint kinds. No requirement call is needed when the user gave no measurable numbers.',
@@ -285,8 +298,8 @@ def build_authoring_tools(services):
             description='Ferris-wheel/gravity-pendulum rig ONLY: a horizontal wheel axis (Z is up) with passive hanging cabins. For ordinary propellers, vertical rotors and native joints use ir_help(topic=assembly), then assembly_configure; this tool is not a general rotor driver. rotating_body_ids revolve about center/axis. cad_cabins use hanging_body_ids directly; uniform-density COM/inertia and highest vertical hanger endpoint are measured automatically. Or use suspensions with explicit body_ids/pivot. Bodies upright, COM below hinge. RK4 integrates gravity, moving-hinge acceleration and damping. duration_s/frames set saved playback. Commit, assembly_simulate for sampled collisions, assembly_export for GIF. Not contact/structural analysis.',
             params_schema=inline_schema(RotationCall.model_json_schema()),handler=functools.partial(rotation_handler,services)),
         'ir_help':ToolSpec(name='ir_help',tier=ToolTier.READ,
-            description='Discover advanced native CAD before falling back to primitive approximations: topic=sketch exposes ellipse/bspline profiles; topic=feature with feature_op=additive_loft/subtractive_loft/datum_plane exposes smooth section solids and positioned section planes; fillet/chamfer/pad/pocket expose native edge and profile features. Successful scoped help unlocks matching ir_patch edits in the next request; their absence from the initial tool table is not a capability limit. topic=assembly unlocks assembly_configure for native joints and drivers in the next request. Common primitives use cad_build_parts/cad_wheel directly. topic=patch lists editing operations.',
-            params_schema={'type':'object','additionalProperties':False,'required':['topic'],'properties':{'topic':{'type':'string','enum':['sketch','feature','requirements','assembly','patch']},'feature_op':{'type':'string','enum':list(all_ops())}}},handler=functools.partial(help_handler,services),concurrency_safe=True),
+            description='Discover native CAD contracts: topic=sketch explains ellipse/bspline profiles; topic=feature with feature_op explains a native operation, including loft, datum_plane and fillet. Successful scoped help unlocks matching ir_patch edits in the next request; absence from the initial tool table is not a capability limit. topic=assembly unlocks assembly_configure for joints/drivers. topic=patch lists editing operations. topic=workflow lists optional specialized workflows; provide workflow to read its assumptions and expose its tools. Choose operations and workflows from the requested geometry.',
+            params_schema={'type':'object','additionalProperties':False,'required':['topic'],'properties':{'topic':{'type':'string','enum':['sketch','feature','requirements','assembly','patch','workflow']},'feature_op':{'type':'string','enum':list(all_ops())},'workflow':{'type':'string','enum':list(WORKFLOWS)}}},handler=functools.partial(help_handler,services),concurrency_safe=True),
     }
 
 class RadialWheel(BaseModel):
