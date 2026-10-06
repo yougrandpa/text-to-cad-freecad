@@ -1213,6 +1213,39 @@ function syncProviderEndpoint() {
   if (input.disabled) input.value = preset.base_url || "";
 }
 
+let settingsReturnFocus = null;
+
+function closeSettingsDialog() {
+  $("settingsModal").hidden = true;
+  settingsReturnFocus?.focus();
+  settingsReturnFocus = null;
+}
+
+function bindSettingsKeyboard() {
+  const modal = $("settingsModal");
+  modal.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      closeSettingsDialog();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = Array.from(modal.querySelectorAll("button, input, select, textarea, [tabindex='0']"))
+      .filter(node => !node.disabled && node.getClientRects().length);
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (!first) return;
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  });
+}
+
 function bindSettingsDismissal() {
   const modal = $("settingsModal");
   let pressedBackdrop = false;
@@ -1221,7 +1254,7 @@ function bindSettingsDismissal() {
   });
   modal.addEventListener("pointercancel", () => { pressedBackdrop = false; });
   modal.addEventListener("click", (event) => {
-    if (pressedBackdrop && event.target === modal) modal.hidden = true;
+    if (pressedBackdrop && event.target === modal) closeSettingsDialog();
     pressedBackdrop = false;
   });
 }
@@ -1269,7 +1302,9 @@ async function openSettings() {
   const modal = $("settingsModal");
   const errorBox = $("settingsError");
   errorBox.hidden = true;
+  settingsReturnFocus = document.activeElement;
   modal.hidden = false;
+  $("closeSettings").focus();
   try {
     const [{ providers }, current] = await Promise.all([
       api("/settings/providers"),
@@ -1360,7 +1395,7 @@ async function saveSettings() {
       method: "PUT",
       body: JSON.stringify(settingsPatch()),
     });
-    $("settingsModal").hidden = true;
+    closeSettingsDialog();
     state.settings = body.settings;
     updateModelChip(body.settings);
     pushNotice("info",
@@ -1507,33 +1542,7 @@ function wire() {
   $("pickKind").addEventListener("change", () => { meshViewer.pickMode = $("pickKind").value || null; });
   $("fitView").addEventListener("click", () => meshViewer.fit());
 
-  $("composer").addEventListener("submit", (e) => {
-    e.preventDefault();
-    const input = $("input");
-    const text = input.value;
-    input.value = "";
-    input.style.height = "";
-    send(text);
-  });
-
-  const input = $("input");
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      $("composer").requestSubmit();
-    }
-  });
-  input.addEventListener("input", () => {
-    input.style.height = "auto";
-    input.style.height = Math.min(input.scrollHeight, 180) + "px";
-  });
-
-  for (const s of document.querySelectorAll(".sample")) {
-    s.addEventListener("click", () => {
-      $("input").value = s.dataset.text;
-      $("composer").requestSubmit();
-    });
-  }
+  bindComposer();
 
   $("viewTabs").addEventListener("click", (e) => {
     const tab = e.target.closest(".tab");
@@ -1583,8 +1592,8 @@ function wire() {
   $("settingsBtn").addEventListener("click", openSettings);
   $("modelChip").addEventListener("click", openSettings);
   $("stopBtn").addEventListener("click", stopTurn);
-  $("closeSettings").addEventListener("click", () => { $("settingsModal").hidden = true; });
-  $("cancelSettings").addEventListener("click", () => { $("settingsModal").hidden = true; });
+  $("closeSettings").addEventListener("click", closeSettingsDialog);
+  $("cancelSettings").addEventListener("click", closeSettingsDialog);
   $("saveSettings").addEventListener("click", saveSettings);
   $("probeBtn").addEventListener("click", probeSettings);
   $("fetchModels").addEventListener("click", fetchModels);
@@ -1611,6 +1620,7 @@ function wire() {
     $("tempOut").textContent = Number(e.target.value).toFixed(2);
   });
   bindSettingsDismissal();
+  bindSettingsKeyboard();
 }
 
 // A turn with no work ceiling can legitimately run for a long time, and nothing
@@ -1699,7 +1709,7 @@ function renderSessions() {
   if (!state.sessions.length) {
     box.append(el("div", {
       class: "session-empty",
-      text: "还没有会话 —— 点「＋ 新建」开始一个。",
+      text: "每一个想法，都从这里开始。新建会话，或直接描述你的设计。",
     }));
     return;
   }
@@ -1768,7 +1778,7 @@ function resetStream(showWelcome) {
 function setSessionHeader(session) {
   $("threadLabel").textContent = session ? session.thread_id : "";
   const title = $("sessionTitle");
-  if (title) title.textContent = session ? sessionTitle(session) : "会话";
+  if (title) title.textContent = session ? sessionTitle(session) : "设计对话";
 }
 
 function syncUrl() {
@@ -1885,9 +1895,43 @@ async function newSession({ announce = true } = {}) {
   return created;
 }
 
+// Keep sample selection editable and ignore Enter while an IME confirms text.
+function bindComposer() {
+  const input = $("input");
+  const resizeInput = () => {
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 180) + "px";
+  };
+  $("composer").addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (state.busy || input.disabled || !input.value.trim()) return;
+    const text = input.value;
+    input.value = "";
+    input.style.height = "";
+    send(text);
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
+      event.preventDefault();
+      $("composer").requestSubmit();
+    }
+  });
+  input.addEventListener("input", resizeInput);
+  for (const sample of document.querySelectorAll(".sample")) {
+    sample.addEventListener("click", () => {
+      if (state.busy || input.disabled) return;
+      input.value = sample.dataset.text;
+      resizeInput();
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    });
+  }
+}
+
 function toggleSidebar(force) {
   state.sidebarHidden = force === undefined ? !state.sidebarHidden : force;
   $("layout").classList.toggle("no-sidebar", state.sidebarHidden);
+  $("sidebarToggle").setAttribute("aria-expanded", String(!state.sidebarHidden));
   try { localStorage.setItem("tcad.sidebarHidden", state.sidebarHidden ? "1" : "0"); } catch { /* private mode */ }
 }
 

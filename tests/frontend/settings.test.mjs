@@ -13,12 +13,13 @@ function harness() {
       append(child) { this.children.push(child); } });
     return nodes.get(id);
   };
-  const context = vm.createContext({ document: { getElementById: node }, console });
+  const document = { getElementById: node };
+  const context = vm.createContext({ document, console });
   vm.runInContext(source + `
     el = (tag, attrs) => attrs;
-    globalThis.testing = {state, syncProviderEndpoint, fillModelOptions, bindSettingsDismissal};
+    globalThis.testing = {state, syncProviderEndpoint, fillModelOptions, bindSettingsDismissal, bindSettingsKeyboard};
   `, context);
-  return { ...context.testing, node };
+  return { ...context.testing, node, document };
 }
 test('preset endpoints lock and custom endpoints unlock', () => {
   const h = harness();
@@ -67,4 +68,29 @@ test('OpenRouter puts free variants and zero-priced models first without changin
   h.node('providerSelect').value = 'opencode';
   h.fillModelOptions(models, 'live');
   assert.deepEqual(Array.from(h.node('modelOptions').children.slice(1), o => o.value), models);
+});
+
+test('settings keyboard traps focus, skips disabled controls, and Escape closes', () => {
+  const h = harness();
+  const modal = h.node('settingsModal');
+  const first = h.node('closeSettings');
+  const last = h.node('saveSettings');
+  const disabled = h.node('baseUrlInput');
+  disabled.disabled = true;
+  for (const node of [first, last, disabled]) node.getClientRects = () => [1];
+  let focused;
+  first.focus = () => { focused = first; };
+  last.focus = () => { focused = last; };
+  modal.querySelectorAll = () => [first, last, disabled];
+  h.bindSettingsKeyboard();
+  h.document.activeElement = last;
+  let prevented = false;
+  modal.listeners.keydown({ key: 'Tab', preventDefault() { prevented = true; } });
+  assert.equal(focused, first);
+  assert.equal(prevented, true);
+  h.document.activeElement = first;
+  modal.listeners.keydown({ key: 'Tab', shiftKey: true, preventDefault() {} });
+  assert.equal(focused, last);
+  modal.listeners.keydown({ key: 'Escape', preventDefault() {}, stopPropagation() {} });
+  assert.equal(modal.hidden, true);
 });

@@ -6,15 +6,15 @@
 <title>tcad · 对话式 CAD</title>
 <link rel="icon" type="image/svg+xml" href="./favicon.svg">
 <link rel="icon" type="image/png" sizes="64x64" href="./favicon.png">
-<link rel="stylesheet" href="./styles.css?v=20261004-assembly">
+<link rel="stylesheet" href="./styles.css?v=20261006-studio">
 </head>
 <body>
 
 <header class="topbar">
-  <button class="icon" id="sidebarToggle" title="显示/隐藏会话列表">☰</button>
+  <button class="icon" id="sidebarToggle" aria-label="显示或隐藏会话列表" aria-controls="sessionPane" aria-expanded="true" title="显示/隐藏会话列表">☰</button>
   <div class="brand">
-    <span class="mark">tcad</span>
-    <span class="tag">对话式参数化 CAD</span>
+    <span class="brand-symbol" aria-hidden="true">◇</span><span class="mark">tcad<span class="brand-period">.</span></span>
+    <span class="tag">DESIGN WORKSPACE</span>
   </div>
   <button class="chip" id="modelChip" title="点击配置模型">
     <span class="chip-label">模型</span>
@@ -58,7 +58,7 @@
     <span class="dot" id="statusDot"></span>
     <span id="statusText">未连接</span>
   </div>
-  <button class="icon" id="settingsBtn" title="模型设置">⚙</button>
+  <button class="icon" id="settingsBtn" aria-label="模型设置" title="模型设置">⚙</button>
 </header>
 
 <div class="apibanner" id="apiBanner" hidden></div>
@@ -68,51 +68,58 @@
   <!-- ── 会话列表 ───────────────────────────────────────────── -->
   <aside class="col col-sessions" id="sessionPane">
     <div class="col-head">
-      <span>会话</span>
+      <span class="pane-label">设计项目</span>
       <div class="grow"></div>
       <button class="mini new-session" id="newSessionBtn" title="新建会话（⌘/Ctrl+K）">＋ 新建</button>
     </div>
     <div class="session-list" id="sessionList">
-      <div class="session-empty" id="sessionEmpty">还没有会话 —— 点「＋ 新建」开始一个。</div>
+      <div class="session-empty" id="sessionEmpty">每一个想法，都从这里开始。<br>新建会话，或直接描述你的设计。</div>
     </div>
   </aside>
 
   <!-- ── 会话 ───────────────────────────────────────────────── -->
   <section class="col court-chat">
     <div class="col-head">
-      <span id="sessionTitle">会话</span>
+      <span id="sessionTitle">设计对话</span>
       <span class="hint" id="threadLabel"></span>
       <div class="grow"></div>
       <button class="mini" id="clearBtn" title="清空显示（不影响已保存的会话）">清空视图</button>
     </div>
     <div class="stream" id="stream">
       <div class="welcome" id="welcome">
-        <h2>说一句话，生成一个零件</h2>
-        <p>模型通过修改 IR 来设计，FreeCAD 负责编译几何。构建检查通过后，还需核对需求约束；实际使用功能需进一步验收。</p>
+        <div class="eyebrow">FROM WORDS TO FORM</div>
+        <h2>让想法，<br>有形有尺寸<span>。</span></h2>
+        <p>描述零件的形状、尺寸与细节。<br>在对话中调整，在三维视图中查看。</p>
+        <div class="sample-heading">从一个灵感开始 <span>点击后可编辑</span></div>
         <div class="samples">
-          <button class="sample" data-text="一个 80x50 的安装底板，厚度 8mm，中间开一个 40x20 的通槽">80×50 底板 + 40×20 通槽</button>
-          <button class="sample" data-text="一个 60x60 的方形法兰，厚度 12mm，中心一个直径 20mm 的通孔">60×60 法兰 + Ø20 通孔</button>
-          <button class="sample" data-text="一个 L 形支架：底板 70x40 厚 6mm，竖板高 50mm 厚 6mm">L 形支架</button>
+          <button class="sample" data-text="一个 80x50 的安装底板，厚度 8mm，中间开一个 40x20 的通槽"><span class="sample-number">01</span><span class="sample-copy"><strong>安装底板</strong><small>80 × 50 mm · 矩形通槽</small></span><span class="sample-arrow" aria-hidden="true">↗</span></button>
+          <button class="sample" data-text="一个 60x60 的方形法兰，厚度 12mm，中心一个直径 20mm 的通孔"><span class="sample-number">02</span><span class="sample-copy"><strong>方形法兰</strong><small>60 × 60 mm · Ø20 通孔</small></span><span class="sample-arrow" aria-hidden="true">↗</span></button>
+          <button class="sample" data-text="一个 L 形支架：底板 70x40 厚 6mm，竖板高 50mm 厚 6mm"><span class="sample-number">03</span><span class="sample-copy"><strong>L 形支架</strong><small>70 × 40 mm · 直角结构</small></span><span class="sample-arrow" aria-hidden="true">↗</span></button>
         </div>
+        <p class="welcome-note">构建检查后仍需核对需求，实际使用功能需进一步验收。</p>
       </div>
     </div>
     <form class="composer" id="composer">
       <div id="referenceChips" class="reference-chips" aria-label="消息引用的模型对象" aria-live="polite" hidden></div>
-      <textarea id="input" rows="2" placeholder="描述你要的零件…  Enter 发送，Shift+Enter 换行"></textarea>
+      <label class="composer-label" for="input">你的设计要求</label>
+      <textarea id="input" rows="3" aria-describedby="composerHint" placeholder="例如：一个 80 × 50 mm 的底板，厚 8 mm，中间开通槽…"></textarea>
+      <div class="composer-actions">
+      <span class="composer-hint" id="composerHint">Enter 发送 <span>· Shift + Enter 换行</span></span>
       <!-- While a turn runs the only useful thing to do to it is stop it: the
            model is already working, so "send" is disabled and this takes its
            place. Hidden (not merely disabled) the rest of the time — an always
            visible but dead "stop" reads as a broken button. -->
       <button type="button" id="stopBtn" class="stop" hidden
               title="打断当前回合，保留已完成的改动（Esc）">停止</button>
-      <button type="submit" id="sendBtn" class="primary">发送</button>
+      <button type="submit" id="sendBtn" class="primary">发送 <span aria-hidden="true">↑</span></button>
+      </div>
     </form>
   </section>
 
   <!-- ── 视图 ───────────────────────────────────────────────── -->
   <section class="col col-view">
     <div class="col-head">
-      <span>3D 视图</span>
+      <span class="pane-label">模型空间 <small>3D VIEW</small></span>
       <div class="grow"></div>
       <select id="pickKind" aria-label="选择模型实体" disabled><option value="">旋转查看</option><option value="body">选择实体</option><option value="face">选择面（查看）</option><option value="edge">选择边（查看）</option></select>
       <button class="mini" id="fitView" title="居中并适配模型（F / Home / 双击）" disabled>适配</button>
@@ -128,7 +135,7 @@
       <button class="tab" data-view="bottom" aria-pressed="false" title="仰视（6）">下</button>
     </div>
     <div class="viewport" id="viewport">
-      <div class="placeholder" id="viewPlaceholder">还没有几何 —— 先在左边描述一个零件</div>
+      <div class="placeholder" id="viewPlaceholder">等待你的第一个设计</div>
       <canvas id="viewCanvas" tabindex="0" role="img" aria-label="交互式三维模型" aria-describedby="viewHelpText" hidden></canvas>
       <img id="viewImage" alt="模型视图" hidden>
       <svg id="viewAxes" class="view-axes" viewBox="0 0 96 96" role="img" aria-label="坐标轴：X 红色，Y 绿色，Z 蓝色" hidden>
@@ -154,12 +161,12 @@
   <!-- ── 检查器 ─────────────────────────────────────────────── -->
   <section class="col col-inspect">
     <div class="col-head">
-      <span>检查器</span>
+      <span class="pane-label">设计检查 <small>INSPECTOR</small></span>
       <div class="grow"></div>
       <button class="mini" id="refreshInspect" title="刷新">刷新</button>
     </div>
     <div class="inspect" id="inspector">
-      <div class="muted small">提交一次后会显示几何摘要与 Gate 报告。</div>
+      <div class="inspector-empty"><span class="empty-symbol" aria-hidden="true">✓</span><strong>设计的每一步，都有据可查</strong><p>生成后在这里查看几何摘要、特征历史与检查结果。</p></div>
     </div>
   </section>
 
@@ -167,10 +174,10 @@
 
 <!-- ── 设置对话框 ──────────────────────────────────────────── -->
 <div class="modal" id="settingsModal" hidden>
-  <div class="modal-panel">
+  <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
     <div class="modal-head">
-      <h3>模型设置</h3>
-      <button class="icon" id="closeSettings">✕</button>
+      <h3 id="settingsTitle">模型设置</h3>
+      <button class="icon" id="closeSettings" aria-label="关闭模型设置">✕</button>
     </div>
 
     <div class="modal-body">
@@ -232,6 +239,6 @@
   </div>
 </div>
 
-<script type="module" src="./app.js?v=20261004-assembly"></script>
+<script type="module" src="./app.js?v=20261006-studio"></script>
 </body>
 </html>
