@@ -17,9 +17,27 @@ Slider/Cylindrical。球铰等作为被动关节通过机构约束联动，不�
 
 ## 工具流程
 
-1. `ir_patch` 建立独立零件。先清除原有 `body.motion`，避免混用两套运动定义。
+模型根据需求及其复杂度自行判断使用单 Body 还是多 Body，结合功能、制造边界、
+可拆卸性和相对运动选择能满足需求的最简单结构。特征较多的一体零件仍可用一个
+Body；需要独立几何或运动的多个组件再拆成有明确名称的 Body。特征数量本身
+不是拆分依据，用户明确提出的单零件、一体成型或装配要求优先。
+
+决定拆分时先规划零件、摆放位置和连接关系；零件相互接触或同步运动不必合并。
+修改已有模型时保留原有零件边界，建模计划中按需简述选择单 Body 或多 Body 的理由。
+
+新增草图和特征时用 `payload.body_id` 指定所属零件。多个 Body 时省略此字段会
+拒绝整批补丁，反馈可选 Body ID；空模型仍支持自动创建 `body_1`，只有一个 Body
+时仍支持省略字段。显式传入的 `body_id` 必须是非空字符串并指向已有 Body。
+更新已有草图/特征使用 `target_id`，保持原有归属；`ir_list_features` 返回各特征
+的 `body_id`，供修改前确认零件边界。
+历史事件重建保留旧版的首 Body 默认归属；新的写入执行上述显式路由规则。
+
+1. 先列出零件、摆放位置及连接关系，用 `cad_build_parts` 或 `ir_patch` 建立独立零件。
+   先清除原有 `body.motion`，避免混用两套运动定义。
 2. `assembly_configure` 原子保存完整装配声明，也可传 `assembly=null` 清除。
-3. `assembly_solve` 检查静态约束；`assembly_simulate` 生成时间序列。
+   按实际连接选择 Fixed 或可动关节；静态装配不需要虚构运动驱动。配置后 `ir_commit`。
+3. `assembly_solve` 查看已保存的静态求解结果；`assembly_simulate` 读取已保存的
+   运动帧并按需检查零件干涉。修改后需重新 `ir_commit` 生成当前版本的结果。
 4. 网页自动加载原生姿态，支持播放/暂停、拖动定位、归零、倍速与循环。
 5. `assembly_export` 导出 GIF、MP4、AVI 或 WebM；重复导出复用当前 IR 的帧缓存。
    视频依赖 `pip install -e ".[animation]"` 和对应编码器；GIF 使用已有 Pillow。
@@ -60,6 +78,7 @@ Screw 的 distance 按原生 pitch 语义传入。
 产物位于 `data/artifacts/<model>/vN/assembly/`：animation.json、assembly.FCStd、
 动画媒体。FCStd 保存原生装配、关节和运动数据代理，帧文件保存参考网格及每帧矩阵。
 原始 PartDesign 零件仍保留供编辑；普通 `ir_commit` 验证零姿态几何，与运动求解分别报告。
+多 Body 的 Compound 表示组合几何；装配约束是否成立需要查看保存的原生求解结果。
 
 复现削笔机构：
 

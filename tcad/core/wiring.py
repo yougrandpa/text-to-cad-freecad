@@ -232,11 +232,13 @@ class StoreAdapter:
         The patch is applied in memory only — nothing is persisted here, so a
         rejected patch leaves no trace.
         """
-        from tcad.ir.patch import apply_patch as _apply_patch
+        from tcad.ir.patch import PatchError, apply_patch as _apply_patch
 
         try:
             outcome = _apply_patch(ir, patch)
-        except Exception as exc:  # noqa: BLE001 — any patch failure is a semantic error
+        except PatchError as exc:
+            return [exc.error]
+        except Exception as exc:  # noqa: BLE001 — unexpected patch failure
             return [
                 ToolError(
                     kind=ToolErrorKind.SEMANTIC,

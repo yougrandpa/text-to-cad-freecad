@@ -241,7 +241,9 @@ class IrStore:
             if upto is not None and ev.ir_version_after is not None and ev.ir_version_after > upto:
                 continue
             patch = IrPatch.model_validate(ev.payload["patch"])
-            outcome = apply_patch(base, patch)
+            # Old committed events used first-body fallback. Preserve that
+            # history during crash recovery; live apply_patch stays strict.
+            outcome = apply_patch(base, patch, replay_legacy_body_routing=True)
             base = outcome.ir
             base_version = outcome.version
 

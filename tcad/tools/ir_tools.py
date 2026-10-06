@@ -25,6 +25,7 @@ from tcad.core.types import (
     ToolTier,
 )
 from tcad.ir import capability
+from tcad.ir.patch import PatchError
 
 
 def _ok(content: str, **kw: object) -> ToolResult:
@@ -81,7 +82,7 @@ async def ir_digest_handler(services: "Any", args: dict, ctx: ToolContext) -> To
 async def ir_list_features_handler(services: "Any", args: dict, ctx: ToolContext) -> ToolResult:
     ir = services.store.load(ctx.model_id)
     feats = [
-        {"id": f.id, "name": f.name, "op": f.op, "params": f.params, "refs": f.refs}
+        {"id": f.id, "body_id": b.id, "name": f.name, "op": f.op, "params": f.params, "refs": f.refs}
         for b in ir.bodies
         for f in b.features
     ]
@@ -142,6 +143,8 @@ async def ir_patch_handler(services: "Any", args: dict, ctx: ToolContext) -> Too
 
     try:
         new_doc, _event = services.store.apply_patch(ctx.model_id, patch)
+    except PatchError as e:
+        return _err(e.error.kind, e.error.message, feature_id=e.error.feature_id, hint=e.error.hint)
     except Exception as e:  # optimistic-concurrency / IO failure
         return _err(ToolErrorKind.SEMANTIC, f"patch rejected: {e}")
 
@@ -211,10 +214,12 @@ ops is a list of {"op": <name>, "target_id"?: <id>, "payload": {...}, "reason": 
 
 op names and their payload shapes:
 
-  add_body     payload = {"id": "crank", "name": "crank_assembly"}.
+  add_body     payload = {"id": "crank", "name": "crank"}.
                Creates an EMPTY independent solid body. Add sketches/features to it
-               with body_id. Use separate bodies for housing, shafts, gears, grip
-               and cutter; disconnected moving parts must not be fused into one body.
+               with body_id. Choose the body structure from the requirements:
+               integral parts can use one body even with many features; use separate
+               bodies for independent components or relative motion, such as a housing
+               and rotating shaft. Feature count alone does not require splitting.
                Each body must finish as exactly one valid solid before ir_commit.
                For a toothed wheel, draw ONE closed profile sketch and pad it;
                dozens of additive tooth primitives repeatedly fuse the BRep and
@@ -249,8 +254,9 @@ op names and their payload shapes:
        "require_fully_constrained": true}
 
       `id`/`name` may be omitted and will be minted for you. `body_id` targets a
-      specific body; otherwise the first body is used (a fresh one is created when
-      the document has none).
+      specific body for add_sketch and add_feature. It is required when there are
+      multiple bodies. Omission targets the sole body, or creates body_1 when the
+      document has none. Create a named Body for each independent part first.
 
       COORDINATES ARE WORLD COORDINATES, AND THEY MUST LIE IN THE SKETCH'S PLANE.
         A point is placed by the plane the sketch is attached to; the component
@@ -528,8 +534,10 @@ def _ir_patch_schema() -> dict:
         result['required']=[] if partial else [k for k in result.get('required',[]) if k not in ('id','name')]
         return result
     body=payload('body',partial=True,fields={'id','name','motion','part_ref','suspension_pivot'})
-    sketch=payload('sketch'); sketch['properties']['body_id']={'type':'string'}
-    feature=payload('feature'); feature['properties']['body_id']={'type':'string'}
+    body_route={'type':'string','minLength':1,
+        'description':'Existing owning Body ID. Required with multiple bodies; omission uses the sole body or creates body_1 in an empty model. Create independent parts with add_body first.'}
+    sketch=payload('sketch'); sketch['properties']['body_id']=dict(body_route)
+    feature=payload('feature'); feature['properties']['body_id']=dict(body_route)
     update_sketch=payload('sketch',partial=True)
     for field in ('geometry','constraints'):
         update_sketch['properties'][field+'_append']=update_sketch['properties'][field]
@@ -636,7 +644,7 @@ def build_ir_tools(services: "Any") -> dict[str, ToolSpec]:
         "ir_list_features": ToolSpec(
             name="ir_list_features",
             tier=ToolTier.READ,
-            description="List every feature as {id, name, op, params, refs}. Use to discover stable ids before referencing them in a patch.",
+            description="List every feature as {id, body_id, name, op, params, refs}. Use to discover stable IDs and owning bodies before editing or adding geometry.",
             params_schema={"type": "object", "properties": {}},
             handler=functools.partial(ir_list_features_handler, services),
             concurrency_safe=True,

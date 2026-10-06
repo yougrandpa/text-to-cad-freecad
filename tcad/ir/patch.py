@@ -16,8 +16,8 @@ Semantics of the ops
 ---------------------
 * ``add_sketch`` / ``add_feature`` — payload carries the new entity's fields
   (``id``/``name`` optional; minted via :mod:`tcad.ir.naming` when omitted). The
-  entity is appended to a body (``body_id`` in payload, else first body, else a
-  fresh body is created).
+  entity is appended to the explicit ``body_id``. Without it, a sole body is
+  used or a fresh body is created; multiple bodies require explicit routing.
 * ``update_sketch`` / ``update_feature`` — **partial** updates. Scalar fields are
   set in place. **List fields are replace-not-append** by default: assign the
   whole list via ``geometry``/``constraints``/``refs``. To *append*, pass
@@ -117,14 +117,25 @@ def _all_ids(ir: IrDocument) -> tuple[set[str], set[str]]:
 
 def _require_body(ir: IrDocument, payload: dict) -> BodySpec:
     body_id = payload.get("body_id")
-    if body_id:
+    if "body_id" in payload:
+        if not isinstance(body_id, str) or not body_id.strip():
+            raise _reject(
+                kind=ToolErrorKind.SCHEMA,
+                message="body_id must be a non-empty string",
+                hint="set body_id to an existing body ID; use ir_get to inspect bodies")
         body = next((b for b in ir.bodies if b.id == body_id), None)
         if body is None:
             raise _reject(
                 kind=ToolErrorKind.NOT_FOUND,
                 message=f"body '{body_id}' not found",
-                hint="add the body first, or omit body_id to target the first body")
+                hint="add the body first, or use ir_get to choose an existing body_id")
         return body
+    if len(ir.bodies) > 1:
+        raise _reject(
+            kind=ToolErrorKind.SEMANTIC,
+            message="body_id is required when the model has multiple bodies",
+            hint=(f"set payload.body_id to the intended part: {[b.id for b in ir.bodies]}; "
+                  "use add_body first for a new independent part"))
     if not ir.bodies:
         body = BodySpec(id=naming.unique_name({b.id for b in ir.bodies}, "body_1"),
                         name="body_1")
@@ -636,7 +647,7 @@ _HANDLERS = {
 }
 
 
-def apply_patch(ir: IrDocument, patch: IrPatch) -> PatchOutcome:
+def apply_patch(ir: IrDocument, patch: IrPatch, *, replay_legacy_body_routing: bool = False) -> PatchOutcome:
     """Apply ``patch`` to ``ir`` and return a new, version-bumped document.
 
     Raises :class:`ToolError` (``kind=SEMANTIC`` unless otherwise noted) on:
@@ -647,6 +658,9 @@ def apply_patch(ir: IrDocument, patch: IrPatch) -> PatchOutcome:
       * any ``error``-severity result from :func:`validate_ir` on the outcome.
 
     The input ``ir`` is never mutated.
+    ``replay_legacy_body_routing`` is reserved for replaying committed events
+    whose omitted/empty body_id historically targeted the first body. Live
+    writes must use the default strict routing.
     """
     if patch.base_version != ir.version:
         raise _reject(
@@ -660,6 +674,11 @@ def apply_patch(ir: IrDocument, patch: IrPatch) -> PatchOutcome:
                        summary=patch.summary or "ir patch")
 
     for op in patch.ops:
+        if replay_legacy_body_routing and op.op in {"add_sketch", "add_feature"} and not op.payload.get("body_id"):
+            payload = {k: v for k, v in op.payload.items() if k != "body_id"}
+            if new_ir.bodies:
+                payload["body_id"] = new_ir.bodies[0].id
+            op = op.model_copy(update={"payload": payload})
         handler = _HANDLERS.get(op.op)
         if handler is None:  # pragma: no cover - Literal guards this
             raise _reject(kind=ToolErrorKind.SEMANTIC,

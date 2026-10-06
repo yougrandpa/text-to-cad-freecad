@@ -160,10 +160,14 @@ async def help_handler(services,args,ctx):
     elif topic=='requirements':
         data['rules']='raw_text is immutable. Qualitative motion/functionality is not a geometry constraint. Do not invent kind=note/motion/dimension or user-confirmed dimensions.'
         data['example']={'constraints':[{'kind':'bbox','value':{'x':80,'y':50,'z':8},'source_text':'80×50×8','confirmed':True}],'reason':'Record explicit user dimensions'}
+    elif topic=='assembly':
+        data['rules']='Create each independent part in its own Body and place it in the assembled pose. Configure actual connections through assembly_configure: Fixed for rigid connections, appropriate movable joints for moving parts, and drivers only for requested motion. Then ir_commit, assembly_solve for saved constraint evidence or assembly_simulate for saved motion frames and sampled overlap checks. Multiple Bodies alone do not prove assembly constraints. Clear body.motion before configuring native joints/drivers.'
     elif topic=='patch':
         data={'operations':[b['properties']['op']['enum'][0] for b in branches],
               'rules':'Use update_body with target_id=body_id and payload={name:new_name} to rename a body. The rename operation accepts sketch or feature IDs only. Use update_feature/update_sketch to change geometry; their target_id identifies the existing node, so do not include body_id in the partial payload.',
               'next':'Common primitives use cad_build_parts. Native ellipse/bspline profiles, pad/pocket and fillet/chamfer are available through scoped sketch/feature help, which exposes matching ir_patch operations in the next request. For exact contracts request topic=sketch, feature, requirements or assembly; do not fetch all schemas.'}
+    if topic in {'sketch','feature','patch','assembly'}:
+        data['body_routing']='Choose single-body or multi-body modeling based on the requirements and their complexity. An integral part can use one Body even with many features; separate components, manufacturing boundaries or relative motion may require multiple Bodies. Feature count alone does not require splitting. Honor explicit single-part or assembly intent. When splitting, create each independent part with add_body. Set payload.body_id on add_sketch/add_feature; it is required with multiple bodies. Omission uses the sole body or creates body_1 in an empty model. Updates use target_id and preserve ownership. ir_list_features returns each feature with its body_id.'
     return ToolResult(ok=True,content=json.dumps(data,ensure_ascii=False,separators=(',',':')))
 
 
