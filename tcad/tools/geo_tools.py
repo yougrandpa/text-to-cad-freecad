@@ -34,6 +34,7 @@ from tcad.worker.protocol import (
 )
 
 from tcad.tools.ir_tools import _err, _ok  # shared helpers
+from tcad.render.snapshot import STYLES, VIEWS
 
 
 def _artifact_dir(ctx: ToolContext, version: int) -> str:
@@ -308,8 +309,8 @@ def build_geo_tools(services: "Any") -> dict[str, ToolSpec]:
             params_schema={
                 "type": "object",
                 "properties": {
-                    "views": {"type": "array", "items": {"type": "string"}},
-                    "style": {"type": "string"},
+                    "views": {"type": "array", "minItems": 1, "items": {"type": "string", "enum": sorted(VIEWS)}},
+                    "style": {"type": "string", "enum": sorted(STYLES)},
                     "driver_angle_deg": {"type": "number", "minimum": -720, "maximum": 720},
                     "artifact_id": {"type": "string"},
                     "frame_index": {"type": "integer", "minimum": 0, "maximum": 599},

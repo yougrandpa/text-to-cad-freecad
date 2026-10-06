@@ -99,3 +99,25 @@ def test_only_explicitly_experimental_types_can_be_optional(compiler):
     optional = runpy.run_path(str(path))["_OPTIONAL_FEATURE_OPS"]
     assert optional == {"circular_pattern"}
     assert all(capability(op).tier == EXPERIMENTAL for op in optional)
+
+
+@pytest.mark.parametrize('op',['pad','additive_loft','subtractive_loft'])
+def test_scheduler_preserves_solid_history_with_later_datum_prerequisites(compiler,op):
+    body={'id':'body','sketches':[{'id':'profile','plane':{'kind':'datum_plane','feature_id':'plane'}}],
+          'features':[{'id':'base','op':'additive_box'},
+                      {'id':'profile_feature','op':op,'profile_sketch':'profile'},
+                      {'id':'downstream','op':'subtractive_cylinder'},
+                      {'id':'plane','op':'datum_plane'}]}
+    order,errors=compiler['_dependency_order'](body)
+    assert not errors
+    ids=[node['id'] for _,node in order]
+    solids=[node['id'] for kind,node in order if kind == 'feature' and node['op'] != 'datum_plane']
+    assert solids == ['base','profile_feature','downstream']
+    assert ids.index('plane') < ids.index('profile') < ids.index('profile_feature')
+
+
+def test_scheduler_reports_dependencies_that_conflict_with_solid_history(compiler):
+    body={'id':'body','features':[{'id':'first','op':'additive_box','refs':['later']},
+                                {'id':'later','op':'additive_box'}]}
+    _,errors=compiler['_dependency_order'](body)
+    assert errors and errors[0]['kind'] == 'semantic'

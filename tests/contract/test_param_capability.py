@@ -156,7 +156,8 @@ def measured(tmp_path_factory) -> dict:
     assert proc.returncode == 0, proc.stderr[-2000:]
     marker = [ln for ln in proc.stdout.splitlines() if ln.startswith("###KEYS###")]
     assert marker, f"probe printed no result.\nstdout tail: {proc.stdout[-2000:]}"
-    return json.loads(marker[0][len("###KEYS###"):])
+    # FreeCAD's console prompt can follow the JSON on the same stdout line.
+    return json.JSONDecoder().raw_decode(marker[0][len("###KEYS###"):])[0]
 
 
 def test_no_allowed_key_is_a_reference_or_container_property(measured):

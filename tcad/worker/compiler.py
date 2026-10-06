@@ -575,8 +575,8 @@ def _dependency_order(b: dict, available=()) -> tuple[list[tuple[str, dict]], li
     with "face target not found" before the feature had been created, and the
     cascade of follow-on errors buried that one line.
 
-    Stable: nodes are emitted in the IR's declared order whenever dependencies
-    allow, so the common "sketches, then features" body is built exactly as before.
+    Solid features retain their declared history order. Datum planes are
+    prerequisites, not solid history steps, and may be built ahead of that order.
     """
     body_id = b.get("id")
     nodes: list[tuple[str, dict]] = (
@@ -584,6 +584,14 @@ def _dependency_order(b: dict, available=()) -> tuple[list[tuple[str, dict]], li
         + [("feature", f) for f in b.get("features") or []]
     )
     known = {node.get("id") for _kind, node in nodes}
+    dependencies = {node.get("id"): _node_deps(kind, node) for kind, node in nodes}
+    previous = None
+    for feature in b.get("features") or []:
+        if feature.get("op") == "datum_plane":
+            continue
+        if previous is not None:
+            dependencies[feature.get("id")].add(previous)
+        previous = feature.get("id")
     pending = list(nodes)
     built: set = set(available)
     order: list[tuple[str, dict]] = []
@@ -592,7 +600,7 @@ def _dependency_order(b: dict, available=()) -> tuple[list[tuple[str, dict]], li
     while pending:
         ready = [
             (kind, node) for kind, node in pending
-            if _node_deps(kind, node) <= built
+            if dependencies[node.get("id")] <= built
         ]
         if not ready:
             blocked = [f"{kind}:{node.get('id')}" for kind, node in pending]

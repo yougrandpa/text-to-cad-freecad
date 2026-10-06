@@ -6,6 +6,7 @@
 - [产物查询边界](artifact-boundary-refactor.md)：不可变产物、测量、Scene 和兼容性。
 - [原生装配](native-assembly.md)：关节、驱动、运动检查与示例。
 - [原生草图曲线](native-sketch-curves.md)：椭圆和 B 样条的输入及约束。
+- [紧凑曲面与旋翼](compact-shape-recipes.md)：用截面及尺寸生成原生 CAD，减少模型坐标计算与修复负担。
 - [特征引用](feature-references.md)：特征树、面边引用和选择身份。
 - [功能验收](functional-acceptance.md)：需求复核与完成条件。
 - [Agent 运行时加固](agent-runtime-hardening.md)：预算、重试和停滞检测。

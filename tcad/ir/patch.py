@@ -18,11 +18,13 @@ Semantics of the ops
   (``id``/``name`` optional; minted via :mod:`tcad.ir.naming` when omitted). The
   entity is appended to the explicit ``body_id``. Without it, a sole body is
   used or a fresh body is created; multiple bodies require explicit routing.
+  ``add_feature.after_feature`` inserts after an existing feature in that body.
 * ``update_sketch`` / ``update_feature`` — **partial** updates. Scalar fields are
   set in place. **List fields are replace-not-append** by default: assign the
   whole list via ``geometry``/``constraints``/``refs``. To *append*, pass
   ``geometry_append``/``constraints_append``/``refs_append`` instead. ``params``
-  (a dict) is merged field-wise. Ambiguity here is the #1 multi-turn editing bug,
+  (a dict) is merged field-wise; ``params_remove`` explicitly removes named
+  parameter keys. Ambiguity here is the #1 multi-turn editing bug,
   hence this explicit rule.
 * ``remove_feature`` — refuses (semantic error) if another feature references the
   victim via ``refs``; the error names the dependents so the model can fix them.
@@ -215,8 +217,8 @@ _PAYLOAD_FIELDS: dict[str, frozenset[str]] = {
     "remove_body": frozenset(),
     "add_sketch": frozenset(SketchSpec.model_fields) | {"body_id", "geometry_append", "constraints_append"},
     "update_sketch": frozenset(SketchSpec.model_fields) | {"geometry_append", "constraints_append"},
-    "add_feature": frozenset(FeatureSpec.model_fields) | {"body_id"},
-    "update_feature": frozenset(FeatureSpec.model_fields) | {"refs_append"},
+    "add_feature": frozenset(FeatureSpec.model_fields) | {"body_id", "after_feature"},
+    "update_feature": frozenset(FeatureSpec.model_fields) | {"refs_append", "params_remove"},
     "remove_feature": frozenset({"cascade"}),
     "update_requirement": frozenset({"raw_text", "constraints", "constraints_append"}),
     "rename": frozenset({"name"}),
@@ -483,6 +485,15 @@ def _op_add_feature(ir: IrDocument, op: IrPatchOp, out: PatchOutcome) -> None:
                         feature_id=fid)
     name = p.get("name") or naming.default_feature_name(p["op"], len(ir.all_features()))
     body = _require_body(ir, p)
+    index = len(body.features)
+    if "after_feature" in p:
+        anchor = p["after_feature"]
+        if not isinstance(anchor, str) or not anchor.strip():
+            _reject(ToolErrorKind.SCHEMA, "after_feature must be a non-empty feature ID")
+        index = next((i + 1 for i, f in enumerate(body.features) if f.id == anchor), None)
+        if index is None:
+            _reject(ToolErrorKind.NOT_FOUND,
+                    f"after_feature '{anchor}' is not in body '{body.id}'", feature_id=anchor)
     f = FeatureSpec(
         id=fid,
         name=name,
@@ -498,8 +509,8 @@ def _op_add_feature(ir: IrDocument, op: IrPatchOp, out: PatchOutcome) -> None:
     # and the rejection that followed told the model to "set base_feature and
     # sub_elements", which it had just done. Sharing one mapping means the two
     # ops cannot drift apart again.
-    _merge_feature(f, {k: v for k, v in p.items() if k != "body_id"})
-    body.features.append(f)
+    _merge_feature(f, {k: v for k, v in p.items() if k not in {"body_id", "after_feature"}})
+    body.features.insert(index, f)
     out.created_ids.append(fid)
     out.changes.append(f"add_feature '{name}' (op={f.op}, id={fid}) to body '{body.id}': {op.reason or '-'}")
 
@@ -511,7 +522,13 @@ def _op_update_feature(ir: IrDocument, op: IrPatchOp, out: PatchOutcome) -> None
                         message=f"feature '{op.target_id}' not found",
                         feature_id=op.target_id)
     _reject_unknown_payload_keys("update_feature", op.payload)
-    _merge_feature(f, op.payload)
+    remove = _require_str_list(op.payload.get('params_remove', []), field='params_remove')
+    params = op.payload.get('params', {})
+    if isinstance(params, dict) and set(remove) & set(params):
+        raise _reject(kind=ToolErrorKind.SCHEMA,
+                      message='params and params_remove must not contain the same key', feature_id=f.id)
+    _merge_feature(f, {k:v for k,v in op.payload.items() if k != 'params_remove'})
+    f.params = {k:v for k,v in f.params.items() if k not in remove}
     out.changes.append(f"update_feature '{f.name}' (id={f.id}): {op.reason or '-'}")
 
 

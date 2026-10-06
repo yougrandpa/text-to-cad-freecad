@@ -331,6 +331,8 @@ op names and their payload shapes:
   add_feature  payload is a feature:
       {"id": "ft_pad", "name": "base_pad", "op": "pad", "profile_sketch": "sk_base",
        "params": {"length": 10.0, "type": "Length"}}
+      Optional `after_feature` inserts after an existing feature ID in the owning
+      Body; omission appends to history.
 {OP_CAPABILITY}
 
       pad params:    {"length": <mm>, "type": "Length"|"UpToLast"|"UpToFirst"|"UpToFace"}
@@ -475,7 +477,9 @@ op names and their payload shapes:
                      not coerced ("false" would otherwise be a truthy string and
                      silently reverse the sketch).
   update_feature     target_id = feature id; payload = partial feature fields.
-                     `params` merges field-wise; `refs` replaces (`refs_append` adds).
+                     `params` merges field-wise; `params_remove` removes named parameter keys without
+                     deleting the feature. Use it to repair an unsupported stored parameter.
+                     `refs` replaces (`refs_append` adds).
                      `refs` is an ARRAY OF ID STRINGS — passing the bare id
                      ("refs": "ft_pad") is rejected rather than read as a list of
                      characters.
@@ -538,11 +542,14 @@ def _ir_patch_schema() -> dict:
         'description':'Existing owning Body ID. Required with multiple bodies; omission uses the sole body or creates body_1 in an empty model. Create independent parts with add_body first.'}
     sketch=payload('sketch'); sketch['properties']['body_id']=dict(body_route)
     feature=payload('feature'); feature['properties']['body_id']=dict(body_route)
+    feature['properties']['after_feature']={'type':'string','minLength':1,
+        'description':'Insert the new feature after this existing feature ID in the owning Body; omission appends to history.'}
     update_sketch=payload('sketch',partial=True)
     for field in ('geometry','constraints'):
         update_sketch['properties'][field+'_append']=update_sketch['properties'][field]
     update_feature=payload('feature',partial=True)
     update_feature['properties']['refs_append']=update_feature['properties']['refs']
+    update_feature['properties']['params_remove']={'type':'array','items':{'type':'string'},'minItems':1}
     requirements=payload('requirements',partial=True,fields={'constraints'})
     requirements['properties']['constraints_append']=requirements['properties']['constraints']
     declarations={'add_body':body,'update_body':payload('body',partial=True,fields={'name','motion','part_ref','suspension_pivot'}),
@@ -591,7 +598,7 @@ def build_ir_tools(services: "Any") -> dict[str, ToolSpec]:
             params_schema={"type": "object", "additionalProperties": False, "required": ["assembly", "reason"],
                 "$defs": AssemblySpec.model_json_schema().get("$defs", {}),
                 "properties": {"assembly": {"anyOf": [AssemblySpec.model_json_schema(), {"type": "null"}]},
-                    "reason": {"type": "string"}, "base_version": {"anyOf": [{"type": "integer"}, {"type": "string", "enum": ["current"]}]}}},
+                    "reason": {"type": "string"}, "base_version": {"anyOf": [{"type": "integer"}, {"type": "string", "enum": ["current"]}, {"type": "string", "pattern": "^[0-9]+$"}]}}},
             handler=functools.partial(assembly_configure_handler, services),
         ),
         "ir_gear_profile": ToolSpec(

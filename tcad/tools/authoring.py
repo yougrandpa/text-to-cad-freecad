@@ -49,15 +49,77 @@ class RotationCall(RotaryRig):
     damping_per_s: float = Field(default=0.5,ge=0,le=100)
 
 
+def _check_recipe_identity(part, old):
+    """Check composite recipe ownership before converting generated operations."""
+    rotor_ids = [part.id+'_hub'] + [f'{part.id}_blade_{i}' for i in range(8)]
+    rotor_members = [old[id] for id in rotor_ids if id in old]
+    root = old.get(part.id)
+    if part.id+'_hub' in old and len(rotor_members) > 1:
+        if part.shape != 'rotor' or any(body != part.body_id for body,_ in rotor_members):
+            raise ValueError(f'recipe ID {part.id} already belongs to another body/shape; use a new ID')
+    if root and root[1].op in {'additive_loft', 'subtractive_loft'}:
+        if part.shape != 'loft' or root[0] != part.body_id:
+            raise ValueError(f'recipe ID {part.id} already belongs to another body/shape; use a new ID')
+    elif part.shape in {'loft', 'rotor'}:
+        primitive_ids = [part.id]
+        aliased = old.get(part.id+'_shape')
+        if aliased and aliased[0] == part.id:
+            primitive_ids.append(part.id+'_shape')
+        if part.id+'_0' in old and part.id+'_1' in old:
+            primitive_ids += [f'{part.id}_{i}' for i in range(32)]
+        if any(id in old for id in primitive_ids):
+            raise ValueError(f'recipe ID {part.id} already belongs to another body/shape; use a new ID')
+
+
 async def build_parts_handler(services,args,ctx):
     from tcad.tools.ir_tools import ir_patch_handler
     try:
         request=BuildParts.model_validate(args)
         ir=services.store.load(ctx.model_id)
-        ops,created=parts_patch(request,[b.id for b in ir.bodies])
         old={f.id:(b.id,f) for b in ir.bodies for f in b.features}
+        old_sketches={s.id:(b.id,s) for b in ir.bodies for s in b.sketches}
+        ops=[]; created=[]; bodies=[b.id for b in ir.bodies]
+        identities={}
+        for part in request.parts:
+            identity=(part.body_id,part.shape)
+            if part.id in identities and identities[part.id] != identity:
+                raise ValueError(f'recipe ID {part.id} cannot have different bodies/shapes in one request')
+            identities[part.id]=identity
+            _check_recipe_identity(part,old)
+            group,new_bodies=parts_patch(request.model_copy(update={'parts':[part]}),bodies)
+            bodies+=new_bodies; created+=new_bodies
+            generated={op['payload']['id'] for op in group if op['op']=='add_feature'}
+            anchors={}
+            for body in ir.bodies:
+                for feature in body.features:
+                    if feature.id in generated:
+                        anchors[body.id]=feature.id
+            for op in group:
+                if op['op']!='add_feature' or op['payload']['id'] in old: continue
+                payload=op['payload']; body=payload['body_id']
+                if body in anchors:
+                    payload['after_feature']=anchors[body]
+                    anchors[body]=payload['id']
+            ops+=group
+        removed=[]
+        for part in request.parts:
+            if part.shape != 'rotor': continue
+            for index in range(part.blade_count,8):
+                feature_id=f'{part.id}_blade_{index}'
+                if feature_id not in old: continue
+                body,feature=old[feature_id]
+                if body != part.body_id or feature.op != 'additive_box' or feature.name != feature_id:
+                    raise ValueError(f'cannot remove customized rotor feature {feature_id}; use a new recipe ID')
+                removed.append({'op':'remove_feature','target_id':feature_id,'reason':request.reason})
         new_ids={op['payload']['id'] for op in ops if op['op']=='add_feature'}
         for op in ops:
+            if op['op']=='add_sketch' and op['payload']['id'] in old_sketches:
+                body,_=old_sketches[op['payload']['id']]
+                if op['payload']['body_id'] != body:
+                    raise ValueError(f"recipe sketch {op['payload']['id']} already belongs to another body")
+                op['op']='update_sketch'; op['target_id']=op['payload'].pop('id')
+                op['payload'].pop('body_id')
+                continue
             if op['op']!='add_feature' or op['payload']['id'] not in old: continue
             body,feature=old[op['payload']['id']]
             payload=op['payload']
@@ -75,12 +137,17 @@ async def build_parts_handler(services,args,ctx):
             assembly['grounded']+=created
             ops.append({'op':'set_assembly','payload':{'assembly':assembly},'reason':request.reason})
         base=ir.version if request.base_version=='current' else request.base_version
+        ops=removed+ops
         result=await ir_patch_handler(services,{'base_version':base,'ops':ops,'summary':'Built compact part recipes'},ctx)
         if result.ok:
-            result.content=json.dumps({'version':services.store.current_version(ctx.model_id),'created_bodies':created,'features':[op['payload'].get('id',op.get('target_id')) for op in ops if op['op'] in ('add_feature','update_feature')],'next':'Add remaining parts or assembly_motion; then ir_commit.'},separators=(',',':'))
+            result.content=json.dumps({'version':services.store.current_version(ctx.model_id),'created_bodies':created,
+                'recipes':[{'id':p.id,'body_id':p.body_id,'shape':p.shape} for p in request.parts],
+                'features':[op['payload'].get('id',op.get('target_id')) for op in ops if op['op'] in ('add_feature','update_feature')],
+                'edit_hint':'To move/resize a loft or rotor, resend the same recipe id and body_id with revised parameters. The recipe id is a prefix; ir_get accepts the actual feature IDs listed above, or the body_id. A new recipe id adds material; it does not replace the old recipe.',
+                'next':'Add remaining parts, then ir_commit. For native joints/rotors use ir_help(topic=assembly), assembly_configure. assembly_motion is only for horizontal wheels with gravity-hanging cabins.'},separators=(',',':'))
         return result
     except (ValueError,TypeError) as exc:
-        return error(exc,'box: center+size; cylinder/tube/beam: start+end. tube adds inner_radius. Each body must be one connected solid; recipes are atomic.')
+        return error(exc,'Use shape-specific fields: box center+size; cylinder/tube/beam start+end; loft section_axis+sections(center,radii); rotor center+axis+radius+blade_count+blade_width+thickness+hub_radius. Each body must be one connected solid; recipes are atomic.')
 
 
 async def requirements_handler(services,args,ctx):
@@ -182,11 +249,16 @@ def build_authoring_tools(services):
     item=part_schema['properties']['parts']['items']
     common={'id','body_id','shape','operation','copies'}
     dimensions={'box':{'center','size'},'cylinder':{'start','end','radius'},
-                'tube':{'start','end','radius','inner_radius'},'beam':{'start','end','width','depth'}}
+                'tube':{'start','end','radius','inner_radius'},'beam':{'start','end','width','depth'},
+                'loft':{'section_axis','sections'},
+                'rotor':{'center','axis','radius','blade_count','blade_width','thickness','hub_radius'}}
     branches=[]
     for shape,fields in dimensions.items():
         branch=copy.deepcopy(item)
-        branch['properties']={k:v for k,v in branch['properties'].items() if k in common|fields}
+        extras = {'ruled'} if shape == 'loft' else set()
+        branch['properties']={k:v for k,v in branch['properties'].items() if k in common|fields|extras}
+        if shape in {'loft','rotor'}:
+            branch['properties'].pop('copies', None)
         branch['properties']['shape']={'type':'string','enum':[shape]}
         branch['required']=['id','body_id','shape']+sorted(fields)
         for field in fields:
@@ -204,13 +276,13 @@ def build_authoring_tools(services):
             description='Create one connected editable radial wheel (rim, straight spokes, hub and optional axial bore) from dimensions in mm. center/axis locate wheel; radius is outer radius; rim_width is radial wall; thickness is axial rim/hub length; spoke_width is web width. Cut fully constrained polygonal windows from one cylinder, avoiding fragile rod fusions. bore_radius must be smaller than hub_radius. Use for Ferris wheels/pulleys/structural wheels, not verified gears. Then add supports/cabins using cad_build_parts, assembly_motion and ir_commit.',
             params_schema=inline_schema(RadialWheel.model_json_schema()),handler=functools.partial(radial_wheel_handler,services)),
         'cad_build_parts':ToolSpec(name='cad_build_parts',tier=ToolTier.WRITE,
-            description='Batch editable PartDesign primitives in mm. Repeated recipe id updates the same shape/placement in its original history; new IDs add features. Changing tube to cylinder under the same ID is rejected; remove the bore explicitly with scoped ir_patch if a solid cylinder is intended. box=center+size [x,y,z]; cylinder=start+end+radius; tube adds inner_radius, with the bore limited to start..end; beam=start+end+width+depth, centered cross section. Same body_id fuses connected additions; cut requires existing material. Disconnected/moving parts need distinct body_id. Optional polar copies use right-hand axis: IDs gain _0,_1,...; rotate=false keeps upright; set anchor to the suspension pivot so the cabin stays BELOW each copied hinge. separate_bodies=false fuses spokes into one wheel. Atomic, no compile yet. Batch connected geometry then ir_commit. No manual sketches or constraints needed.',
+            description='Batch editable native CAD recipes in mm, without manual sketches. For curved fuselages, housings and tapered booms use shape=loft: section_axis X/Y/Z and 2..12 ordered sections {center:[x,y,z],radii:[u,v]}; radii are semi-axes on world Y/Z for X, X/Z for Y, X/Y for Z. Planes, fully constrained ellipses and native loft are generated automatically; ruled=false (default) is smooth. For propellers/fans/rotors use shape=rotor: center, axis, radius (blade-tip), blade_count 2..8, blade_width, thickness, hub_radius; one connected Body with hub and radial blades, NO rim. Do not use cad_wheel for propellers. box=center+size; cylinder=start+end+radius; tube adds inner_radius; beam=start+end+width+depth. Same body_id fuses connected additions; moving/disconnected components use distinct body_id. Same IDs update native geometry atomically; changing shape/ownership is rejected. cut requires existing material. Primitive polar copies gain _0,_1,... IDs; rotate=false keeps upright, separate_bodies=false fuses copies. Loft/rotor use one recipe per body. No compile yet: ir_commit at milestones, then configure native joints for requested motion.',
             params_schema=part_schema,handler=functools.partial(build_parts_handler,services)),
         'ir_requirements':ToolSpec(name='ir_requirements',tier=ToolTier.WRITE,
             description='Append typed measurable geometry constraints only. Original request is preserved automatically. confirmed=true requires explicit user-stated dimensions/source_text; guessed dimensions remain unconfirmed. Qualitative animation/gravity goals belong in design_review, not constraint kinds. No requirement call is needed when the user gave no measurable numbers.',
             params_schema=inline_schema(RequirementsCall.model_json_schema()),handler=functools.partial(requirements_handler,services)),
         'assembly_motion':ToolSpec(name='assembly_motion',tier=ToolTier.WRITE,
-            description='Configure constant-speed horizontal wheel/rotor and passive gravity-hanging cabins (Z up, mm/s). rotating_body_ids revolve about center/axis. For cad_cabins use hanging_body_ids directly: uniform-density COM/inertia and highest vertical hanger endpoint are measured automatically. Or use suspensions with explicit body_ids/pivot. Bodies must be upright, COM below hinge. Omit com_distance_mm/inertia_factor to use measured mass properties. RK4 integrates gravity, moving-hinge acceleration and damping; cabins swing naturally, never rotate rigidly with the wheel. Other bodies are fixed. duration_s/frames set saved playback. Commit, assembly_simulate for evidence/collision samples, assembly_export for GIF. Not contact/structural analysis.',
+            description='Ferris-wheel/gravity-pendulum rig ONLY: a horizontal wheel axis (Z is up) with passive hanging cabins. For ordinary propellers, vertical rotors and native joints use ir_help(topic=assembly), then assembly_configure; this tool is not a general rotor driver. rotating_body_ids revolve about center/axis. cad_cabins use hanging_body_ids directly; uniform-density COM/inertia and highest vertical hanger endpoint are measured automatically. Or use suspensions with explicit body_ids/pivot. Bodies upright, COM below hinge. RK4 integrates gravity, moving-hinge acceleration and damping. duration_s/frames set saved playback. Commit, assembly_simulate for sampled collisions, assembly_export for GIF. Not contact/structural analysis.',
             params_schema=inline_schema(RotationCall.model_json_schema()),handler=functools.partial(rotation_handler,services)),
         'ir_help':ToolSpec(name='ir_help',tier=ToolTier.READ,
             description='Discover advanced native CAD before falling back to primitive approximations: topic=sketch exposes ellipse/bspline profiles; topic=feature with feature_op=additive_loft/subtractive_loft/datum_plane exposes smooth section solids and positioned section planes; fillet/chamfer/pad/pocket expose native edge and profile features. Successful scoped help unlocks matching ir_patch edits in the next request; their absence from the initial tool table is not a capability limit. topic=assembly unlocks assembly_configure for native joints and drivers in the next request. Common primitives use cad_build_parts/cad_wheel directly. topic=patch lists editing operations.',

@@ -17,11 +17,23 @@ class PolarCopies(BaseModel):
     anchor: list[float] | None = Field(default=None, min_length=3, max_length=3)
 
 
+class LoftSection(BaseModel):
+    model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
+    center: list[float] = Field(min_length=3, max_length=3)
+    radii: list[float] = Field(min_length=2, max_length=2)
+
+    @model_validator(mode='after')
+    def positive_radii(self):
+        if min(self.radii) <= 0:
+            raise ValueError('section radii must be positive semi-axes')
+        return self
+
+
 class PartRecipe(BaseModel):
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
     id: str = Field(pattern=r'^[A-Za-z][A-Za-z0-9_]{0,40}$')
     body_id: str = Field(pattern=r'^[A-Za-z][A-Za-z0-9_]{0,40}$')
-    shape: Literal['box', 'cylinder', 'tube', 'beam']
+    shape: Literal['box', 'cylinder', 'tube', 'beam', 'loft', 'rotor']
     operation: Literal['add', 'cut'] = 'add'
     center: list[float] | None = Field(default=None, min_length=3, max_length=3)
     size: list[float] | None = Field(default=None, min_length=3, max_length=3)
@@ -31,14 +43,25 @@ class PartRecipe(BaseModel):
     inner_radius: float | None = Field(default=None, gt=0)
     width: float | None = Field(default=None, gt=0)
     depth: float | None = Field(default=None, gt=0)
+    sections: list[LoftSection] | None = Field(default=None, min_length=2, max_length=12)
+    section_axis: Literal['X', 'Y', 'Z'] | None = None
+    ruled: bool = False
+    axis: list[float] | None = Field(default=None, min_length=3, max_length=3)
+    blade_count: int | None = Field(default=None, ge=2, le=8)
+    blade_width: float | None = Field(default=None, gt=0)
+    thickness: float | None = Field(default=None, gt=0)
+    hub_radius: float | None = Field(default=None, gt=0)
     copies: PolarCopies | None = None
 
     @model_validator(mode='after')
     def dimensions(self):
         used = {'box': {'center', 'size'}, 'cylinder': {'start', 'end', 'radius'},
                 'tube': {'start', 'end', 'radius', 'inner_radius'},
-                'beam': {'start', 'end', 'width', 'depth'}}[self.shape]
-        fields = {'center','size','start','end','radius','inner_radius','width','depth'}
+                'beam': {'start', 'end', 'width', 'depth'},
+                'loft': {'sections', 'section_axis'},
+                'rotor': {'center', 'axis', 'radius', 'blade_count', 'blade_width', 'thickness', 'hub_radius'}}[self.shape]
+        fields = {'center','size','start','end','radius','inner_radius','width','depth',
+                  'sections','section_axis','axis','blade_count','blade_width','thickness','hub_radius'}
         for field in fields:
             if (getattr(self, field) is not None) != (field in used):
                 raise ValueError(f'{self.shape} requires exactly {sorted(used)}; invalid/missing {field}')
@@ -50,6 +73,21 @@ class PartRecipe(BaseModel):
             raise ValueError('tube requires inner_radius < radius and operation=add')
         if self.copies and math.hypot(*self.copies.axis) <= 1e-12:
             raise ValueError('copy axis must be nonzero')
+        if self.shape in {'loft', 'rotor'} and self.copies:
+            raise ValueError('loft/rotor use one recipe per body, not polar copies')
+        if self.ruled and self.shape != 'loft':
+            raise ValueError('ruled applies only to loft')
+        if self.shape == 'loft':
+            axis = 'XYZ'.index(self.section_axis)
+            positions = [section.center[axis] for section in self.sections]
+            steps = [b-a for a,b in zip(positions, positions[1:])]
+            if not (all(step > 1e-6 for step in steps) or all(step < -1e-6 for step in steps)):
+                raise ValueError('loft section centers must be strictly ordered along section_axis')
+        if self.shape == 'rotor':
+            if self.operation != 'add' or math.hypot(*self.axis) <= 1e-12:
+                raise ValueError('rotor requires operation=add and a nonzero axis')
+            if self.hub_radius >= self.radius:
+                raise ValueError('rotor hub_radius must be smaller than blade tip radius')
         return self
 
 
@@ -93,6 +131,51 @@ def parts_patch(request: BuildParts, existing):
         ops.append({'op':'add_feature', 'payload':{'body_id':body,'id':id,'name':id,
             'op':op,'params':params,'placement':placement}, 'reason':request.reason})
     for part in request.parts:
+        if part.shape in {'loft', 'rotor'}:
+            body = part.body_id
+            if body not in bodies:
+                if part.operation == 'cut':
+                    raise ValueError(f'cut requires an existing body: {body}')
+                bodies.add(body); created.append(body)
+                ops.append({'op':'add_body','payload':{'id':body,'name':body},'reason':request.reason})
+            if part.shape == 'loft':
+                # Plane local U/V are world Y/Z, X/Z, X/Y for X, Y, Z.
+                orientation = {'X': ([1, 1, 1], 120), 'Y': ([1, 0, 0], 90),
+                               'Z': ([0, 0, 1], 0)}[part.section_axis]
+                sketches = []
+                for index, section in enumerate(part.sections):
+                    plane, sketch = f'{part.id}_plane_{index}', f'{part.id}_section_{index}'
+                    placement = {'position': dict(zip('xyz', section.center)),
+                                 'axis': dict(zip('xyz', orientation[0])), 'angle': orientation[1]}
+                    feature(body, plane, 'datum_plane', {}, placement)
+                    u, v = section.radii
+                    geometry = {'id':'profile','kind':'ellipse','points':[dict(zip('xyz', section.center))],
+                                'major_radius':max(u,v),'minor_radius':min(u,v),'rotation':0 if u >= v else 90}
+                    ops.append({'op':'add_sketch','payload':{'id':sketch,'name':sketch,'body_id':body,
+                        'plane':{'kind':'datum_plane','feature_id':plane},'geometry':[geometry],
+                        'constraints':[{'type':'Block','refs':[0]}]},'reason':request.reason})
+                    sketches.append(sketch)
+                ops.append({'op':'add_feature','payload':{'id':part.id,'name':part.id,'body_id':body,
+                    'op':'additive_loft' if part.operation == 'add' else 'subtractive_loft',
+                    'profile_sketch':sketches[0],'sections':sketches[1:],
+                    'params':{'ruled':part.ruled,'closed':False}},'reason':request.reason})
+            else:
+                length = math.hypot(*part.axis)
+                normal = [v/length for v in part.axis]
+                bottom = [part.center[i]-normal[i]*part.thickness/2 for i in range(3)]
+                feature(body, part.id+'_hub', 'additive_cylinder',
+                        {'radius':part.hub_radius,'height':part.thickness}, _placement(bottom, normal))
+                base = _placement(part.center, normal)
+                base_axis, base_angle = list(base['axis'].values()), math.radians(base['angle'])
+                corner = rotate([0,-part.blade_width/2,-part.thickness/2], base_axis, base_angle)
+                for index in range(part.blade_count):
+                    theta = index*2*math.pi/part.blade_count
+                    offset = rotate(corner, normal, theta)
+                    placement = {'position':dict(zip('xyz',[part.center[i]+offset[i] for i in range(3)])),
+                                 **_composed_rotation(base, normal, theta)}
+                    feature(body, f'{part.id}_blade_{index}', 'additive_box',
+                            {'length':part.radius,'width':part.blade_width,'height':part.thickness}, placement)
+            continue
         copies = part.copies
         for index in range(copies.count if copies else 1):
             body = f'{part.body_id}_{index}' if copies and copies.separate_bodies else part.body_id

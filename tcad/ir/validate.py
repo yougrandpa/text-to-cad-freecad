@@ -78,6 +78,8 @@ def _finite_issue(where: str, target_id: str | None) -> "ValidationIssue":
 # listed in `_PARAM_GUIDANCE` below, so a model that reaches for one is told why
 # and what to use instead *before* anything is persisted.
 _VERIFIED_OP_PARAMS: dict[str, frozenset[str]] = {
+    "additive_box": frozenset({"length", "width", "height"}),
+    "subtractive_box": frozenset({"length", "width", "height"}),
     "pad": frozenset({
         # NOTE: no "direction" — PartDesign::Pad.Direction is a Vector, and
         # `_assign_props` has no Vector branch, so a JSON {"x":…} would fail on
@@ -213,6 +215,8 @@ _GUIDANCE_BASE: dict[str, str] = {
 
 #: Corrections where the key-level message would describe the wrong property.
 _GUIDANCE_BY_OP: dict[tuple[str, str], str] = {
+    ("additive_box", "depth"): 'native boxes use length/width/height, not beam recipe width/depth; remove a stored depth with update_feature params_remove=["depth"]',
+    ("subtractive_box", "depth"): 'native boxes use length/width/height; remove a stored depth with update_feature params_remove=["depth"]',
     ("revolution", "base"): ('Revolution.Base is the base POINT (a Vector), and the IR '
                              'has no Vector param; the profile already places the shape'),
     ("groove", "base"): ('Groove.Base is the base POINT (a Vector), and the IR has no '
@@ -263,8 +267,8 @@ _ORIGIN_PLANE_NAMES: frozenset[str] = frozenset({"XY", "XZ", "YZ"})
 
 _UNVERIFIED_OPS: frozenset[str] = frozenset({
     "multi_transform",
-    "additive_box", "additive_cylinder", "additive_sphere", "additive_cone",
-    "subtractive_box", "subtractive_cylinder", "subtractive_sphere", "subtractive_cone",
+    "additive_cylinder", "additive_sphere", "additive_cone",
+    "subtractive_cylinder", "subtractive_sphere", "subtractive_cone",
 })
 
 

@@ -449,9 +449,9 @@ def test_add_feature_and_update_feature_agree_on_which_keys_exist():
     `update_feature` cannot be unknown to `add_feature`."""
     from tcad.ir.patch import _PAYLOAD_FIELDS
 
-    assert _PAYLOAD_FIELDS["add_feature"] <= _PAYLOAD_FIELDS["update_feature"] | {"id", "body_id"}
+    assert _PAYLOAD_FIELDS["add_feature"] <= _PAYLOAD_FIELDS["update_feature"] | {"id", "body_id", "after_feature"}
     for key in sorted(_PAYLOAD_FIELDS["add_feature"]):
-        if key in ("id", "body_id"):
+        if key in ("id", "body_id", "after_feature"):
             continue
         assert key in _PAYLOAD_FIELDS["update_feature"], key
 

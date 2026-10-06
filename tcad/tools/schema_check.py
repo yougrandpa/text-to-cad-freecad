@@ -76,6 +76,17 @@ def _resolve_ref(ref: str, root: dict) -> dict | None:
     return node if isinstance(node, dict) else None
 
 
+def _compatible_type(value: Any, schema: dict, root: dict) -> bool:
+    if '$ref' in schema:
+        schema = _resolve_ref(schema['$ref'], root) or {}
+    expected = schema.get('type')
+    if expected is not None:
+        names = [expected] if isinstance(expected, str) else expected
+        return any(_type_ok(value, name) for name in names)
+    branches = schema.get('anyOf') or schema.get('oneOf')
+    return any(_compatible_type(value, branch, root) for branch in branches) if branches else True
+
+
 def check(args: Any, schema: dict, *, path: str = "arguments", root: dict | None = None) -> list[str]:
     """Return a list of human-readable problems; empty means the args conform."""
     if not isinstance(schema, dict):
@@ -101,9 +112,12 @@ def check(args: Any, schema: dict, *, path: str = "arguments", root: dict | None
                         return check(args, matching[0], path=path, root=root)
             attempt = [check(args, b, path=path, root=root) for b in branches]
             if not any(not a for a in attempt):
-                # Report the branch that got furthest (fewest problems) — that is
-                # the one the caller most likely meant.
-                best = min(attempt, key=len)
+                # Prefer the value's actual type, then the fewest problems.
+                # A nullable object's one-error null branch otherwise masks
+                # the nested fields that the caller actually needs to fix.
+                compatible = [errors for branch, errors in zip(branches, attempt)
+                              if _compatible_type(args, branch, root)]
+                best = min(compatible or attempt, key=len)
                 problems.append(
                     f"{path}: matches none of the {branch_key} alternatives "
                     f"(closest: {'; '.join(best)})"

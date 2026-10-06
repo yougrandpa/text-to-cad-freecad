@@ -82,6 +82,27 @@ def test_a_broken_ref_is_reported_rather_than_ignored():
     assert problems and "not in $defs" in problems[0]
 
 
+def test_nullable_assembly_error_identifies_connector_mistake_instead_of_null_branch():
+    reg = build_default_registry(SimpleNamespace())
+    args = {'assembly': {'grounded': ['base'], 'joints': [{
+        'id':'rotor_axis','type':'Revolute','axis':[0,0,1],
+        'side1':{'body_id':'base'},'side2':{'body_id':'rotor'}}]}, 'reason':'Connect rotor'}
+    problems = validate_tool_args(args, reg.get('assembly_configure'))
+    assert problems and 'joints[0]' in problems[0] and "unknown property 'axis'" in problems[0]
+    assert 'expected null' not in problems[0]
+    assert not validate_tool_args({'assembly':None,'reason':'Clear joints'}, reg.get('assembly_configure'))
+    assert not validate_tool_args({'assembly':None,'base_version':'2','reason':'Clear joints'}, reg.get('assembly_configure'))
+
+
+def test_snapshot_styles_and_views_match_the_renderer_instead_of_allowing_guesses():
+    from tcad.render.snapshot import STYLES, VIEWS
+    spec=build_default_registry(SimpleNamespace()).get('geo_view')
+    for style in STYLES:
+        assert not validate_tool_args({'style':style,'views':sorted(VIEWS)},spec)
+    for args in ({'style':'shaded'},{'style':'solid'},{'views':['side']},{'views':[]}):
+        assert validate_tool_args(args,spec)
+
+
 def test_annotations_are_ignored():
     schema = {"type": "object", "title": "T", "description": "d", "default": {},
               "properties": {"a": {"type": "string", "title": "A", "description": "x"}}}
