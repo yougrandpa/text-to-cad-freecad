@@ -50,3 +50,55 @@ The black-box CLI exercises real tools, compilation and inspection, but does
 not run production provider conversations or enforce LoopEngine completion.
 Passing two agent-operated examples cannot establish general provider success
 rates or independently prove appearance, manufacturing fitness or locomotion.
+
+Primary outline intent is stored with `ir_plan` using `form` (prismatic,
+round, tapered or curved) and `outline_id` (the stable compact recipe ID or
+native feature shaping that outline). For example, a helicopter airframe can
+bind its tapered cabin to a loft recipe while shafts remain cylinders and
+straight blades remain rectangular. This is a shape choice, not a helicopter
+template. Scoped help is returned with the plan to make appropriate tools
+easy to discover before authoring.
+
+Plan updates that omit these fields retain their earlier values. Persisted
+plans are reloaded into the fixed requirement context on subsequent turns and
+when tool history is compacted. Repairs should preserve the primary outline;
+preview mesh limits are display failures and do not justify replacing CAD
+geometry with cheaper primitives. Intentional simplifications must be recorded.
+
+Shape advisories inspect active features of the bound recipe/feature and
+profiles actually consumed by additive operations. Suppressed features,
+unused/construction curves, unrelated supports and drilled holes cannot stand
+in for the primary outline. Body-level shape goals with multiple features ask
+for an explicit outline binding. Legacy goals remain readable, including
+`tapered` and Chinese section-change terms. These are conservative structural
+hints: a loft alone does not establish the right taper, proportions or visual
+fidelity, and custom outlines may still need manual acceptance.
+
+Visual inspection requires a provider with actual image input capability.
+Without it, render availability does not mean the agent saw the model, and
+visual acceptance must remain unresolved. Enabling a capability flag cannot
+add vision to a text-only provider. Unit regressions validate intent retention
+and scoped review, not real-provider modeling quality or success rates.
+
+`ir_help(topic="detail")` maps requested detail geometry to native operations:
+straight rounded slots use arc/line sketches plus pocket, circular arc outlines
+use a closed sketch plus pad/pocket, edge rounding uses fillet, beveling uses
+chamfer, and annular recesses use a revolved groove. Selecting `detail="slot"`,
+`"arc"`, `"fillet"`, `"chamfer"` or `"groove"` returns the corresponding example
+and opens only its required sketch and feature edits together on the next
+request. Reading the catalog alone opens no authoring operations.
+
+The slot example cuts from the bottom XY plane upward into known material;
+its reversed flag and dimensions are stated, rather than suggesting a guessed
+face or unsupported sketch offset. Arc angles are radians in sketch-local
+coordinates, whereas revolution/groove angles are degrees. Edge treatments
+still require current measured edge names; examples cannot determine which
+edge matches the user's intent. Other native operations remain discoverable
+through scoped feature help; this catalog does not limit the kernel's features.
+
+The model should add appropriate requested or functional details after primary
+shape and cuts, then remeasure and review. There is no command-use quota and
+unspecified radii/depths remain assumptions. Real-kernel contract tests compile
+the served slot, arc and groove examples and check analytic volume and bounds;
+these tests prove the examples work, not that a production provider will always
+choose or adapt them correctly.

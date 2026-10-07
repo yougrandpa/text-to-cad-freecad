@@ -1828,7 +1828,7 @@ def _round_trip(shape, step_path: str) -> dict:
 
 
 def compile_ir(ir: dict | None = None, out_dir: str = "", **_extra) -> dict:
-    """Build the document, persist a .FCStd, and return measurements + round-trip.
+    """Build and persist the internal .FCStd; STEP round-trip is opt-in.
 
     Result envelope (nested under the rpc ``result`` key):
       ok, fcstd, errors, measurements, round_trip
@@ -1855,8 +1855,12 @@ def compile_ir(ir: dict | None = None, out_dir: str = "", **_extra) -> dict:
         built["errors"].append({"kind": "runtime", "feature_id": None,
                                 "message": f"saveAs failed: {type(exc).__name__}: {exc}"})
 
-    step_path = os.path.join(out_dir, "roundtrip.step")
-    round_trip = _round_trip(shape, step_path)
+    # A build without STEP downloads also skips STEP round-trip conversion.
+    # Callers that explicitly need this diagnostic can opt in.
+    round_trip = None
+    if _extra.get("round_trip", False):
+        step_path = os.path.join(out_dir, "roundtrip.step")
+        round_trip = _round_trip(shape, step_path)
 
     _close_doc(doc)
 

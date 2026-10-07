@@ -26,6 +26,7 @@ and physical performance remain separate acceptance items.
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from typing import Literal
@@ -40,6 +41,10 @@ class PlannedPart(BaseModel):
 
     id: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_]{0,40}$")
     goal: str = Field(min_length=1, max_length=240)
+    form: Literal["unspecified", "prismatic", "round", "tapered", "curved"] = Field(
+        default="unspecified", description="Primary outline intent, retained during repairs.")
+    outline_id: str | None = Field(default=None, min_length=1, max_length=120,
+        description="Stable recipe or native feature ID shaping the primary outline, not a hole or support.")
     #: "user" = explicit in the request; "model" = the model's own choice.
     origin: Literal["user", "model"] = "model"
     status: Literal["planned", "simplified", "dropped"] = "planned"
@@ -76,12 +81,12 @@ class PlanCall(BaseModel):
 def _plan_path(data_dir, model_id: str) -> Path:
     ensure_safe_id(model_id, kind="model_id")
     root = Path(data_dir) / "intents"
-    root.mkdir(parents=True, exist_ok=True)
     return contained_path(root, model_id + ".json")
 
 
 def write_plan(data_dir, model_id: str, plan: IntentPlan) -> Path:
     path = _plan_path(data_dir, model_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(plan.model_dump_json(), encoding="utf-8")
     return path
 
@@ -100,12 +105,13 @@ def read_plan(data_dir, model_id: str) -> IntentPlan | None:
 
 _CURVE_WORDS = ("弧", "曲", "圆", "椭", "扇", "弯", "curved", "curve", "arc",
                 "round", "loft", "spline", "circular", "spherical")
+_TAPER_WORDS = ("taper", "收细", "渐缩", "变截面", "锥")
+# Additive outline evidence only: a drilled hole does not shape the silhouette.
 _CURVED_OPS = frozenset({
-    "additive_loft", "subtractive_loft", "revolution", "groove",
-    "additive_cylinder", "subtractive_cylinder", "additive_sphere",
-    "subtractive_sphere", "additive_cone", "subtractive_cone",
+    "additive_loft", "revolution", "additive_cylinder", "additive_sphere", "additive_cone",
 })
-_CURVED_SKETCH_KINDS = frozenset({"ellipse", "bspline", "arc"})
+_TAPERED_OPS = frozenset({"additive_loft", "additive_cone"})
+_CURVED_SKETCH_KINDS = frozenset({"circle", "ellipse", "bspline", "arc"})
 
 
 def _ir_index(ir) -> dict[str, tuple]:
@@ -128,24 +134,50 @@ def _ir_index(ir) -> dict[str, tuple]:
     return index
 
 
-def _curvature_without_curves(part: PlannedPart, match, ir) -> bool:
-    """Advisory: the goal asks for curvature, the built features have none.
-
-    Only a flag, never a verdict — a straight approximation of a curved goal
-    is exactly the "backrest became a flat panel" degradation, and it is
-    cheap to point at; the task review still decides.
-    """
-    goal = part.goal.lower()
-    if not any(word in goal for word in _CURVE_WORDS):
-        return False
-    body, _matched = match
-    for feature in body.features:
-        if feature.op in _CURVED_OPS:
-            return False
-    for sketch in body.sketches:
-        if any(geom.kind in _CURVED_SKETCH_KINDS for geom in sketch.geometry):
-            return False
-    return True
+def _shape_advisory(part: PlannedPart, match, index) -> str:
+    """Scoped structural hints, never proof of silhouette or visual fidelity."""
+    form = part.form
+    if form == "unspecified":
+        goal = part.goal.lower()
+        if any(word in goal for word in _TAPER_WORDS):
+            form = "tapered"
+        elif any(word in goal for word in _CURVE_WORDS):
+            form = "curved"
+    if form in ("unspecified", "prismatic"):
+        return ""
+    if part.outline_id:
+        match = index.get(part.outline_id)
+        if match is None:
+            return f"part {part.id!r} primary outline {part.outline_id!r} is missing; preserve its {form} intent"
+    body, matched = match
+    if part.outline_id and body is not index[part.id][0]:
+        return f"part {part.id!r} outline_id belongs to another body; bind its own primary outline"
+    if matched is body:
+        features = [f for f in body.features if not f.suppress and f.op != "datum_plane"]
+        if len(features) > 1:
+            return (f"part {part.id!r} plans a {form} outline; bind outline_id to its primary "
+                    "recipe/feature so unrelated holes or supports cannot satisfy shape review")
+    elif hasattr(matched, "op"):
+        # A recipe token selects its expansion; a native feature token stays scoped.
+        recipe = matched.recipe_id if (part.outline_id or part.id) == matched.recipe_id else None
+        features = [f for f in body.features if not f.suppress and
+                    (f.recipe_id == recipe if recipe else f.id == matched.id)]
+    else:
+        # A loose sketch is not built geometry. Only its active additive users count.
+        features = [f for f in body.features if not f.suppress and
+                    (f.profile_sketch == matched.id or matched.id in f.sections)]
+    ops = _TAPERED_OPS if form == "tapered" else _CURVED_OPS
+    for feature in features:
+        if feature.op in ops:
+            return ""
+        if form != "tapered" and feature.op == "pad":
+            sketch = next((s for s in body.sketches if s.id == feature.profile_sketch), None)
+            if sketch and any(g.kind in _CURVED_SKETCH_KINDS and not g.construction
+                              for g in sketch.geometry):
+                return ""
+    return (f"part {part.id!r} plans a {form} outline ({part.goal!r}) but lacks active "
+            "outline evidence (straight primitives or unsupported profile); verify visually, "
+            "repair the outline, or mark it simplified")
 
 
 def review_intent(plan: IntentPlan, ir) -> dict:
@@ -164,10 +196,9 @@ def review_intent(plan: IntentPlan, ir) -> dict:
                  "state": state, "note": part.note}
         if state == "kept":
             kept.append(entry)
-            if _curvature_without_curves(part, match, ir):
-                advisories.append(
-                    f"part {part.id!r} plans curvature ({part.goal!r}) but its features are "
-                    "straight primitives — verify visually, or mark it simplified")
+            advisory = _shape_advisory(part, match, index)
+            if advisory:
+                advisories.append(advisory)
         elif state == "lost":
             lost.append(entry)
         else:
@@ -176,6 +207,20 @@ def review_intent(plan: IntentPlan, ir) -> dict:
             degraded.append(entry)
     return {"kept": kept, "lost": lost, "reduced": reduced,
             "degraded": degraded, "advisories": advisories}
+
+
+def plan_context(data_dir, model_id: str, ir) -> str:
+    """Persisted outline intent survives earlier tool-round compaction."""
+    plan = read_plan(data_dir, model_id)
+    if plan is None:
+        return ""
+    parts = [p.model_dump(exclude_defaults=True) for p in plan.parts]
+    lines = ["PERSISTED PART PLAN — preserve primary outlines during repairs:",
+             json.dumps(parts, ensure_ascii=False, separators=(",", ":")),
+             "Shape evidence is structural only; inspect images when available. Preview limits "
+             "do not justify replacing CAD outlines with primitives. Record intentional simplifications."]
+    lines.extend(review_intent(plan, ir)["advisories"])
+    return "\n".join(lines)
 
 
 def degradation_items(data_dir, model_id, ir) -> list[str]:

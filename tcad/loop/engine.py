@@ -119,10 +119,17 @@ class LoopConfig(BaseModel):
     require_design_review: bool = False
     allow_privileged: bool = False
     visual_checkpoints: tuple[str, ...] = ("first_compile", "major_change", "final")
-    artifact_exports: tuple[str, ...] = ("step", "stl")
+    artifact_exports: tuple[str, ...] = ()
     system_prompt: str = (
         "You are a parametric CAD agent. You design by mutating an intermediate "
         "representation (IR) via ir_patch, then ir_commit to compile and gate. "
+        "Plan primary outlines with ir_plan form and outline_id before details or animation. "
+        "Use loft or native profiles for curved/tapered forms; ir_help(topic=shape,shape=loft) "
+        "provides the executable recipe. box/beam suit prismatic parts, not every silhouette. "
+        "Preserve outline intent during repairs. Preview mesh limits concern display tessellation; "
+        "retain CAD geometry and report unavailable visual evidence rather than simplifying it. "
+        "Download formats are exported on demand by the UI. Do not call asset_export or assembly_export "
+        "to finish modeling unless the user explicitly requests an export. "
         "Choose single-body or multi-body modeling based on the requirements and their complexity. "
         "Use one Body for an integral part, even with many features; split into multiple Bodies "
         "when separate components, manufacturing boundaries or relative motion require it. "
@@ -866,13 +873,20 @@ class LoopEngine:
 
             if tc.name == 'ir_help' and outcome.result.ok:
                 self._authoring_topics.add(call_args.get('topic'))
-                if call_args.get('topic') == 'feature' and call_args.get('feature_op'):
-                    from tcad.tools.feature_scope import MAX_SCOPED_OPS
-                    op = call_args['feature_op']
+                feature_ops = []
+                if call_args.get('topic') == 'feature':
+                    feature_ops = [call_args.get('feature_op', 'pad')]
+                elif call_args.get('topic') == 'detail' and call_args.get('detail'):
+                    from tcad.agent.detail_guidance import DETAIL_ROUTES
+                    route = DETAIL_ROUTES[call_args['detail']]
+                    self._authoring_topics.update(route['topics'])
+                    feature_ops = route['feature_ops']
+                from tcad.tools.feature_scope import MAX_SCOPED_OPS
+                for op in feature_ops:
                     if op in self._authoring_features:
                         self._authoring_features.remove(op)
                     self._authoring_features.append(op)
-                    del self._authoring_features[:-MAX_SCOPED_OPS]
+                del self._authoring_features[:-MAX_SCOPED_OPS]
                 if call_args.get('topic') == 'workflow' and call_args.get('workflow'):
                     self._authoring_workflows.add(call_args['workflow'])
             if tc.name == "design_review" and outcome.result.ok:
@@ -1293,6 +1307,10 @@ class LoopEngine:
         try:
             ir = store.load(turn.model_id, version) if version is not None else store.load(turn.model_id)
             blocks["requirements_text"] = render_requirements_text(ir)
+            from tcad.loop.intent import plan_context
+            intent = plan_context(self.config.data_dir, turn.model_id, ir)
+            if intent:
+                blocks["requirements_text"] += "\n\n" + intent
         except Exception:  # noqa: BLE001 — no IR means no contract to show
             pass
 

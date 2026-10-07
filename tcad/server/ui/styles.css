@@ -643,12 +643,13 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); 
   padding: 10px 14px; border-top: 1px solid var(--line); min-height: 44px;
   align-items: center;
 }
-.filebar a {
+.filebar :is(a, button) {
   color: var(--fg-dim); text-decoration: none; font-size: 11.5px;
   font-family: var(--mono); border: 1px solid var(--line);
   border-radius: 7px; padding: 3px 9px; background: var(--panel);
 }
-.filebar a:hover { color: var(--fg); border-color: var(--accent-dim); }
+.filebar :is(a, button):hover { color: var(--fg); border-color: var(--accent-dim); }
+.filebar button:disabled { opacity: .55; cursor: wait; }
 
 /* ── inspector ────────────────────────────────────────────────────────── */
 
@@ -1034,7 +1035,7 @@ body { height: 100dvh; min-height: 0; overflow: hidden; }
 .filebar { flex-wrap: nowrap; min-height: 44px; padding: 8px 12px; overflow-x: auto; white-space: nowrap; }
 .filebar > * { flex-shrink: 0; }
 .export-label { color: var(--fg-faint); font-size: 10px; margin-right: 3px; }
-.filebar a { padding: 4px 10px; font-size: 10px; }
+.filebar :is(a, button) { padding: 4px 10px; font-size: 10px; }
 .motion-controls { max-height: min(210px, 34%); overflow-y: auto; padding: 12px; }
 .motion-heading { margin-bottom: 6px; }
 #crankAngle { margin-bottom: 8px; }

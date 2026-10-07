@@ -32,6 +32,7 @@ let treeHighlighter = null;
 let attachmentInput = null;
 let composerPending = false;
 let historyRequest = 0;
+let artifactRequest = 0;
 let openHistoryMenu = null;
 
 function highlightSelection(entity, artifactId) {
@@ -1079,9 +1080,43 @@ async function loadView(force, { version = null } = {}) {
   }
 }
 
+async function exportDownload(button, token, artifactId, format, label) {
+  if (button.disabled || stale(token)) return;
+  button.disabled = true;
+  button.textContent = "导出中…";
+  button.setAttribute("aria-busy", "true");
+  try {
+    const response = await fetch(`/models/${encodeURIComponent(token.modelId)}/exports`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ artifact_id: artifactId, fmt: format }),
+    });
+    if (!response.ok) {
+      let detail = response.statusText;
+      try { detail = (await response.json()).detail || detail; } catch { /* not JSON */ }
+      throw new Error(detail);
+    }
+    const exported = await response.json();
+    if (exported.artifact_id !== artifactId) throw new Error("导出与请求的构建不匹配");
+    if (!exported.url?.startsWith("/derived/exports/")) throw new Error("导出未返回可下载文件");
+    if (stale(token) || !button.isConnected) return;
+    const link = el("a", { href: exported.url, download: exported.filename });
+    document.body.append(link);
+    link.click();
+    link.remove();
+  } catch (err) {
+    if (!stale(token) && button.isConnected) pushNotice("bad", `${label} 导出失败：${err.message}。请点击重试。`);
+  } finally {
+    button.disabled = false;
+    button.textContent = label;
+    button.removeAttribute("aria-busy");
+  }
+}
+
 async function loadArtifacts() {
   const bar = $("fileBar");
   const token = sessionToken();
+  const request = ++artifactRequest;
   bar.replaceChildren();
   if (!token.modelId) {
     bar.append(el("span", { class: "muted small", text: "未选择会话" }));
@@ -1092,27 +1127,22 @@ async function loadArtifacts() {
       `/models/${encodeURIComponent(token.modelId)}/artifacts` +
       (token.version != null ? `?version=${token.version}` : "")
     );
-    if (stale(token)) return;   // the user moved on; this answer is not ours to show
-    const files = (body.files || []).filter((f) => !f.endsWith(".png") && (!f.endsWith(".json") || f.endsWith("animation.json")) && !f.toLowerCase().endsWith(".fcbak"));
-    if (!files.length) {
-      bar.append(el("span", { class: "muted small", text: "暂无导出产物（STEP / STL 在 Gate 通过后生成）" }));
+    if (stale(token) || request !== artifactRequest) return;
+    if (!body.artifact_id || body.status !== "verified") {
+      bar.append(el("span", { class: "muted small", text: "构建验证通过后可点击导出" }));
       return;
     }
-    // Link with the identity the RESPONSE described, not with whatever the
-    // session variable holds now — those differ exactly when they must not.
+    // Formats are available from the saved document even before any download
+    // exists. Pin every click to the build described by this response.
     bar.append(el("span", { class: "export-label", text: "导出" }));
-    for (const name of files) {
-      const format = name.endsWith("animation.json") ? "动画数据" : name.split(".").at(-1);
-      bar.append(el("a", {
-        href: `/models/${encodeURIComponent(token.modelId)}/artifacts/${name}` +
-              `?version=${body.version}`,
-        text: format === "FCStd" ? "FreeCAD" : format.toUpperCase(),
-        title: name,
-        download: "",
-      }));
+    for (const [format, label] of [["fcstd", "FreeCAD"], ["step", "STEP"], ["stl", "STL"], ["brep", "BREP"]]) {
+      const button = el("button", { type: "button", text: label, title: `导出并下载 ${label}` });
+      button.addEventListener("click", () => exportDownload(button, token, body.artifact_id, format, label));
+      bar.append(button);
     }
+    bar.append(el("span", { class: "muted small", text: "点击后导出并下载" }));
   } catch (err) {
-    if (stale(token)) return;
+    if (stale(token) || request !== artifactRequest) return;
     bar.append(el("span", { class: "muted small", text: `产物读取失败：${err.message}` }));
   }
 }

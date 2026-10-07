@@ -16,7 +16,7 @@ def build_artifacts(ir, out_dir, exports=None, **_extra):
     try:
         if built["errors"]:
             return {"ok": False, "errors": built["errors"]}
-        exported = export_built(ir, built, out_dir, sorted(set(exports or ["step", "stl"]) | {"fcstd"}))
+        exported = export_built(ir, built, out_dir, sorted(set(exports or []) | {"fcstd"}))
         if not exported["ok"]:
             return exported
         digest = digest_built(ir, built)

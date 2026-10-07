@@ -1,7 +1,8 @@
 # text-to-cad-freecad
 
 基于 FreeCAD 的对话式参数化 CAD。用自然语言描述零件或机构，生成可继续编辑的
-FCStd 模型、STEP/STL，以及可播放和导出的装配动画。
+FCStd 模型、STEP/STL，以及可播放和导出的装配动画。建模默认只保存内部模型和预览，
+FreeCAD、STEP、STL、BREP 下载文件在点击导出按钮后准备并自动下载。
 
 模型通过校验工具修改声明式 IR，FreeCAD 在独立 worker 中编译几何。
 构建经 Gate 验证后发布，再通过 `design_review` 复核用户需求。

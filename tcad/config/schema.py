@@ -38,7 +38,8 @@ class StorageConfig(BaseModel):
     silently sharing one database between two configurations.
     """
     sqlite_journal_mode: Literal["WAL", "DELETE", "TRUNCATE"] = "WAL"
-    artifact_exports: list[str] = Field(default_factory=lambda: ["step", "stl"])
+    artifact_exports: list[str] = Field(default_factory=list)
+    """Optional build-time conversions; downloads are exported on demand by default."""
     keep_ir_versions: int = 200
 
     def sqlite_file(self) -> str:

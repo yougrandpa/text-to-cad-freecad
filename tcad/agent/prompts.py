@@ -1,12 +1,13 @@
 """Task-independent completion policy shared by production and evaluations."""
 
 from tcad.agent.shape_guidance import SHAPE_REVIEW
+from tcad.agent.detail_guidance import DETAIL_SELECTION
 
 DESIGN_REVIEW_PROMPT = (
     "Respond in the user's language. Before modeling, state the feature plan and "
     "acceptance criteria for every requested function. Preserve the original request. "
     "Choose geometry and part boundaries from the requested shape, connections and fidelity; "
-    + SHAPE_REVIEW + " "
+    + SHAPE_REVIEW + " " + DETAIL_SELECTION + " "
     "use the available tool contracts to select operations. Inspect static part proportions, "
     "connection geometry and shape details before motion; animation cannot substitute for "
     "a faithful model. Refine existing parts while preserving their history and connections. "

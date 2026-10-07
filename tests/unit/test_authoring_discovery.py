@@ -57,12 +57,13 @@ async def test_curve_help_explains_native_profile_semantics_without_claiming_lof
     assert check({"topic": "feature", "feature_op": "loft"}, schema)
 
 
-async def test_other_feature_help_does_not_return_an_unrelated_pad_example():
+async def test_revolution_help_returns_its_axis_contract_and_own_example():
     result = await help_handler(None, {"topic": "feature", "feature_op": "revolution"}, None)
     help_data = json.loads(result.content)
     assert help_data["feature_op"] == "revolution"
     assert "axis" in help_data["params"]
-    assert "example" not in help_data
+    assert help_data["example"]["payload"]["op"] == "revolution"
+    assert help_data["example"]["payload"]["params"] == {"axis": "v_axis", "angle": 360}
     invalid = await help_handler(None, {"topic": "feature", "feature_op": "invented"}, None)
     assert not invalid.ok and "Unknown feature_op" in invalid.error.message
 
