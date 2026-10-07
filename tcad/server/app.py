@@ -14,6 +14,7 @@ Endpoints
 ``POST /models``                        seed a model with an empty IR
 ``GET  /models/{id}/ir``                the IR snapshot (optional ``?version=``)
 ``GET  /models/{id}/artifacts``         artefact file listing
+``POST /models/{id}/exports``           export a pinned build and download on demand
 ``GET  /models/{id}/artifacts/{path}``  fetch one artefact (PNG / STEP / STL)
 ``GET  /models/{id}/render``            render a view on demand — see below
 ``GET  /models/{id}/mesh``              bounded, versioned mesh for the 3D viewport
@@ -61,7 +62,8 @@ import time
 import uuid
 from collections import deque
 from pathlib import Path
-from typing import Any, AsyncIterator, get_args
+from types import SimpleNamespace
+from typing import Any, AsyncIterator, Literal, get_args
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, Response, StreamingResponse
@@ -99,6 +101,12 @@ def _safe_id_field(kind: str):
             raise ValueError(str(exc)) from exc
 
     return _check
+
+
+class ExportRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    artifact_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    fmt: Literal["fcstd", "step", "stl", "brep"]
 
 
 class CreateModelRequest(BaseModel):
@@ -781,7 +789,8 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
     def get_derived_file(category: str, file_path: str) -> FileResponse:
         if category not in {"exports", "animations"}:
             raise HTTPException(404, "no such derived artifact")
-        return FileResponse(_resolve_artifact(Path(cfg().storage.data_dir) / "derived" / category, file_path))
+        path = _resolve_artifact(Path(cfg().storage.data_dir) / "derived" / category, file_path)
+        return FileResponse(path, filename=path.name if category == "exports" else None)
 
     @app.get("/build-jobs")
     def list_build_jobs(model_id: str | None = None) -> dict:
@@ -891,6 +900,38 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
             # second from the first.
             "verdict": _verdict_or_none(store, model_id, v),
         }
+
+    @app.post("/models/{model_id}/exports")
+    def export_download(model_id: str, req: ExportRequest) -> dict:
+        """Prepare a requested download from the pinned build, never current IR."""
+        from tcad.inspect.artifact import ArtifactReader
+        from tcad.inspect.operations import export_artifact
+        from tcad.core.types import ToolContext
+        from tcad.build.worker_client import WorkerError
+
+        # Only conversion starts a worker. Native/previously exported files can
+        # be downloaded even if the geometry backend is unavailable.
+        def worker_request(*args, **kwargs):
+            return svc().worker.request(*args, **kwargs)
+
+        services = SimpleNamespace(worker=SimpleNamespace(request=worker_request))
+        try:
+            reader = ArtifactReader(cfg().storage.data_dir)
+            manifest, _ = reader.resolve(model_id, artifact_id=req.artifact_id)
+            if manifest.status.value != "verified":
+                raise ValueError("only verified builds can be exported")
+            ctx = ToolContext(model_id=model_id, thread_id="download", turn_id="download",
+                              data_dir=str(reader.data_dir))
+            result = export_artifact(services, ctx, {**req.model_dump(), "prepare_download": True})
+            return {"artifact_id": result["artifact_id"], "version": manifest.ir_version,
+                    "filename": Path(result["path"]).name, "size_bytes": result["size_bytes"],
+                    "url": artifact_url_for(result["path"])}
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except (WorkerError, RuntimeError) as exc:
+            raise HTTPException(503, f"export failed: {exc}") from exc
 
     @app.get("/models/{model_id}/verdict")
     def get_verdict(model_id: str, version: int | None = None) -> dict:

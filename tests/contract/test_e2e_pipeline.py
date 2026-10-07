@@ -163,7 +163,7 @@ def built(worker, tmp_path_factory):
     )
     write_build_stamp(artifact_dir, stamp)
 
-    compile_res = worker.request_sync("compile_ir", {"ir": ir_dict, "out_dir": str(artifact_dir)})
+    compile_res = worker.request_sync("compile_ir", {"ir": ir_dict, "out_dir": str(artifact_dir), "round_trip": True})
     assert compile_res.get("ok") is True, f"compile failed: {compile_res}"
     assert compile_res.get("errors") == [], f"compile errors: {compile_res.get('errors')}"
 
@@ -396,3 +396,17 @@ def test_worker_api_selftest_passes(worker):
     st = worker.request_sync("api_selftest", {})
     assert st.get("ok") is True, f"documented FreeCAD APIs changed: missing={st.get('missing')}"
     assert st.get("missing") == [], st.get("missing")
+
+
+@pytest.mark.parametrize("method", ["compile_ir", "build_artifacts"])
+def test_default_build_creates_no_download_conversions(worker, tmp_path, method):
+    ir = make_ir().model_dump(mode="json")
+    response = worker.request_sync(method, {"ir": ir, "out_dir": str(tmp_path), "exports": []}, timeout_s=180)
+    assert response.get("ok"), response
+    assert (tmp_path / (ir["model_id"] + ".FCStd")).is_file()
+    assert not any(p.suffix.lower() in {".step", ".stl", ".brep"} for p in tmp_path.rglob("*"))
+    if method == "compile_ir":
+        assert response["round_trip"] is None
+    else:
+        assert set(response["files"]) == {"fcstd"}
+        assert response["scene"]["ok"]

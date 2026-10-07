@@ -41,7 +41,7 @@ def export_artifact(services, ctx, args):
         # The native document retains editable source bodies plus joints and
         # drivers. Exporting only the source model silently loses the assembly.
         original = 'assembly.FCStd'
-    if original in manifest.files and name == manifest.model_id:
+    if original in manifest.files and name == manifest.model_id and not args.get("prepare_download", False):
         reader.read_file(manifest, root, original)
         return {"path": str(root / original), "size_bytes": (root / original).stat().st_size,
                 "artifact_id": manifest.artifact_id}
@@ -60,6 +60,8 @@ def export_artifact(services, ctx, args):
                 raise ValueError(response.get("error", {}).get("message", "artifact export failed"))
             candidate = Path(scratch) / destination.name
         check_cancelled()
+        if not candidate.is_file() or candidate.stat().st_size == 0:
+            raise ValueError("artifact export produced no file or an empty file")
         candidate.replace(destination)
     return {"path": str(destination), "size_bytes": destination.stat().st_size,
             "artifact_id": manifest.artifact_id}

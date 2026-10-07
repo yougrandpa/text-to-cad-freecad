@@ -402,28 +402,29 @@ async def _build_and_grade(
         # Collect the causes and tell it.
         pipeline_notes: list[str] = []
 
-        # Honour the configured export list when a full Config is wired; fall back to
-        # the design's default otherwise (a bare service bundle in a unit test).
+        # compile_ir already persists the internal editable document. Download
+        # conversions are optional; an empty list must never restore defaults.
         storage_cfg = getattr(getattr(services, "config", None), "storage", None)
-        export_formats = list(getattr(storage_cfg, "artifact_exports", None) or ["step", "stl"])
+        export_formats = list(getattr(storage_cfg, "artifact_exports", None) or [])
 
-        # 4. export artefacts (step/stl/brep/fcstd).
-        try:
-            exp = await _worker_call(
-                services,
-                M_EXPORT,
-                {
-                    "ir": ir.model_dump(),
-                    "exports": list(export_formats),
-                    "name": model_id,
-                    "out_dir": artifact_dir,
-                },
-                timeout_s=120.0,
-            )
-            if not exp.get("ok"):
-                pipeline_notes.append(f"artefact export failed: {_describe(exp)}")
-        except Exception as exc:  # noqa: BLE001
-            pipeline_notes.append(f"artefact export raised: {type(exc).__name__}: {exc}")
+        # 4. export only explicitly configured additional formats.
+        if export_formats:
+            try:
+                exp = await _worker_call(
+                    services,
+                    M_EXPORT,
+                    {
+                        "ir": ir.model_dump(),
+                        "exports": list(export_formats),
+                        "name": model_id,
+                        "out_dir": artifact_dir,
+                    },
+                    timeout_s=120.0,
+                )
+                if not exp.get("ok"):
+                    pipeline_notes.append(f"artefact export failed: {_describe(exp)}")
+            except Exception as exc:  # noqa: BLE001
+                pipeline_notes.append(f"artefact export raised: {type(exc).__name__}: {exc}")
 
         # 5. persist digest (advisory for the Gate's *measurements*, but its absence
         #    is exactly why the Gate would otherwise say "no measurements available").

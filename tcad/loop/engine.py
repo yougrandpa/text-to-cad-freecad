@@ -109,10 +109,12 @@ class LoopConfig(BaseModel):
     require_design_review: bool = False
     allow_privileged: bool = False
     visual_checkpoints: tuple[str, ...] = ("first_compile", "major_change", "final")
-    artifact_exports: tuple[str, ...] = ("step", "stl")
+    artifact_exports: tuple[str, ...] = ()
     system_prompt: str = (
         "You are a parametric CAD agent. You design by mutating an intermediate "
         "representation (IR) via ir_patch, then ir_commit to compile and gate. "
+        "Download formats are exported on demand by the UI. Do not call asset_export or assembly_export "
+        "to finish modeling unless the user explicitly requests an export. "
         "Choose single-body or multi-body modeling based on the requirements and their complexity. "
         "Use one Body for an integral part, even with many features; split into multiple Bodies "
         "when separate components, manufacturing boundaries or relative motion require it. "
