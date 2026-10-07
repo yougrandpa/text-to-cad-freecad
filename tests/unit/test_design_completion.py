@@ -19,6 +19,46 @@ def review(source="创建一个削铅笔工具箱", ids=None, remaining=None):
         dict(source_text=source, check_ids=ids or [])], remaining_work=remaining or [])
 
 
+@pytest.mark.parametrize('key', ['constraints', 'constraints_append'])
+@pytest.mark.parametrize('source,value', [
+    ('装配动画需要两个旋转关节', 2),
+    ('创建一个带装配动画的直升机。', 2),
+])
+async def test_inferred_confirmed_counts_are_rejected_before_any_edit(key, source, value):
+    from tcad.core.types import ToolContext
+    from tests.unit.test_loop_engine import make_ir
+
+    services = make_services(make_ir(), ScriptedLlm([]), gate_passed=True)
+    ctx = ToolContext(thread_id='t', turn_id='r', model_id='m1',
+                      request_text='创建一个带装配动画的直升机。')
+    result = await ir_patch_handler(services, {'base_version': 'current', 'ops': [
+        {'op': 'rename', 'target_id': 'f1', 'payload': {'name': 'changed'}, 'reason': 'Rename'},
+        {'op': 'update_requirement', 'payload': {key: [
+            {'kind': 'feature_count', 'target': 'revolute_joints', 'value': value,
+             'source_text': source, 'confirmed': True}]}, 'reason': 'Record'}]}, ctx)
+    assert not result.ok and 'explicit numeric' in result.error.message
+    assert services.store.applied == []
+    assert services.store.current_version('m1') == 1
+
+
+@pytest.mark.parametrize('confirmed,source,value', [
+    (False, 'assumed joints', 2),
+    (True, '孔径8 mm', 8),
+])
+async def test_assumptions_and_actual_user_dimensions_can_be_recorded(confirmed, source, value):
+    from tcad.core.types import ToolContext
+    from tests.unit.test_loop_engine import make_ir
+
+    services = make_services(make_ir(), ScriptedLlm([]), gate_passed=True)
+    ctx = ToolContext(thread_id='t', turn_id='r', model_id='m1', request_text='制作支架，孔径8 mm')
+    result = await ir_patch_handler(services, {'base_version': 'current', 'ops': [
+        {'op': 'update_requirement', 'payload': {'constraints_append': [
+            {'kind': 'hole_diameter', 'value': value, 'source_text': source, 'confirmed': confirmed}]},
+         'reason': 'Record'}]}, ctx)
+    assert result.ok, result.error
+    assert len(services.store.applied) == 1
+
+
 def report(version=1, status="pass", confidence="deterministic", severity="blocking", check_id="bbox_spec"):
     return GateReport(model_id="m1", ir_version=version, passed=True, results=[
         CheckResult(check_id=check_id, status=status, severity=severity, confidence=confidence)])

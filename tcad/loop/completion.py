@@ -6,10 +6,9 @@ be accepted here; all other objectives remain pending human acceptance.
 """
 from __future__ import annotations
 
-import re
-
 from pydantic import BaseModel, ConfigDict, Field
 from tcad.core.types import CheckStatus, Confidence, Severity
+from tcad.ir.requirements import source_numbers_match
 from tcad.verify.checks_spec import FIRST_TIER_OWNED
 
 
@@ -37,19 +36,7 @@ def _user_numbers_match(expr) -> bool:
     source = expr.source_text
     if expr.kind == "count" and not any(word in source.lower() for word in ("solid", "实体")):
         return False  # "one toolbox" does not mean solid-count is its function
-    numbers = {float(n) for n in re.findall(r"[-+]?\d+(?:\.\d+)?", source)}
-    # Unambiguous small Chinese quantities; larger/derived ones need clarification.
-    for word, number in (("一个", 1), ("两个", 2), ("三个", 3), ("四个", 4), ("五个", 5)):
-        if word in source:
-            numbers.add(float(number))
-    def values(value):
-        if isinstance(value, dict):
-            return [n for v in value.values() for n in values(v)]
-        if isinstance(value, list):
-            return [n for v in value for n in values(v)]
-        return [float(value)] if isinstance(value, (int, float)) and not isinstance(value, bool) else []
-    expected = values(expr.value)
-    return bool(expected) and all(n in numbers for n in expected)
+    return source_numbers_match(expr)
 
 
 def validate_review(review: DesignReview, ir, report, request_text: str) -> dict:

@@ -255,6 +255,7 @@ class LoopEngine:
         self.strategy = make_strategy(self.config.default_strategy)
         self._candidate_reports: list[GateReport] = []
         self._last_commit_passed = False
+        self._visual_checkpoint = False
         self._last_gate_report: GateReport | None = None
         self._compile_failures = 0
         self._idle_steps = 0
@@ -438,6 +439,7 @@ class LoopEngine:
         self._compile_failures = 0
         self._last_gate_report = None
         self._last_commit_passed = False
+        self._visual_checkpoint = False
         self._candidate_reports = []
         self._repeated_failures = RepeatedFailures(self.config.repeated_tool_failure_limit)
         self._retained_calls = {}
@@ -733,6 +735,7 @@ class LoopEngine:
                 # The most recent attempted commit owns the verification state.
                 # A failed recommit cannot reuse an earlier green report.
                 self._last_commit_passed = False
+                self._visual_checkpoint = False
                 self._completion_review = None
             if spec is None:
                 outcome = ToolOutcome(
@@ -781,7 +784,7 @@ class LoopEngine:
                 # two concurrent turns share that bundle, so a commit in one
                 # session would open the visual checkpoint for another's step.
                 ctx.visual_ok = (
-                    True if turn.kind == TurnKind.INSPECT else self._last_commit_passed
+                    True if turn.kind == TurnKind.INSPECT else self._visual_checkpoint
                 )
                 if spec.tier == ToolTier.PRIVILEGED:
                     # privileged owns its own hook dispatch (triple gate).
@@ -979,6 +982,7 @@ class LoopEngine:
                 and _is_mutating(tc.name, spec)
             ):
                 self._last_commit_passed = False
+                self._visual_checkpoint = False
                 self._completion_review = None
                 self._repeated_failures.clear()
 
@@ -1044,6 +1048,9 @@ class LoopEngine:
             if tc.name == "ir_commit":
                 gr = outcome.gate_report
                 if gr is not None:
+                    # A graded build has a saved scene even when the Gate fails.
+                    # Its geometry is useful for diagnosis, not completion proof.
+                    self._visual_checkpoint = True
                     self._candidate_reports.append(gr)
                     self._last_gate_report = gr
                     gate_report = gr

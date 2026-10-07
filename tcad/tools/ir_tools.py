@@ -136,6 +136,29 @@ async def ir_patch_handler(services: "Any", args: dict, ctx: ToolContext) -> Too
                 return _err(ToolErrorKind.SEMANTIC, "raw_text is the preserved user request; do not rewrite it",
                             hint="Add measured constraints with constraints_append; leave raw_text unchanged.")
     ir = services.store.load(ctx.model_id)
+    if ctx.request_text is not None:
+        from tcad.ir.requirements import source_numbers_match
+        from tcad.ir.schema import ConstraintExpr
+
+        sources = [ctx.request_text, ir.requirements.raw_text]
+        existing = [c.model_dump(mode="json") for c in ir.requirements.constraints]
+        for op in patch.ops:
+            if op.op != "update_requirement":
+                continue
+            for key in ("constraints", "constraints_append"):
+                for raw in op.payload.get(key) or []:
+                    try:
+                        expr = ConstraintExpr.model_validate(raw)
+                    except ValueError as exc:
+                        return _err(ToolErrorKind.SCHEMA, f"invalid requirement: {exc}")
+                    if not expr.confirmed or expr.model_dump(mode="json") in existing:
+                        continue
+                    quoted = bool(expr.source_text.strip()) and any(expr.source_text in s for s in sources)
+                    numeric = expr.kind == "symmetric" or source_numbers_match(expr)
+                    if not quoted or not numeric:
+                        return _err(ToolErrorKind.SEMANTIC,
+                            "confirmed requirement must quote the user's request verbatim and use its explicit numeric values",
+                            hint="Keep chosen dimensions/counts confirmed=false. Record qualitative animation goals in design_review; count measures solids and feature_count measures IR features, not joints or blades.")
     errors = services.store.validate_patch(ir, patch)
     if errors:
         e0 = errors[0]

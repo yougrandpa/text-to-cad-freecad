@@ -146,6 +146,29 @@ async def test_an_inspect_turn_is_a_visual_checkpoint():
     assert not hasattr(services, "_visual_ok")
 
 
+async def test_failed_graded_commit_allows_diagnosis_without_claiming_success():
+    from tcad.tools.base import build_default_registry
+
+    seen = []
+    services = make_services(make_ir(), ScriptedLlm([]), gate_passed=False)
+    registry = build_default_registry(services)
+    registry.register_tool(_probe_registry(seen).get('probe'))
+    services.llm = ScriptedLlm([LlmReply(tool_calls=[
+        ToolCall(id='commit', name='ir_commit', args={'message': 'Build'}),
+        ToolCall(id='diagnose', name='probe', args={}),
+        ToolCall(id='edit', name='ir_patch', args={'base_version': 'current', 'ops': [
+            {'op': 'rename', 'target_id': 'f1', 'payload': {'name': 'changed'}, 'reason': 'Repair'}]}),
+        ToolCall(id='after-edit', name='probe', args={})])])
+    engine = LoopEngine(services, registry, BudgetLimits(max_steps_per_turn=3), LoopConfig(data_dir='/tmp'))
+    result = await engine.run_turn(Thread(thread_id='th', model_id='m1'), UserMessage(text='Build'))
+    assert [item['visual_ok'] for item in seen] == [True, False]
+    assert result.state.value != 'succeeded'
+    assert not engine._last_commit_passed
+    services.llm = ScriptedLlm([LlmReply(tool_calls=[ToolCall(id='next-turn', name='probe', args={})])])
+    await engine.run_turn(Thread(thread_id='next', model_id='m1'), UserMessage(text='Continue'))
+    assert seen[-1]['visual_ok'] is False
+
+
 async def test_geo_view_reads_the_turn_context_not_the_shared_bundle(tmp_path):
     """The gate must consult the per-step flag, and the bundle only as fallback."""
     from types import SimpleNamespace

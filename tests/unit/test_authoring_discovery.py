@@ -120,6 +120,8 @@ async def test_assembly_help_names_the_one_solid_rule_and_the_rebuild_escape():
     """Both were declared only after a failed commit in a live session."""
     data = json.loads((await help_handler(None, {'topic': 'assembly'}, None)).content)
     assert 'one connected solid' in data['rules'] and 'solid_count' in data['rules']
+    assert 'assembly_export(mode="assemble")' in data['animation_modes']
+    assert 'static assembly' in data['animation_modes']
     assert 'set_assembly assembly=null' in data['rules'] and 'reconfigure' in data['rules']
 
 

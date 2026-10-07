@@ -42,6 +42,13 @@ new commit. Prescribed `body.motion` and native assembly drivers cannot be mixed
 Use `frame_index` for native snapshot frames and `driver_angle_deg` for prescribed
 rotation. `assembly_export` produces media from saved poses.
 
+Select its mode from the requested animation: `assemble` shows separated parts
+converging to the assembled pose, `explode` shows disassembly, and `motion` shows
+the working mechanism. Assembly presentation can use static Fixed joints without
+drivers. Align revolving connector axes with the geometric shaft axes. Inspect
+intermediate frames and moving-part overlap before claiming clearance; varying
+overlap is not evidence of an intentional mating fit.
+
 `geo_check_motion` and `assembly_simulate(check_pairs=...)` check sampled BRep
 overlap on the pinned artifact. A clear sample set does not prove continuous
 clearance, contact forces, gear meshing or material removal. State that scope and

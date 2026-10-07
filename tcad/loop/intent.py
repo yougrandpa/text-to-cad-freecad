@@ -232,7 +232,10 @@ def failure_history(data_dir, model_id: str, *, limit: int = 8) -> dict:
         failed.append(version)
         for failure in report.get("blocking_failures") or []:
             classes.setdefault(_class_of(str(failure)), []).append(version)
-    repeated = {name: vs for name, vs in classes.items() if len(vs) >= 2}
+    # Keep the full history for metrics, but only prescribe repairs for a class
+    # that still fails in the most recently graded version.
+    repeated = {name: vs for name, vs in classes.items()
+                if len(vs) >= 2 and graded and vs[-1] == graded[-1]}
     return {"graded_versions": graded, "failed_versions": failed,
             "classes": classes, "repeated": repeated}
 

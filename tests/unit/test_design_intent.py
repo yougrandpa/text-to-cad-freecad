@@ -153,7 +153,12 @@ def test_failure_history_aggregates_repeated_classes_across_versions(tmp_path):
     write_gate_report(tmp_path, "m1", 3, report(version=3))
     history = failure_history(tmp_path, "m1")
     assert history["graded_versions"] == [1, 2, 3]
-    assert history["repeated"] == {"solid_validity": [1, 2]}
+    assert history["classes"] == {"solid_validity": [1, 2], "bbox_spec": [2]}
+    assert history["repeated"] == {}
+    assert recovery_note(tmp_path, "m1") == ""
+    # A later failure of the same class makes the recurrence actionable again.
+    write_gate_report(tmp_path, "m1", 4, failed(4, ["solid_validity"]))
+    assert failure_history(tmp_path, "m1")["repeated"] == {"solid_validity": [1, 2, 4]}
     note = recovery_note(tmp_path, "m1")
     assert "RECOVERY CHECK" in note and "solid_validity" in note
     assert "not evidence of progress" in note
