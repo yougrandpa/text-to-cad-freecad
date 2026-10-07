@@ -113,6 +113,11 @@ class LoopConfig(BaseModel):
     system_prompt: str = (
         "You are a parametric CAD agent. You design by mutating an intermediate "
         "representation (IR) via ir_patch, then ir_commit to compile and gate. "
+        "Plan primary outlines with ir_plan form and outline_id before details or animation. "
+        "Use loft or native profiles for curved/tapered forms; ir_help(topic=shape,shape=loft) "
+        "provides the executable recipe. box/beam suit prismatic parts, not every silhouette. "
+        "Preserve outline intent during repairs. Preview mesh limits concern display tessellation; "
+        "retain CAD geometry and report unavailable visual evidence rather than simplifying it. "
         "Download formats are exported on demand by the UI. Do not call asset_export or assembly_export "
         "to finish modeling unless the user explicitly requests an export. "
         "Choose single-body or multi-body modeling based on the requirements and their complexity. "
@@ -1283,6 +1288,10 @@ class LoopEngine:
         try:
             ir = store.load(turn.model_id, version) if version is not None else store.load(turn.model_id)
             blocks["requirements_text"] = render_requirements_text(ir)
+            from tcad.loop.intent import plan_context
+            intent = plan_context(self.config.data_dir, turn.model_id, ir)
+            if intent:
+                blocks["requirements_text"] += "\n\n" + intent
         except Exception:  # noqa: BLE001 — no IR means no contract to show
             pass
 

@@ -251,6 +251,14 @@ async def ir_plan_handler(services,args,ctx):
     except Exception:  # noqa: BLE001 — a plan outlives a missing snapshot
         ir=None
     previous=read_plan(ctx.data_dir, ctx.model_id)
+    if previous:
+        old_parts={part.id:part for part in previous.parts}
+        for part in request.parts:
+            old=old_parts.get(part.id)
+            if old:
+                for field in ('form','outline_id'):
+                    if field not in part.model_fields_set:
+                        setattr(part,field,getattr(old,field))
     plan=IntentPlan(model_id=ctx.model_id,
                     recorded_version=(previous.recorded_version if previous
                                       else getattr(ir,'version',0) or 0),
@@ -259,6 +267,9 @@ async def ir_plan_handler(services,args,ctx):
     data={'recorded':True,'recorded_version':plan.recorded_version,
           'parts':[part.id for part in plan.parts],
           'next':'Re-send the same ids as the design evolves. Parts with no geometry yet are listed under not_built_yet; at review a user-required part still missing becomes LOST and is recorded as a degradation.'}
+    from tcad.agent.shape_guidance import FORM_ROUTES
+    data['shape_routes']={part.id:FORM_ROUTES[part.form] for part in plan.parts
+                          if part.form in FORM_ROUTES}
     if ir is not None:
         review=review_intent(plan,ir)
         data['against_current_ir']={
@@ -453,7 +464,7 @@ def build_authoring_tools(services):
             description='Append typed measurable geometry constraints only. Original request is preserved automatically. confirmed=true requires explicit user-stated dimensions/source_text; guessed dimensions remain unconfirmed. Qualitative animation/gravity goals belong in design_review, not constraint kinds. No requirement call is needed when the user gave no measurable numbers.',
             params_schema=inline_schema(RequirementsCall.model_json_schema()),handler=functools.partial(requirements_handler,services)),
         'ir_plan':ToolSpec(name='ir_plan',tier=ToolTier.WRITE,
-            description='Record the short PART PLAN for this design and keep it true. Call once when starting a design: one entry per part with a short goal describing its silhouette, proportions and chosen shape operations, and origin=user (explicit in the user request) or model (your own choice). Re-send the SAME ids as the design evolves; a part you reduce is marked simplified/dropped — a note is required when the user required it. ir_commit compares the plan against the built IR: a planned part with no geometry is reported LOST, and a reduced user-required part is recorded as a design degradation (continue refining, or deliver a draft pending acceptance). Planning does not prove geometry, comfort or strength.',
+            description='Record the short PART PLAN for this design and keep it true. Call once when starting a design: one entry per part with a short goal describing its silhouette, proportions and chosen shape operations, and form=prismatic|round|tapered|curved when known. Bind outline_id to the stable recipe/native feature shaping the primary outline, not a support or hole. Use ir_help(topic=shape,shape=loft) for varying sections and scoped sketch/feature help for other profiles. Preserve form/outline_id during repairs; preview limits do not justify flattening the CAD outline. Set origin=user (explicit in the user request) or model (your own choice). Re-send the SAME ids as the design evolves; a part you reduce is marked simplified/dropped — a note is required when the user required it. ir_commit compares the plan against the built IR: a planned part with no geometry is reported LOST, and a reduced user-required part is recorded as a design degradation (continue refining, or deliver a draft pending acceptance). Planning does not prove geometry, comfort or strength.',
             params_schema=inline_schema(PlanCall.model_json_schema()),handler=functools.partial(ir_plan_handler,services)),
         'assembly_motion':ToolSpec(name='assembly_motion',tier=ToolTier.WRITE,
             description='Ferris-wheel/gravity-pendulum rig ONLY: a horizontal wheel axis (Z is up) with passive hanging cabins. For ordinary propellers, vertical rotors and native joints use ir_help(topic=assembly), then assembly_configure; this tool is not a general rotor driver. rotating_body_ids revolve about center/axis. cad_cabins use hanging_body_ids directly; uniform-density COM/inertia and highest vertical hanger endpoint are measured automatically. Or use suspensions with explicit body_ids/pivot. Bodies upright, COM below hinge. RK4 integrates gravity, moving-hinge acceleration and damping. duration_s/frames set saved playback. Commit, assembly_simulate for sampled collisions, assembly_export for GIF. Not contact/structural analysis.',

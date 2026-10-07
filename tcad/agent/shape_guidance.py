@@ -9,6 +9,13 @@ SHAPE_CHOICES = {
     'rotor': 'A cylindrical hub with flat rectangular blades only; other blade profiles need native sketch/feature operations.',
 }
 
+FORM_ROUTES = {
+    'prismatic': 'box/beam for constant rectangular sections.',
+    'round': 'cylinder/tube for constant round sections; native sketch/pad for other profiles.',
+    'tapered': 'ir_help(topic=shape,shape=loft) for varying elliptical sections; native cone or custom loft profiles otherwise.',
+    'curved': 'ir_help(topic=shape,shape=loft) for shaped elliptical sections; ir_help(topic=sketch) for other curves.',
+}
+
 SHAPE_REVIEW = (
     'Before detailed modeling, describe the primary silhouette, proportions, cross-section changes '
     'and part boundaries. Match operations to those shapes: prismatic parts may stay box/beam; '
