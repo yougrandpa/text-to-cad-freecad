@@ -25,6 +25,14 @@ from tcad.core.types import Thread, Turn
 _DEFAULT_SQLITE = "data/tcad.sqlite3"
 
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS session_folders (
+    folder_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS deleted_threads (
+    thread_id TEXT PRIMARY KEY
+);
 CREATE TABLE IF NOT EXISTS threads (
     thread_id  TEXT PRIMARY KEY,
     model_id   TEXT NOT NULL,
@@ -114,7 +122,16 @@ class SessionDB:
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
-        self._conn.commit()
+        # Upgrade existing histories in place; old conversations stay unfiled.
+        # Serialise the inspection too: simultaneous first HTTP reads can open
+        # two connections against an old database.
+        with self._conn:
+            self._conn.execute("BEGIN IMMEDIATE")
+            columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(threads)")}
+            if "folder_id" not in columns:
+                self._conn.execute("ALTER TABLE threads ADD COLUMN folder_id TEXT")
+            if "archived" not in columns:
+                self._conn.execute("ALTER TABLE threads ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
 
     # ── context ───────────────────────────────────────────────────────────────
 
@@ -144,13 +161,19 @@ class SessionDB:
     # ── threads ─────────────────────────────────────────────────────────────────
 
     def create_thread(self, model_id: str, thread_id: str | None = None,
-                      context_state: str = "full") -> Thread:
+                      context_state: str = "full", folder_id: str | None = None) -> Thread:
         tid = thread_id or _uid("thr")
         with self._tx() as cur:
+            if cur.execute("SELECT 1 FROM deleted_threads WHERE thread_id=?", (tid,)).fetchone():
+                raise ValueError("conversation has been deleted")
+            if folder_id is not None and not cur.execute(
+                "SELECT 1 FROM session_folders WHERE folder_id=?", (folder_id,)
+            ).fetchone():
+                raise KeyError(folder_id)
             cur.execute(
-                "INSERT INTO threads(thread_id, model_id, created_at, context_state) "
-                "VALUES(?,?,?,?)",
-                (tid, model_id, _now(), context_state),
+                "INSERT INTO threads(thread_id, model_id, created_at, context_state, folder_id) "
+                "VALUES(?,?,?,?,?)",
+                (tid, model_id, _now(), context_state, folder_id),
             )
         return Thread(thread_id=tid, model_id=model_id, context_state=context_state)  # type: ignore[arg-type]
 
@@ -163,6 +186,63 @@ class SessionDB:
             thread_id=row["thread_id"], model_id=row["model_id"],
             created_at=datetime.fromisoformat(row["created_at"]),
             context_state=row["context_state"])  # type: ignore[arg-type]
+
+    def is_deleted(self, thread_id: str) -> bool:
+        return self._fetchone("SELECT 1 FROM deleted_threads WHERE thread_id=?", (thread_id,)) is not None
+
+    def list_folders(self) -> list[dict]:
+        return [dict(row) for row in self._fetchall(
+            "SELECT * FROM session_folders ORDER BY created_at, rowid")]
+
+    def save_folder(self, name: str, folder_id: str | None = None) -> dict:
+        name = name.strip()
+        if not name or len(name) > 60:
+            raise ValueError("文件夹名称须为 1–60 个字符")
+        fid = folder_id or _uid("fld")
+        with self._tx() as cur:
+            try:
+                if folder_id is None:
+                    cur.execute("INSERT INTO session_folders VALUES(?,?,?)", (fid, name, _now()))
+                else:
+                    cur.execute("UPDATE session_folders SET name=? WHERE folder_id=?", (name, fid))
+                    if not cur.rowcount:
+                        raise KeyError(fid)
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("已存在同名文件夹") from exc
+            return dict(cur.execute("SELECT * FROM session_folders WHERE folder_id=?", (fid,)).fetchone())
+
+    def delete_folder(self, folder_id: str) -> None:
+        with self._tx() as cur:
+            cur.execute("DELETE FROM session_folders WHERE folder_id=?", (folder_id,))
+            if not cur.rowcount:
+                raise KeyError(folder_id)
+            cur.execute("UPDATE threads SET folder_id=NULL WHERE folder_id=?", (folder_id,))
+
+    def update_thread(self, thread_id: str, changes: dict) -> None:
+        if not changes or set(changes) - {"folder_id", "archived"}:
+            raise ValueError("请选择文件夹或归档状态")
+        with self._tx() as cur:
+            if not cur.execute("SELECT 1 FROM threads WHERE thread_id=?", (thread_id,)).fetchone():
+                raise KeyError(thread_id)
+            folder_id = changes.get("folder_id")
+            if folder_id is not None and not cur.execute(
+                "SELECT 1 FROM session_folders WHERE folder_id=?", (folder_id,)
+            ).fetchone():
+                raise KeyError(folder_id)
+            fields = ", ".join(f"{key}=?" for key in changes)
+            cur.execute(f"UPDATE threads SET {fields} WHERE thread_id=?", (*changes.values(), thread_id))
+
+    def delete_thread(self, thread_id: str) -> None:
+        """Delete conversation records atomically; versioned CAD files remain."""
+        with self._tx() as cur:
+            if not cur.execute("SELECT 1 FROM threads WHERE thread_id=?", (thread_id,)).fetchone():
+                raise KeyError(thread_id)
+            for table in ("steps", "token_usage"):
+                cur.execute(f"DELETE FROM {table} WHERE turn_id IN "
+                            "(SELECT turn_id FROM turns WHERE thread_id=?)", (thread_id,))
+            for table in ("approvals", "messages", "turns", "threads"):
+                cur.execute(f"DELETE FROM {table} WHERE thread_id=?", (thread_id,))
+            cur.execute("INSERT INTO deleted_threads VALUES(?)", (thread_id,))
 
     # ── turns ───────────────────────────────────────────────────────────────────
 
@@ -290,7 +370,8 @@ class SessionDB:
 
     # ── conversation history ────────────────────────────────────────────────────
 
-    def list_threads(self, model_id: str | None = None, limit: int = 100) -> list[dict]:
+    def list_threads(self, model_id: str | None = None, limit: int | None = 100,
+                     *, archived: bool | None = None) -> list[dict]:
         """Threads, most recently active first — what a UI needs to offer "resume".
 
         Ordering is by last activity — the newest message, or the thread's own
@@ -308,10 +389,17 @@ class SessionDB:
         backwards. ``last_message`` is the preview. Both come back whole;
         truncation is a display decision.
         """
-        where = "WHERE t.model_id=?" if model_id else ""
-        params: tuple = (model_id, int(limit)) if model_id else (int(limit),)
+        filters, values = [], []
+        if model_id:
+            filters.append("t.model_id=?")
+            values.append(model_id)
+        if archived is not None:
+            filters.append("t.archived=?")
+            values.append(int(archived))
+        where = "WHERE " + " AND ".join(filters) if filters else ""
+        params = (*values, int(limit) if limit is not None else -1)
         rows = self._fetchall(
-            "SELECT t.thread_id, t.model_id, t.created_at, t.context_state, "
+            "SELECT t.thread_id, t.model_id, t.created_at, t.context_state, t.folder_id, t.archived, "
             "  (SELECT COUNT(*) FROM messages m WHERE m.thread_id=t.thread_id) AS messages, "
             "  (SELECT m.content FROM messages m WHERE m.thread_id=t.thread_id "
             "     ORDER BY m.rowid DESC LIMIT 1) AS last_message, "
@@ -323,7 +411,7 @@ class SessionDB:
             "ORDER BY last_at DESC, t.rowid DESC LIMIT ?",
             params,
         )
-        return [dict(r) for r in rows]
+        return [{**dict(r), "archived": bool(r["archived"])} for r in rows]
 
     def list_messages(self, thread_id: str, limit: int = 500) -> list[dict]:
         """Messages in arrival order.

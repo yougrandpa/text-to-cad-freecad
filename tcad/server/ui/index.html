@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>tcad · 对话式 CAD</title>
 <link rel="icon" type="image/svg+xml" href="./favicon.svg?v=hakimi-cute">
-<link rel="stylesheet" href="./styles.css?v=20261006-studio">
+<link rel="stylesheet" href="./styles.css?v=20261007-pane-hover">
 </head>
 <body>
 
@@ -62,32 +62,36 @@
 
 <div class="apibanner" id="apiBanner" hidden></div>
 
-<nav class="workspace-nav" id="workspaceNav" role="tablist" aria-label="工作区">
-  <button id="workspaceChat" type="button" role="tab" aria-selected="true" aria-controls="chatPane">
-    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M3 3h14v10H8l-5 4V3Z"/><path d="M6 7h8M6 10h5"/></svg>设计对话
-  </button>
-  <button id="workspaceModel" type="button" role="tab" aria-selected="false" aria-controls="modelPane" tabindex="-1">
-    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="m10 2 7 4v8l-7 4-7-4V6l7-4ZM3 6l7 4 7-4M10 10v8"/></svg>三维模型
-  </button>
-  <button id="workspaceInspect" type="button" role="tab" aria-selected="false" aria-controls="inspectPane" tabindex="-1">
-    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M4 3v13h4M4 7h4M4 12h4M8 5h9v4H8zM8 10h9v4H8zM8 15h9v3H8z"/></svg>结构检查
-  </button>
-</nav>
-
-<main class="layout" id="layout" data-workspace="chat">
-  <button class="session-backdrop" id="sessionBackdrop" type="button" aria-label="关闭会话列表" tabindex="-1"></button>
-
+<main class="layout" id="layout">
   <!-- ── 会话列表 ───────────────────────────────────────────── -->
   <aside class="col col-sessions" id="sessionPane">
     <div class="col-head">
       <span class="pane-label">设计项目</span>
       <div class="grow"></div>
       <button class="mini new-session" id="newSessionBtn" title="新建会话（⌘/Ctrl+K）">＋ 新建</button>
-      <button class="mini compact-only" id="closeSessions" type="button" aria-label="关闭会话列表">关闭</button>
+    </div>
+    <div class="history-toolbar" aria-label="历史对话管理">
+      <button class="mini" id="activeSessionsBtn" type="button" aria-pressed="true">对话</button>
+      <button class="mini" id="archivedSessionsBtn" type="button" aria-pressed="false">已归档</button>
+      <button class="mini folder-create" id="newFolderBtn" type="button" aria-label="新建文件夹" title="新建文件夹">＋ 文件夹</button>
     </div>
     <div class="session-list" id="sessionList">
       <div class="session-empty" id="sessionEmpty">每一个想法，都从这里开始。<br>新建会话，或直接描述你的设计。</div>
     </div>
+    <dialog class="history-dialog" id="historyDialog" aria-labelledby="historyDialogTitle" aria-describedby="historyDialogHint">
+      <form id="historyForm">
+        <h3 id="historyDialogTitle"></h3>
+        <p id="historyDialogHint"></p>
+        <label id="historyFieldLabel" for="historyName">文件夹名称</label>
+        <input id="historyName" maxlength="60" autocomplete="off" required>
+        <select id="historyFolder" aria-label="目标文件夹" hidden></select>
+        <p class="history-error" id="historyDialogError" role="alert"></p>
+        <div class="history-dialog-actions">
+          <button class="mini" id="historyCancel" type="button">取消</button>
+          <button class="history-confirm" id="historyConfirm" type="submit">保存</button>
+        </div>
+      </form>
+    </dialog>
   </aside>
 
   <!-- ── 会话 ───────────────────────────────────────────────── -->
@@ -188,7 +192,6 @@
     <div class="col-head">
       <span class="pane-label">模型结构 <small>MODEL</small></span>
       <div class="grow"></div>
-      <button class="mini compact-only" id="showModelFromStructure" type="button">看模型 ↗</button>
       <button class="mini" id="refreshInspect" title="刷新">刷新</button>
     </div>
     <div class="model-panel-tabs" role="tablist" aria-label="模型信息">
@@ -294,6 +297,6 @@
   </div>
 </div>
 
-<script type="module" src="./app.js?v=20261006-studio"></script>
+<script type="module" src="./app.js?v=20261007-desktop-panes"></script>
 </body>
 </html>

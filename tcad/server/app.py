@@ -119,8 +119,33 @@ class CreateSessionRequest(BaseModel):
 
     model_id: str | None = None
     raw_requirement: str = ""
+    folder_id: str | None = None
 
     _validate_model_id = field_validator("model_id")(_safe_id_field("model_id"))
+
+
+class SessionUpdateRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    folder_id: str | None = None
+    archived: bool | None = Field(default=None, strict=True)
+
+    @model_validator(mode="after")
+    def validate_changes(self):
+        if not self.model_fields_set or ("archived" in self.model_fields_set and self.archived is None):
+            raise ValueError("请选择文件夹或归档状态")
+        return self
+
+
+class SessionFolderRequest(BaseModel):
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value or len(value) > 60:
+            raise ValueError("文件夹名称须为 1–60 个字符")
+        return value
 
 
 class ChatRequest(BaseModel):
@@ -1005,6 +1030,8 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
     async def chat(req: ChatRequest) -> StreamingResponse:
         s = svc()
         thread_id = req.thread_id or f"th-{req.model_id}"
+        if db().is_deleted(thread_id):
+            raise HTTPException(404, "会话已删除，请新建会话")
         # The model is a property of the conversation, not of the request.
         #
         # Continuing an existing session must run against the model that session
@@ -1137,6 +1164,9 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
                 return _sse(event, data)
 
             try:
+                if db().is_deleted(thread_id):
+                    yield terminal("error", {"type": "DeletedSession", "message": "会话已删除，请新建会话"})
+                    return
                 # Registration is the authority, not the check in `chat()`: two
                 # requests with the same id can both pass that check before
                 # either generator has run, and the second would overwrite the
@@ -1469,7 +1499,7 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
     # its own transcript a lie. Switching sessions therefore switches both.
 
     @app.get("/sessions")
-    def list_sessions(limit: int = 100) -> dict:
+    def list_sessions(limit: int | None = None, include_archived: bool = False) -> dict:
         """Conversations, most recently active first.
 
         Carries enough to render the list *and* to switch to an entry: the UI
@@ -1478,7 +1508,7 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
         """
         store = session_store()
         sessions = []
-        for row in db().list_threads(limit=limit):
+        for row in db().list_threads(limit=limit, archived=None if include_archived else False):
             try:
                 version = store.latest_version(row["model_id"])
             except Exception:  # noqa: BLE001 — an unreadable model must not hide the list
@@ -1490,6 +1520,60 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
                 "verified": _verified_or_none(store, row["model_id"], version),
             })
         return {"sessions": sessions}
+
+    @app.get("/session-folders")
+    def list_session_folders() -> dict:
+        return {"folders": db().list_folders()}
+
+    @app.post("/session-folders")
+    def create_session_folder(req: SessionFolderRequest) -> dict:
+        try:
+            return db().save_folder(req.name)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.patch("/session-folders/{folder_id}")
+    def rename_session_folder(folder_id: str, req: SessionFolderRequest) -> dict:
+        try:
+            return db().save_folder(req.name, folder_id)
+        except KeyError as exc:
+            raise HTTPException(404, "文件夹不存在") from exc
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @app.delete("/session-folders/{folder_id}")
+    def delete_session_folder(folder_id: str) -> dict:
+        try:
+            db().delete_folder(folder_id)
+        except KeyError as exc:
+            raise HTTPException(404, "文件夹不存在") from exc
+        return {"deleted": True}
+
+    def editable_session(thread_id: str):
+        thread = db().get_thread(thread_id)
+        if thread is None:
+            raise HTTPException(404, "会话不存在")
+        if any(turn.thread_id == thread_id or turn.model_id == thread.model_id
+               for turn in app.state.turns.values()):
+            raise HTTPException(409, "会话正在生成，请先停止或等待完成")
+        return thread
+
+    # Keep these mutations on the event loop, without an await between the
+    # active-turn check and DB write, so registration cannot race deletion.
+    @app.patch("/sessions/{thread_id}")
+    async def update_session(thread_id: str, req: SessionUpdateRequest) -> dict:
+        editable_session(thread_id)
+        try:
+            db().update_thread(thread_id, req.model_dump(exclude_unset=True))
+        except KeyError as exc:
+            raise HTTPException(404, "会话或文件夹不存在") from exc
+        return {"updated": True}
+
+    @app.delete("/sessions/{thread_id}")
+    async def delete_session(thread_id: str) -> dict:
+        editable_session(thread_id)
+        db().delete_thread(thread_id)
+        return {"deleted": True}
 
     @app.post("/sessions")
     def create_session(req: CreateSessionRequest) -> dict:
@@ -1516,6 +1600,10 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
         not need a fresh model.
         """
         store = session_store()
+        if req.folder_id is not None and not any(
+            folder["folder_id"] == req.folder_id for folder in db().list_folders()
+        ):
+            raise HTTPException(404, "文件夹不存在")
         model_id = req.model_id or f"part-{uuid.uuid4().hex[:8]}"
         if _model_exists(store, model_id):
             raise HTTPException(
@@ -1535,7 +1623,10 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(500, f"could not create model {model_id!r}: {exc}") from exc
 
-        thread = db().create_thread(model_id=model_id, context_state="full")
+        try:
+            thread = db().create_thread(model_id=model_id, context_state="full", folder_id=req.folder_id)
+        except KeyError as exc:
+            raise HTTPException(404, "文件夹不存在") from exc
         return {
             "thread_id": thread.thread_id,
             "model_id": thread.model_id,

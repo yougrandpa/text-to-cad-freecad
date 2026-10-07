@@ -18,17 +18,18 @@ import { validateArtifactScene } from "../../viewer/core/artifact.js";
 import { ReferenceController } from "./references.mjs";
 import { StructureController } from "./structure.mjs";
 import { TreeHighlighter } from "./highlight.mjs";
-import { WorkspaceController } from "./workspace.mjs";
+import { PaneResizeController } from "./pane-resize.mjs";
 
 let references = null;
 let inspectorGeneration = 0;
 let structure = null;
-let workspace = null;
-let compactMedia = null;
+let paneResizer = null;
 let sourceIr = null;
 let displayedArtifact = null;
 let structureRequest = 0;
 let treeHighlighter = null;
+let historyRequest = 0;
+let openHistoryMenu = null;
 
 function highlightSelection(entity, artifactId) {
   if (!meshViewer) return;
@@ -67,7 +68,6 @@ async function syncDisplayedStructure(artifact = displayedArtifact) {
 function displayStructureArtifact(modelId, artifactId, version, status) {
   if (!artifactId || version == null) { clearDisplayedStructure(); return; }
   displayedArtifact = { modelId, artifactId, version, status };
-  workspace?.showModel();
   syncDisplayedStructure();
 }
 function referenceUI() {
@@ -78,7 +78,7 @@ function referenceUI() {
       highlightSelection(latest, meshViewer.artifactId);
       if (latest) structure?.selectReference(latest);
     },
-    notice: (message) => pushNotice("warn", message), focus: () => { workspace?.select("chat"); $("input").focus(); }, document,
+    notice: (message) => pushNotice("warn", message), focus: () => { $("input").focus(); }, document,
   });
   return references;
 }
@@ -92,6 +92,10 @@ const state = {
   modelId: null,
   threadId: null,
   sessions: [],
+  folders: [],
+  historyView: "active",
+  historyFolder: "all",
+  historyError: null,
   sessionsLoaded: false,
   // A failed list read is not the same as an empty list, and the sidebar must
   // not render one as the other.
@@ -1612,7 +1616,8 @@ function wire() {
     });
   }
 
-  bindWorkspace();
+  bindSidebar();
+  bindPaneResizing();
   bindComposer();
 
   $("viewTabs").addEventListener("click", (e) => {
@@ -1643,11 +1648,13 @@ function wire() {
       pushNotice("bad", `新建会话失败：${err.message}`);
     }
   });
+  bindHistory();
   $("sidebarToggle").addEventListener("click", () => toggleSidebar());
 
   // ⌘/Ctrl+K for a new session, the shortcut people already have in their fingers.
   document.addEventListener("keydown", (e) => {
     if (e.defaultPrevented) return;
+    if ($("historyDialog")?.open) return;
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
       e.preventDefault();
       $("newSessionBtn").click();
@@ -1753,9 +1760,99 @@ function formatWhen(iso) {
   return new Date(then).toLocaleDateString();
 }
 
+function visibleSessions() {
+  return state.sessions.filter(s => Boolean(s.archived) === (state.historyView === "archived")
+    && (state.historyFolder === "all" || (s.folder_id || "unfiled") === state.historyFolder));
+}
+
+function historyIcon(name) {
+  const paths = {
+    more: "M5 12h.01 M12 12h.01 M19 12h.01",
+    plus: "M12 5v14 M5 12h14",
+    move: "M3 7V5a1 1 0 0 1 1-1h5l2 3h9a1 1 0 0 1 1 1v3 M3 7v12a1 1 0 0 0 1 1h9 M16 14l4 4-4 4 M12 18h8",
+    archive: "M4 8h16v12H4z M3 4h18v4H3z M9 12h6",
+    restore: "M4 8h16v12H4z M3 4h18v4H3z M9 14l3-3 3 3 M12 11v6",
+    trash: "M3 6h18 M9 6V3h6v3 M5 6l1 15h12l1-15 M10 10v7 M14 10v7",
+    edit: "M4 16v4h4L20 8l-4-4z M13 7l4 4",
+  };
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  for (const [key, value] of Object.entries({ viewBox: "0 0 24 24", width: "16", height: "16",
+    fill: "none", stroke: "currentColor", "stroke-width": name === "more" ? "4" : "1.7",
+    "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true", focusable: "false" })) {
+    svg.setAttribute(key, value);
+  }
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("d", paths[name] || paths.plus);
+  svg.append(path);
+  return svg;
+}
+
+function historyAction(text, action, { danger = false, disabled = false, icon = "plus" } = {}) {
+  return el("button", { type: "button", class: danger ? "history-danger" : "", disabled, onclick: action }, [
+    historyIcon(icon), el("span", { text }),
+  ]);
+}
+
+function closeHistoryMenu() {
+  if (!openHistoryMenu) return;
+  openHistoryMenu.panel.hidden = true;
+  openHistoryMenu.trigger.setAttribute("aria-expanded", "false");
+  openHistoryMenu = null;
+}
+
+function historyMenu(label, actions) {
+  const panel = el("div", { class: "history-menu-actions", hidden: true }, actions);
+  const trigger = el("button", { type: "button", class: "history-menu-toggle", "aria-label": label,
+    "aria-expanded": "false", title: label }, [historyIcon("more")]);
+  const menu = el("div", { class: "history-menu" }, [trigger, panel]);
+  trigger.addEventListener("click", () => {
+    const wasOpen = !panel.hidden;
+    closeHistoryMenu();
+    if (!wasOpen) {
+      panel.hidden = false;
+      trigger.setAttribute("aria-expanded", "true");
+      openHistoryMenu = { menu, panel, trigger };
+    }
+  });
+  menu.addEventListener("keydown", event => {
+    if (event.key === "Escape" && !panel.hidden) {
+      event.preventDefault();
+      closeHistoryMenu();
+      trigger.focus();
+    }
+  });
+  return menu;
+}
+
+function renderHistoryFolders(box) {
+  const folders = el("nav", { class: "history-folders", "aria-label": "对话文件夹" });
+  const rows = [{ folder_id: "all", name: "全部对话" }, { folder_id: "unfiled", name: "未分类" }, ...state.folders];
+  for (const folder of rows) {
+    const count = state.sessions.filter(s => Boolean(s.archived) === (state.historyView === "archived")
+      && (folder.folder_id === "all" || (s.folder_id || "unfiled") === folder.folder_id)).length;
+    const real = !["all", "unfiled"].includes(folder.folder_id);
+    folders.append(el("div", { class: "history-folder-row" }, [
+      el("button", {
+        type: "button", class: `history-folder${state.historyFolder === folder.folder_id ? " selected" : ""}`,
+        "aria-pressed": String(state.historyFolder === folder.folder_id),
+        onclick: () => { state.historyFolder = folder.folder_id; renderSessions(); },
+      }, [el("span", { class: "folder-mark", text: real ? "▱" : "≡", "aria-hidden": "true" }),
+        el("span", { class: "folder-name", text: folder.name }), el("span", { class: "folder-count", text: String(count) })]),
+      real ? historyMenu(`管理文件夹：${folder.name}`, [
+        historyAction("重命名", () => folderDialog(folder), { icon: "edit" }),
+        historyAction("删除文件夹…", () => deleteFolderDialog(folder), { danger: true, icon: "trash" }),
+      ]) : null,
+    ]));
+  }
+  box.append(folders);
+}
+
 function renderSessions() {
+  closeHistoryMenu();
   const box = $("sessionList");
   box.replaceChildren();
+  $("activeSessionsBtn")?.setAttribute("aria-pressed", String(state.historyView === "active"));
+  $("archivedSessionsBtn")?.setAttribute("aria-pressed", String(state.historyView === "archived"));
 
   // A read that failed is not an empty list. Rendering it as "还没有会话" tells
   // you your conversations are gone when in fact the request never landed —
@@ -1778,15 +1875,21 @@ function renderSessions() {
     return;
   }
 
-  if (!state.sessions.length) {
+  renderHistoryFolders(box);
+  if (state.historyError) box.append(el("div", { class: "history-error", role: "alert", text: state.historyError }));
+  const visible = visibleSessions();
+  box.append(el("div", { class: "history-list-label", text: state.historyView === "archived" ? "已归档对话" : "历史对话" }));
+  if (!visible.length) {
     box.append(el("div", {
       class: "session-empty",
-      text: "每一个想法，都从这里开始。新建会话，或直接描述你的设计。",
+      text: state.historyView === "archived" ? "这里还没有归档对话。" : state.historyFolder !== "all"
+        ? "这个文件夹还没有对话。可新建对话，或从其他位置移入。"
+        : "每一个想法，都从这里开始。新建会话，或直接描述你的设计。",
     }));
     return;
   }
 
-  for (const s of state.sessions) {
+  for (const s of visible) {
     const active = s.thread_id === state.threadId;
     // A running turn lives in exactly one session, and while the list is what
     // you are looking at that is where you need to see it.
@@ -1811,7 +1914,7 @@ function renderSessions() {
       }),
       running ? el("span", { class: "s-running", text: "进行中" }) : null,
     ]);
-    box.append(el("button", {
+    box.append(el("div", { class: `session-row${active ? " active" : ""}` }, [el("button", {
       class: `session-item${active ? " active" : ""}`,
       type: "button",
       title: `${s.thread_id}\nmodel ${s.model_id}`,
@@ -1819,22 +1922,169 @@ function renderSessions() {
     }, [
       el("div", { class: "s-title", text: sessionTitle(s) }),
       meta,
-    ]));
+    ]), historyMenu(`管理对话：${sessionTitle(s)}`, [
+      historyAction("移动到文件夹…", () => moveSessionDialog(s), { disabled: running, icon: "move" }),
+      historyAction(s.archived ? "恢复对话" : "归档对话", () => archiveSession(s), { disabled: running, icon: s.archived ? "restore" : "archive" }),
+      historyAction("删除对话…", () => deleteSessionDialog(s), { danger: true, disabled: running, icon: "trash" }),
+      running ? el("span", { class: "history-menu-hint", text: "请先停止生成" }) : null,
+    ])]));
   }
 }
 
 async function loadSessions() {
+  const request = ++historyRequest;
   try {
-    const { sessions } = await api("/sessions");
+    const [{ sessions }, { folders }] = await Promise.all([
+      api("/sessions?include_archived=true"), api("/session-folders"),
+    ]);
+    if (request !== historyRequest) return state.sessions;
     state.sessions = sessions || [];
+    state.folders = folders || [];
+    if (!["all", "unfiled"].includes(state.historyFolder)
+      && !state.folders.some(f => f.folder_id === state.historyFolder)) state.historyFolder = "all";
     state.sessionsLoaded = true;
     state.sessionsError = null;
   } catch (err) {
+    if (request !== historyRequest) return state.sessions;
     state.sessionsLoaded = false;
     state.sessionsError = err.message;
   }
   renderSessions();
   return state.sessions;
+}
+
+function openHistoryDialog({ title, hint, mode = "confirm", value = "", confirm = "保存", danger = false, submit }) {
+  const dialog = $("historyDialog"), input = $("historyName"), select = $("historyFolder");
+  const opener = document.activeElement;
+  let pending = false;
+  $("historyDialogTitle").textContent = title;
+  $("historyDialogHint").textContent = hint;
+  $("historyDialogError").textContent = "";
+  $("historyFieldLabel").hidden = mode === "confirm";
+  $("historyFieldLabel").textContent = mode === "name" ? "文件夹名称" : "目标文件夹";
+  $("historyFieldLabel").htmlFor = mode === "name" ? "historyName" : "historyFolder";
+  input.hidden = mode !== "name";
+  input.required = mode === "name";
+  input.value = value;
+  select.hidden = mode !== "move";
+  if (mode === "move") {
+    select.replaceChildren(el("option", { value: "", text: "未分类" }),
+      ...state.folders.map(f => el("option", { value: f.folder_id, text: f.name })));
+    select.value = value;
+  }
+  const button = $("historyConfirm"), cancel = $("historyCancel");
+  button.replaceChildren(historyIcon(danger ? "trash" : mode === "move" ? "move" : "plus"), el("span", { text: confirm }));
+  button.classList.toggle("history-danger", danger);
+  button.disabled = false;
+  cancel.disabled = false;
+  cancel.onclick = () => dialog.close();
+  dialog.oncancel = event => { if (pending) event.preventDefault(); };
+  dialog.onclose = () => {
+    if (state.sidebarHidden) $("sidebarToggle").focus();
+    else if (opener?.isConnected) opener.focus();
+    else $("newFolderBtn").focus();
+  };
+  $("historyForm").onsubmit = async event => {
+    event.preventDefault();
+    if (pending) return;
+    if (mode === "name" && !input.value.trim()) {
+      $("historyDialogError").textContent = "请输入文件夹名称"; input.focus(); return;
+    }
+    pending = true;
+    button.disabled = cancel.disabled = true;
+    $("historyDialogError").textContent = "";
+    try {
+      await submit(mode === "move" ? select.value : input.value.trim());
+      dialog.close();
+    } catch (err) {
+      $("historyDialogError").textContent = err.message;
+    } finally {
+      pending = false;
+      button.disabled = cancel.disabled = false;
+    }
+  };
+  dialog.showModal();
+  (mode === "name" ? input : mode === "move" ? select : cancel).focus();
+  if (mode === "name") input.select();
+}
+
+async function refreshHistory() {
+  state.historyError = null;
+  await loadSessions();
+}
+
+function folderDialog(folder = null) {
+  openHistoryDialog({ title: folder ? "重命名文件夹" : "新建文件夹", hint: "把相关设计对话整理在一起。",
+    mode: "name", value: folder?.name || "", confirm: folder ? "保存" : "创建", submit: async name => {
+      const saved = await api(folder ? `/session-folders/${encodeURIComponent(folder.folder_id)}` : "/session-folders", {
+        method: folder ? "PATCH" : "POST", body: JSON.stringify({ name }),
+      });
+      state.historyFolder = saved.folder_id;
+      await refreshHistory();
+    } });
+}
+
+function deleteFolderDialog(folder) {
+  openHistoryDialog({ title: "删除文件夹？", hint: `「${folder.name}」内的对话将移回“未分类”，已归档的对话仍保持归档。`,
+    confirm: "删除文件夹", danger: true, submit: async () => {
+      await api(`/session-folders/${encodeURIComponent(folder.folder_id)}`, { method: "DELETE" });
+      if (state.historyFolder === folder.folder_id) state.historyFolder = "unfiled";
+      await refreshHistory();
+    } });
+}
+
+function moveSessionDialog(session) {
+  openHistoryDialog({ title: "移动对话", hint: sessionTitle(session), mode: "move", value: session.folder_id || "",
+    confirm: "移动", submit: async folderId => {
+      await api(`/sessions/${encodeURIComponent(session.thread_id)}`, {
+        method: "PATCH", body: JSON.stringify({ folder_id: folderId || null }),
+      });
+      state.historyFolder = folderId || "unfiled";
+      await refreshHistory();
+    } });
+}
+
+async function removeSessionFromView(session) {
+  if (state.threadId !== session.thread_id) return;
+  if (visibleSessions().some(s => s.thread_id === session.thread_id)) return;
+  await switchSession(visibleSessions()[0]?.thread_id || null, { force: true });
+}
+
+async function archiveSession(session) {
+  try {
+    await api(`/sessions/${encodeURIComponent(session.thread_id)}`, {
+      method: "PATCH", body: JSON.stringify({ archived: !session.archived }),
+    });
+    const row = state.sessions.find(s => s.thread_id === session.thread_id);
+    if (row) row.archived = !session.archived;
+    await refreshHistory();
+    await removeSessionFromView(session);
+    if (!state.sidebarHidden) $(state.historyView === "active" ? "activeSessionsBtn" : "archivedSessionsBtn").focus();
+  } catch (err) {
+    state.historyError = err.message;
+    renderSessions();
+  }
+}
+
+function deleteSessionDialog(session) {
+  openHistoryDialog({ title: "删除这段对话？", hint: `「${sessionTitle(session)}」的对话记录将永久删除，无法恢复。已生成的 CAD 模型文件会保留。`,
+    confirm: "删除对话", danger: true, submit: async () => {
+      await api(`/sessions/${encodeURIComponent(session.thread_id)}`, { method: "DELETE" });
+      state.sessions = state.sessions.filter(s => s.thread_id !== session.thread_id);
+      await refreshHistory();
+      await removeSessionFromView(session);
+    } });
+}
+
+function bindHistory() {
+  $("newFolderBtn").replaceChildren(historyIcon("plus"), el("span", { text: "文件夹" }));
+  $("newFolderBtn").addEventListener("click", () => folderDialog());
+  document.addEventListener("click", event => {
+    if (openHistoryMenu && !openHistoryMenu.menu.contains(event.target)) closeHistoryMenu();
+  });
+  for (const [id, view] of [["activeSessionsBtn", "active"], ["archivedSessionsBtn", "archived"]]) {
+    $(id).addEventListener("click", () => { state.historyView = view; state.historyError = null; renderSessions(); });
+  }
 }
 
 function resetStream(showWelcome) {
@@ -1862,8 +2112,6 @@ function syncUrl() {
 
 /** Load one session: transcript, then everything derived from its model. */
 async function switchSession(threadId, { force = false } = {}) {
-  if (!threadId) return;
-  if (compactMedia?.matches) toggleSidebar(true, { persist: false });
   if (threadId === state.threadId && !force) return;
 
   // A turn may be mid-flight. Its frames would otherwise keep arriving and
@@ -1914,6 +2162,13 @@ async function switchSession(threadId, { force = false } = {}) {
   renderSessions();
 
   resetStream(true);
+  if (!session) {
+    $("viewPlaceholder").textContent = "新建对话，开始设计你的零件。";
+    loadArtifacts();
+    $("inspector").replaceChildren();
+    setStatus("", "待开始");
+    return;
+  }
   const token = sessionToken();
   await loadMessages(threadId);
   if (stale(token)) return;
@@ -1962,11 +2217,12 @@ async function loadMessages(threadId) {
 }
 
 async function newSession({ announce = true } = {}) {
-  const created = await api("/sessions", { method: "POST", body: JSON.stringify({}) });
+  const folderId = ["all", "unfiled"].includes(state.historyFolder) ? null : state.historyFolder;
+  const created = await api("/sessions", { method: "POST", body: JSON.stringify({ folder_id: folderId }) });
+  state.historyView = "active";
   await loadSessions();
   await switchSession(created.thread_id, { force: true });
   if (announce) pushNotice("info", "已新建会话。直接描述你要的零件即可。");
-  workspace?.select("chat");
   $("input").focus();
   return created;
 }
@@ -2004,62 +2260,33 @@ function bindComposer() {
   }
 }
 
-function toggleSidebar(force, { persist = !compactMedia?.matches } = {}) {
+function toggleSidebar(force, { persist = true } = {}) {
   state.sidebarHidden = force === undefined ? !state.sidebarHidden : force;
   $("layout").classList.toggle("no-sidebar", state.sidebarHidden);
   $("sidebarToggle").setAttribute("aria-expanded", String(!state.sidebarHidden));
-  if (compactMedia?.matches) {
-    for (const id of ["chatPane", "modelPane", "inspectPane"]) $(id).inert = !state.sidebarHidden;
-    $("sessionPane").setAttribute("aria-modal", String(!state.sidebarHidden));
-    if (!state.sidebarHidden && force === undefined) $("newSessionBtn").focus();
-  }
   if (persist) {
     try { localStorage.setItem("tcad.sidebarHidden", state.sidebarHidden ? "1" : "0"); } catch { /* private mode */ }
   }
+  paneResizer?.refresh();
 }
 
-function bindWorkspace() {
-  compactMedia = window.matchMedia("(max-width: 980px)");
-  workspace = new WorkspaceController({
-    layout: $("layout"), media: compactMedia,
-    tabs: { chat: $("workspaceChat"), model: $("workspaceModel"), inspect: $("workspaceInspect") },
-    panels: { chat: $("chatPane"), model: $("modelPane"), inspect: $("inspectPane") },
-    onSelect: (name, compact) => { if (compact) toggleSidebar(true, { persist: false }); },
-    onModeChange: compact => {
-      const pane = $("sessionPane");
-      if (compact) {
-        pane.setAttribute("role", "dialog"); pane.setAttribute("aria-label", "设计项目");
-        $("sidebarToggle").setAttribute("aria-haspopup", "dialog");
-        toggleSidebar(true, { persist: false });
-      } else {
-        pane.removeAttribute("role"); pane.removeAttribute("aria-modal"); pane.removeAttribute("aria-label");
-        $("sidebarToggle").removeAttribute("aria-haspopup");
-        for (const id of ["chatPane", "modelPane", "inspectPane"]) $(id).inert = false;
-        let hidden = false;
-        try { hidden = localStorage.getItem("tcad.sidebarHidden") === "1"; } catch { /* private mode */ }
-        toggleSidebar(hidden, { persist: false });
-      }
-    },
+function bindPaneResizing() {
+  let storage;
+  try { storage = window.localStorage; } catch { /* Storage can be disabled. */ }
+  paneResizer = new PaneResizeController({ layout: $("layout"), storage,
+    panes: [
+      { key: "sessions", label: "设计项目", node: $("sessionPane"), minWidth: 140, defaultWidth: 166 },
+      { key: "chat", label: "设计对话", node: $("chatPane"), minWidth: 240, weight: 1 },
+      { key: "inspect", label: "模型结构", node: $("inspectPane"), minWidth: 200, defaultWidth: 248 },
+      { key: "model", label: "模型空间", node: $("modelPane"), minWidth: 280, weight: 2 },
+    ],
   });
-  const close = () => { toggleSidebar(true, { persist: false }); $("sidebarToggle").focus(); };
-  $("sessionBackdrop").addEventListener("click", close);
-  $("closeSessions").addEventListener("click", close);
-  $("showModelFromStructure").addEventListener("click", () => workspace.select("model"));
-  $("sessionPane").addEventListener("keydown", event => {
-    if (!compactMedia.matches || event.key !== "Tab") return;
-    const buttons = Array.from($("sessionPane").querySelectorAll("button"))
-      .filter(button => !button.disabled && button.getClientRects().length);
-    if (event.shiftKey && document.activeElement === buttons[0]) {
-      event.preventDefault(); buttons.at(-1)?.focus();
-    } else if (!event.shiftKey && document.activeElement === buttons.at(-1)) {
-      event.preventDefault(); buttons[0]?.focus();
-    }
-  });
-  document.addEventListener("keydown", event => {
-    if (event.key === "Escape" && compactMedia.matches && !state.sidebarHidden && $("settingsModal").hidden) {
-      event.preventDefault(); close();
-    }
-  });
+}
+
+function bindSidebar() {
+  let hidden = false;
+  try { hidden = localStorage.getItem("tcad.sidebarHidden") === "1"; } catch { /* Storage is optional. */ }
+  toggleSidebar(hidden, { persist: false });
 }
 
 async function boot() {
@@ -2104,8 +2331,9 @@ async function boot() {
   // lands where you left off), else the most recently used one.
   const wanted = new URLSearchParams(location.search).get("thread");
   await loadSessions();
-  const target = state.sessions.find((s) => s.thread_id === wanted) || state.sessions[0];
+  const target = state.sessions.find((s) => s.thread_id === wanted) || state.sessions.find(s => !s.archived);
   if (target) {
+    if (target.archived) state.historyView = "archived";
     await switchSession(target.thread_id, { force: true });
   } else {
     // No sessions at all. Deliberately not auto-creating one: an empty list is
