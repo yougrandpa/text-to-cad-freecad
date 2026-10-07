@@ -863,13 +863,20 @@ class LoopEngine:
 
             if tc.name == 'ir_help' and outcome.result.ok:
                 self._authoring_topics.add(call_args.get('topic'))
-                if call_args.get('topic') == 'feature' and call_args.get('feature_op'):
-                    from tcad.tools.feature_scope import MAX_SCOPED_OPS
-                    op = call_args['feature_op']
+                feature_ops = []
+                if call_args.get('topic') == 'feature':
+                    feature_ops = [call_args.get('feature_op', 'pad')]
+                elif call_args.get('topic') == 'detail' and call_args.get('detail'):
+                    from tcad.agent.detail_guidance import DETAIL_ROUTES
+                    route = DETAIL_ROUTES[call_args['detail']]
+                    self._authoring_topics.update(route['topics'])
+                    feature_ops = route['feature_ops']
+                from tcad.tools.feature_scope import MAX_SCOPED_OPS
+                for op in feature_ops:
                     if op in self._authoring_features:
                         self._authoring_features.remove(op)
                     self._authoring_features.append(op)
-                    del self._authoring_features[:-MAX_SCOPED_OPS]
+                del self._authoring_features[:-MAX_SCOPED_OPS]
                 if call_args.get('topic') == 'workflow' and call_args.get('workflow'):
                     self._authoring_workflows.add(call_args['workflow'])
             if tc.name == "design_review" and outcome.result.ok:

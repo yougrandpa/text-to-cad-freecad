@@ -307,6 +307,33 @@ async def rotation_handler(services,args,ctx):
 
 
 async def help_handler(services,args,ctx):
+    if args['topic'] == 'detail':
+        from tcad.agent.detail_guidance import DETAIL_ROUTES, detail_profile_example
+        detail = args.get('detail')
+        if detail is None:
+            data = {'choices': {name: route['description'] for name, route in DETAIL_ROUTES.items()},
+                    'next': 'Choose detail=slot|arc|fillet|chamfer|groove for a native example and matching scoped edits. Other operations remain available through topic=feature (revolution, thickness, draft, mirrored, linear_pattern, polar_pattern).',
+                    'rules': 'Slots cut along an extrusion direction; groove cuts by revolving a profile. A sketch arc shapes a boundary; fillet rounds existing solid edges. Choose by geometry, not command count.'}
+        elif detail not in DETAIL_ROUTES:
+            return error(ValueError(f'Unknown detail: {detail}'), 'Choose a detail from the catalog.')
+        else:
+            route = DETAIL_ROUTES[detail]
+            if detail in {'fillet','chamfer'}:
+                result = await help_handler(services, {'topic':'feature','feature_op':detail}, ctx)
+                if not result.ok:
+                    return result
+                data = json.loads(result.content)
+            else:
+                data = {'example': detail_profile_example(detail),
+                        'rules': 'Examples are mm. Arc points contain the centre, radius is positive, theta1/theta2 are radians in the sketch LOCAL plane (XY here); arcs sweep counterclockwise. Close the wire with matching endpoints; an open arc cannot form a pad/pocket solid. Block fixes each example curve; change the sketch geometry for other dimensions. Commit and verify material removal/volume and the rendered outline.',
+                        'assumptions': {'slot':'Existing base spans x=0..80,y=0..50,z=0..8. This 26x6 slot cuts 3 mm upward from the bottom XY face (reversed=true). Adapt location, plane and depth to measured material; use a measured face/datum for other elevations. Do not guess FaceN or use sketch.offset.',
+                                        'arc':'Standalone semicircular solid: radius 8, height 5, in a new arc_part Body. For a curved cut on an existing part adapt ownership and use pocket with the measured face and direction.',
+                                        'groove':'Existing base is a shaft of radius 10 and height 20 along Z. The XZ rectangle x=8..12,z=6..10 cuts an annular recess about local v_axis (world Z here). Cut profile must intersect material and leave one solid.'}[detail]}
+            data.update(detail=detail, feature_ops=route['feature_ops'],
+                        operations=['add_sketch','update_sketch','add_feature','update_feature']
+                                   if 'sketch' in route['topics'] else ['add_feature','update_feature'],
+                        unlocks='Successful detail help exposes its sketch edits and only the listed feature_ops in ir_patch on the next model request.')
+        return ToolResult(ok=True, content=json.dumps(data,ensure_ascii=False,separators=(',',':')))
     if args['topic'] == 'shape':
         shape = args.get('shape')
         data = {'choices': SHAPE_CHOICES, 'review': SHAPE_REVIEW,
@@ -355,7 +382,7 @@ async def help_handler(services,args,ctx):
             data['workflow']=workflow
             data['unlocks']='These specialized tools are exposed in the next model request for this turn.'
     elif topic=='sketch':
-        data['rules']='Profile points are WORLD coordinates. On origin planes: XY uses x,y,z=0; XZ uses x,z,y=0; YZ uses y,z,x=0. Pad normals XY:+Z, XZ:-Y, YZ:+X. For an elevated profile, commit first and use ir_digest to choose an actual planar face, then set plane={kind:face,feature_id:existing_feature,sub:FaceN}; write points at that measured face location in world coordinates. FaceN is a placeholder, not a guessed name. Nonzero sketch.offset is refused; do not use it to raise a profile. A body may reference a previously created feature face; keep the dependency order valid. Native ellipse and bspline curves are supported; do not approximate curved outlines with stacked boxes. Ellipse major_radius/minor_radius are semi-axes in mm; rotation is local-plane degrees. BSpline points are WORLD interpolation points, not control poles; periodic=true closes the curve smoothly without repeating the first point. An open spline needs other edges to close a pad/pocket profile. Fully fixed geometry uses constraints [{type:Block,refs:[index]}], including ellipse/bspline. For an editable circle use DistanceX/DistanceY on refs [index,3] (centre) and Radius on refs [index], each with a numeric value. Block also fixes the radius; it does not support diameter editing.'
+        data['rules']='Profile points are WORLD coordinates. On origin planes: XY uses x,y,z=0; XZ uses x,z,y=0; YZ uses y,z,x=0. Pad normals XY:+Z, XZ:-Y, YZ:+X. For an elevated profile, commit first and use ir_digest to choose an actual planar face, then set plane={kind:face,feature_id:existing_feature,sub:FaceN}; write points at that measured face location in world coordinates. FaceN is a placeholder, not a guessed name. Nonzero sketch.offset is refused; do not use it to raise a profile. A body may reference a previously created feature face; keep the dependency order valid. Native circular arcs (centre point + radius + theta1/theta2 in radians), ellipse and bspline curves are supported; topic=detail,detail=slot|arc gives closed native profile examples; do not approximate curved outlines with stacked boxes. Ellipse major_radius/minor_radius are semi-axes in mm; rotation is local-plane degrees. BSpline points are WORLD interpolation points, not control poles; periodic=true closes the curve smoothly without repeating the first point. An open spline needs other edges to close a pad/pocket profile. Fully fixed geometry uses constraints [{type:Block,refs:[index]}], including ellipse/bspline. For an editable circle use DistanceX/DistanceY on refs [index,3] (centre) and Radius on refs [index], each with a numeric value. Block also fixes the radius; it does not support diameter editing.'
         data['example']={'op':'add_sketch','payload':{'id':'sk','name':'sk','body_id':'base','plane':{'kind':'origin_plane','plane':'XY'},'geometry':[{'id':'c','kind':'circle','points':[{'x':0,'y':0,'z':0}],'radius':10}],'constraints':[{'type':'Block','refs':[0]}]},'reason':'Circle for pad'}
     elif topic=='feature':
         from tcad.ir.capability import capability
@@ -367,7 +394,11 @@ async def help_handler(services,args,ctx):
             return error(ValueError(f'Unknown feature_op: {op}'), 'Choose feature_op from the declared operation enum.')
         data['capability']=cap.tier
         if op in {'pad','pocket'}:
+            data['rules']='Use a closed sketch profile, not an open arc. length is mm along the sketch normal; pocket cuts into the opposite direction by default, reversed=true flips it. Measure the target plane and material before choosing depth/direction. Rounded slots use native arc/line sketches; ir_help(topic=detail,detail=slot) exposes a complete example.'
             data['example']={'op':'add_feature','payload':{'id':op,'name':op,'body_id':'base','op':op,'profile_sketch':'sk','params':{'length':5}},'reason':'Extrude profile' if op=='pad' else 'Cut profile'}
+        elif op in {'revolution','groove'}:
+            data['rules']='Revolve a closed profile about params.axis: X/Y/Z are body origin axes; h_axis/v_axis/n_axis are sketch LOCAL axes. angle is degrees (arc theta1/theta2 are radians). On an origin XZ sketch v_axis is world Z. Keep the profile on one side of the rotation axis. groove removes material and must intersect the existing solid; it is a revolved recess, not a straight slot. ir_help(topic=detail,detail=groove) gives the complete cutting profile.'
+            data['example']={'op':'add_feature','payload':{'id':op,'name':op,'body_id':'base','op':op,'profile_sketch':'sk','params':{'axis':'v_axis','angle':360}},'reason':'Revolve a closed profile' if op=='revolution' else 'Cut a revolved recess'}
         elif op in {'fillet','chamfer'}:
             key='radius' if op=='fillet' else 'size'
             data['rules']='First commit the base geometry. When appending a treatment, base_feature is the preceding solid feature in that Body (not an earlier primitive); read ir_list_features to find it, then ir_digest(feature_id=that_id) for its actual Edge names, lengths and mid-points. Select sub_elements only from that measured feature. Values are mm. Edge1 below is only a placeholder: select the measured edge matching your intent, and re-read after topology changes. After a failed build, ir_digest(artifact_id=last_passed_artifact,feature_id=that_id) still reads prior topology. Reduce radius/size or select fewer edges; remove/suppress only the failed treatment if needed and recommit, preserving the main shape.'
@@ -414,6 +445,7 @@ async def help_handler(services,args,ctx):
 
 def build_authoring_tools(services):
     from tcad.agent.workflows import WORKFLOWS
+    from tcad.agent.detail_guidance import DETAIL_ROUTES
     from tcad.ir.capability import all_ops
     part_schema=inline_schema(BuildParts.model_json_schema())
     item=part_schema['properties']['parts']['items']
@@ -470,8 +502,8 @@ def build_authoring_tools(services):
             description='Ferris-wheel/gravity-pendulum rig ONLY: a horizontal wheel axis (Z is up) with passive hanging cabins. For ordinary propellers, vertical rotors and native joints use ir_help(topic=assembly), then assembly_configure; this tool is not a general rotor driver. rotating_body_ids revolve about center/axis. cad_cabins use hanging_body_ids directly; uniform-density COM/inertia and highest vertical hanger endpoint are measured automatically. Or use suspensions with explicit body_ids/pivot. Bodies upright, COM below hinge. RK4 integrates gravity, moving-hinge acceleration and damping. duration_s/frames set saved playback. Commit, assembly_simulate for sampled collisions, assembly_export for GIF. Not contact/structural analysis.',
             params_schema=inline_schema(RotationCall.model_json_schema()),handler=functools.partial(rotation_handler,services)),
         'ir_help':ToolSpec(name='ir_help',tier=ToolTier.READ,
-            description='Discover native CAD contracts: topic=shape compares shape choices and static review criteria; optional shape gives just that cad_build_parts schema and example. topic=sketch explains ellipse/bspline profiles; topic=feature with feature_op explains a native operation, including loft, datum_plane and fillet. Successful scoped help unlocks matching ir_patch edits in the next request; absence from the initial tool table is not a capability limit. topic=assembly unlocks assembly_configure for joints/drivers. topic=patch lists editing operations. topic=workflow lists optional specialized workflows; provide workflow to read its assumptions and expose its tools. Choose operations and workflows from the requested geometry.',
-            params_schema={'type':'object','additionalProperties':False,'required':['topic'],'properties':{'topic':{'type':'string','enum':['shape','sketch','feature','requirements','assembly','patch','workflow']},'shape':{'type':'string','enum':list(SHAPE_CHOICES)},'feature_op':{'type':'string','enum':list(all_ops())},'workflow':{'type':'string','enum':list(WORKFLOWS)}}},handler=functools.partial(help_handler,services),concurrency_safe=True),
+            description='Discover native CAD contracts: topic=detail maps slots, circular arcs, edge fillets/chamfers and revolved grooves to runnable native examples; optional detail selects one and unlocks its needed sketch/feature edits together. topic=shape compares shape choices and static review criteria; optional shape gives just that cad_build_parts schema and example. topic=sketch explains arc/ellipse/bspline profiles; topic=feature with feature_op explains a native operation, including loft, datum_plane and fillet. Successful scoped help unlocks matching ir_patch edits in the next request; absence from the initial tool table is not a capability limit. topic=assembly unlocks assembly_configure for joints/drivers. topic=patch lists editing operations. topic=workflow lists optional specialized workflows; provide workflow to read its assumptions and expose its tools. Choose operations and workflows from the requested geometry.',
+            params_schema={'type':'object','additionalProperties':False,'required':['topic'],'properties':{'topic':{'type':'string','enum':['shape','detail','sketch','feature','requirements','assembly','patch','workflow']},'detail':{'type':'string','enum':list(DETAIL_ROUTES)},'shape':{'type':'string','enum':list(SHAPE_CHOICES)},'feature_op':{'type':'string','enum':list(all_ops())},'workflow':{'type':'string','enum':list(WORKFLOWS)}}},handler=functools.partial(help_handler,services),concurrency_safe=True),
     }
 
 class RadialWheel(BaseModel):

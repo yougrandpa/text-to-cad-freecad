@@ -79,3 +79,26 @@ Without it, render availability does not mean the agent saw the model, and
 visual acceptance must remain unresolved. Enabling a capability flag cannot
 add vision to a text-only provider. Unit regressions validate intent retention
 and scoped review, not real-provider modeling quality or success rates.
+
+`ir_help(topic="detail")` maps requested detail geometry to native operations:
+straight rounded slots use arc/line sketches plus pocket, circular arc outlines
+use a closed sketch plus pad/pocket, edge rounding uses fillet, beveling uses
+chamfer, and annular recesses use a revolved groove. Selecting `detail="slot"`,
+`"arc"`, `"fillet"`, `"chamfer"` or `"groove"` returns the corresponding example
+and opens only its required sketch and feature edits together on the next
+request. Reading the catalog alone opens no authoring operations.
+
+The slot example cuts from the bottom XY plane upward into known material;
+its reversed flag and dimensions are stated, rather than suggesting a guessed
+face or unsupported sketch offset. Arc angles are radians in sketch-local
+coordinates, whereas revolution/groove angles are degrees. Edge treatments
+still require current measured edge names; examples cannot determine which
+edge matches the user's intent. Other native operations remain discoverable
+through scoped feature help; this catalog does not limit the kernel's features.
+
+The model should add appropriate requested or functional details after primary
+shape and cuts, then remeasure and review. There is no command-use quota and
+unspecified radii/depths remain assumptions. Real-kernel contract tests compile
+the served slot, arc and groove examples and check analytic volume and bounds;
+these tests prove the examples work, not that a production provider will always
+choose or adapt them correctly.
