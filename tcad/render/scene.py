@@ -288,7 +288,8 @@ def render_preview_note(preview: dict | None) -> str:
         f"  main contributors: {parts}\n"
         f"  reason: {preview.get('reason') or 'mesh exceeds the viewport budget'}\n"
         "  recovery (do NOT delete structural features to shrink a triangle count): "
-        "reduce near-coincident or tightly curved profile edges on the named bodies, "
-        "split an over-detailed decorative feature into its own description, or accept the "
-        "coarser preview by committing again — the CAD result itself needs no change."
+        "keep the CAD result and exports. Adaptive coarsening already tried the listed "
+        "tolerances; repeating an unchanged commit will not fix this limit. Report the "
+        "preview diagnostics for renderer repair; visual acceptance remains unresolved "
+        "until a preview or external CAD inspection is available."
     )

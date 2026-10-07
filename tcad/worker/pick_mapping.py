@@ -21,7 +21,11 @@ class PickMesh:
         start = len(self.vertices)
         triangle_total = 0
         for index, face in enumerate(shape.Faces, 1):
-            points, triangles = face.tessellate(tolerance)
+            # OCC reuses existing finer triangulation even when a coarser
+            # tolerance is requested (e.g. after STL export). Clean a COPY,
+            # retaining the original BRep and face numbering, so every preview
+            # attempt actually uses its requested tolerance.
+            points, triangles = face.cleaned().tessellate(tolerance)
             offset, first = len(self.vertices), len(self.facets)
             self.vertices.extend([[float(p.x), float(p.y), float(p.z)] for p in points])
             self.facets.extend([[int(i) + offset for i in tri] for tri in triangles])

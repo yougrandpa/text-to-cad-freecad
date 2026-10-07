@@ -57,6 +57,20 @@ def test_ellipse_volume_and_rotated_bounds(worker, tmp_path, plane, rotation):
     assert result["round_trip"]["ok"]
 
 
+@pytest.mark.parametrize('plane', ['XY', 'XZ', 'YZ'])
+def test_equal_axis_ellipse_compiles_as_exact_circle_without_solver_abort(worker, tmp_path, plane):
+    ir = curve_ir(plane, 'ellipse', rotation=30)
+    ir['bodies'][0]['sketches'][0]['geometry'][0]['minor_radius'] = 20
+    result = compile_ir(worker, ir, tmp_path)
+    measured = result['measurements']
+    assert measured['is_valid'] and measured['solids'] == 1
+    assert measured['volume'] == pytest.approx(math.pi * 20**2 * 5, rel=1e-6)
+    axes = {'XY': ('x', 'y', 'z'), 'XZ': ('x', 'z', 'y'), 'YZ': ('y', 'z', 'x')}[plane]
+    for axis, size in zip(axes, (40, 40, 5)):
+        assert measured['bbox'][axis] == pytest.approx(size, abs=1e-5)
+    assert result['round_trip']['ok']
+
+
 @pytest.mark.parametrize("plane", ["XY", "XZ", "YZ"])
 @pytest.mark.parametrize("periodic", [False, True])
 def test_spline_native_closed_and_open_profiles(worker, tmp_path, plane, periodic):

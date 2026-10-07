@@ -66,6 +66,7 @@ def export_artifact(services, ctx, args):
 
 
 def saved_assembly(services, ctx, args):
+    from tcad.inspect.motion import assembly_definition, measure_saved_motion
     reader, manifest, root = resolve_context(services, ctx, args)
     scene = reader.scene(manifest, root)
     if not scene.animation:
@@ -75,6 +76,10 @@ def saved_assembly(services, ctx, args):
         'facet_groups': render_mesh.facet_groups},
         "artifact_id": manifest.artifact_id, "scope": scene.animation.get('scope', "Saved native kinematics; not contact or cutting verification."),
         "export": str(root / ("assembly.FCStd" if (root / "assembly.FCStd").exists() else manifest.model_id + '.FCStd')), "interferences": None, "frames_checked": 0}
+    source = json.loads(reader.read_file(manifest, root, "ir.json"))
+    result["assembly_definition"] = assembly_definition(source.get("assembly") or {})
+    result["motion_summary"] = measure_saved_motion(scene.animation, scene.mesh.vertices,
+        track_points=args.get("track_points", ()), sample_frames=args.get("sample_frames"))
     if args.get("check_pairs"):
         response = services.worker.request("check_saved_motion", {
             **document_params(reader, manifest, root), "frames": scene.animation["frames"],

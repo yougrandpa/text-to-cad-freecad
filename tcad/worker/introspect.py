@@ -123,7 +123,7 @@ def _measure_holes(shape) -> list[dict]:
         except Exception:  # noqa: BLE001 — one unreadable face must not cost the digest
             continue
         key = (round(radius, 6), round(foot.x, 6), round(foot.y, 6), round(foot.z, 6),
-               tuple(sorted((round(axis.x, 6), round(axis.y, 6), round(axis.z, 6)))))
+               (round(axis.x, 6), round(axis.y, 6), round(axis.z, 6)))
         g = groups.get(key)
         if g is None:
             groups[key] = {"radius": radius, "axis": [axis.x, axis.y, axis.z],
@@ -334,7 +334,7 @@ def _render_text(model_id: str, ir_version: int, feature_chain, measure: dict,
             cx, cy, cz = h["center"]
             ax, ay, az = h["axis"]
             lines.append(
-                f"  #{h['index']} d={h['diameter']:.4f} axis=({ax:+.2f},{ay:+.2f},{az:+.2f}) "
+                f"  #{h['index']} body={h.get('body_id', 'unknown')} d={h['diameter']:.4f} axis=({ax:+.2f},{ay:+.2f},{az:+.2f}) "
                 f"through ({cx:.3f},{cy:.3f},{cz:.3f}) depth={h['depth']:.4f} "
                 f"{'THROUGH' if h['through'] else 'BLIND'}"
             )
@@ -423,7 +423,20 @@ def introspect_document(ir: dict | None = None, out_dir: str = "", **_extra) -> 
 def digest_built(ir, built):
     shape = built["result_shape"]
     measure = _measure(shape)
-    holes = _measure_holes(shape)
+    # A compound cannot identify owning material or distinguish coaxial bores
+    # in separate parts. Measure each actual Body BRep and retain its identity.
+    body_measurements, holes = {}, []
+    for body in built["body_results"]:
+        measured = _measure(body["shape"])
+        body_holes = [{**h, "body_id": body["id"]} for h in _measure_holes(body["shape"])]
+        body_measurements[body["id"]] = {
+            "topology": {k: measured[k] for k in ("solids", "faces", "edges", "vertexes", "shells")},
+            **{k: measured[k] for k in ("bbox", "volume", "area", "shape_type", "is_valid")},
+            "measurements_available": not body["shape"].isNull(),
+            "holes": body_holes, "holes_measured": measured["solids"] == 1,
+        }
+        for hole in body_holes:
+            holes.append({**hole, "index": len(holes)})
     feature_geometry = {}
     faces, edges = [], []
     for body in ir.get("bodies") or []:
@@ -474,6 +487,8 @@ def digest_built(ir, built):
         "is_valid": measure["is_valid"],
         "key_dimensions": _key_dimensions(measure, built["sketches"], min_wall),
         "holes": holes,
+        "holes_measured": bool(body_measurements) and all(b["holes_measured"] for b in body_measurements.values()),
+        "body_measurements": body_measurements,
         "faces": faces,
         "edges": edges,
         "feature_geometry": feature_geometry,

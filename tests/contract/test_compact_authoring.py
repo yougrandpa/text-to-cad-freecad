@@ -138,3 +138,50 @@ def test_beam_quarter_turn_copies_swap_measured_cross_section(services):
         assert [min(p[i] for p in vertices) for i in range(3)]==pytest.approx(low,abs=1e-6)
         assert [max(p[i] for p in vertices) for i in range(3)]==pytest.approx(high,abs=1e-6)
     assert scene.mesh.volume==pytest.approx(4*2*6*20,rel=1e-6)
+
+
+def test_incremental_cut_and_connected_boss_preserve_assembly_and_measured_volume(services):
+    from tcad.tools.ir_tools import assembly_configure_handler, ir_digest_handler
+    services.store.create('refined', IrDocument(model_id='refined'))
+    ctx = ToolContext(model_id='refined', thread_id='t', turn_id='turn',
+                      data_dir=services.config.storage.data_dir)
+
+    async def create():
+        result = await build_parts_handler(services, {'parts': [
+            {'id': 'plate', 'body_id': 'housing', 'shape': 'box',
+             'center': [0, 0, 5], 'size': [40, 30, 10]}]}, ctx)
+        assert result.ok, result.error
+        result = await assembly_configure_handler(services,
+            {'assembly': {'grounded': ['housing']}, 'reason': 'Keep assembled pose'}, ctx)
+        assert result.ok, result.error
+
+    asyncio.run(create())
+    result, report = commit(services, ctx.model_id, services.store.current_version(ctx.model_id))
+    assert report and report.passed, (result.error, result.content)
+    reader = ArtifactReader(ctx.data_dir)
+    before, _ = reader.resolve(ctx.model_id)
+    initial = services.store.load(ctx.model_id)
+    result = asyncio.run(build_parts_handler(services, {'parts': [
+        {'id': 'bore', 'body_id': 'housing', 'shape': 'cylinder', 'operation': 'cut',
+         'start': [0, 0, -1], 'end': [0, 0, 11], 'radius': 2},
+        {'id': 'boss', 'body_id': 'housing', 'shape': 'cylinder', 'extend_existing': True,
+         'start': [12, 0, 8], 'end': [12, 0, 16], 'radius': 3}]}, ctx))
+    assert result.ok, result.error
+    edited = services.store.load(ctx.model_id)
+    assert edited.assembly == initial.assembly
+    assert edited.bodies[0].features[0] == initial.bodies[0].features[0]
+    result, report = commit(services, ctx.model_id, edited.version)
+    assert report and report.passed, (result.error, result.content)
+    manifest, root = reader.resolve(ctx.model_id)
+    digest = reader.digest(manifest, root)
+    assert digest.topology.solids == 1 and digest.is_valid
+    assert digest.volume == pytest.approx(12000 - 40*math.pi + 54*math.pi, rel=1e-6)
+    assert digest.body_measurements['housing'].volume == pytest.approx(digest.volume)
+    animation = reader.scene(manifest, root).animation
+    assert animation['solver'] == 'FreeCAD Assembly / OndselSolver'
+    assert len(animation['frames']) == 1 and 'housing' in animation['frames'][0]
+    # Historical topology stays accessible for a repair while newer IR is pending.
+    historical = asyncio.run(ir_digest_handler(services,
+        {'artifact_id': before.artifact_id, 'feature_id': 'plate'}, ctx))
+    assert historical.ok, historical.error
+    assert 'volume(mm^3): 12000' in historical.content and 'historical evidence' in historical.content

@@ -92,6 +92,7 @@ class SyncWorkerClient:
                     "message": str(exc),
                     "feature_id": exc.feature_id,
                     "traceback": getattr(exc, "traceback", ""),
+                    "hint": exc.rpc_error.hint,
                 },
             }
         except WorkerError as exc:

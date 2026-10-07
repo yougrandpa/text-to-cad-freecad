@@ -83,3 +83,20 @@ def test_the_fallback_survives_an_empty_payload():
     message = no_detail_message({"ok": False})
     assert "none" in message
     assert len(message) > 20
+
+
+def test_repair_guidance_survives_rpc_validation_and_tool_client():
+    from tcad.core.types import RpcResponse
+    from tcad.core.worker_client import WorkerCallFailed
+    from tcad.core.wiring import SyncWorkerClient
+
+    response = RpcResponse.model_validate({'id': 1, 'ok': False, 'error': {
+        'kind': 'compile', 'message': 'Fillet invalid', 'feature_id': 'rounded',
+        'hint': 'Use the preceding solid feature; reduce radius.'}})
+
+    class Handle:
+        def request_sync(self, *args, **kwargs):
+            raise WorkerCallFailed(response.error)
+
+    result = SyncWorkerClient(Handle()).request('compile_ir', {})
+    assert result['error']['hint'] == response.error.hint

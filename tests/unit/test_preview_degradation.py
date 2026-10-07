@@ -21,6 +21,9 @@ class FakeFace:
     def __init__(self, triangles):
         self.triangles = triangles
 
+    def cleaned(self):
+        return FakeFace(self.triangles)
+
     def tessellate(self, tolerance):
         count = max(2, int(self.triangles / max(tolerance, 1e-3)))
         points = [Vec(0.0, 0.0, float(i)) for i in range(count + 1)]
@@ -65,6 +68,25 @@ def test_over_budget_regenerates_coarser_from_the_same_shape(monkeypatch):
     # Same real BRep: the coarser retry reports the actual chosen tolerance.
     assert result["pick_mesh"].mapping()["mesh_digest"] == mesh_digest(
         result["pick_mesh"].vertices, result["pick_mesh"].facets)
+
+
+def test_preview_discards_cached_triangulation_on_a_copy(monkeypatch):
+    import tcad.worker.preview as preview
+    monkeypatch.setattr(preview, 'MAX_SCENE_VERTICES', 1_000)
+    monkeypatch.setattr(preview, 'MAX_SCENE_FACETS', 1_000)
+
+    class CachedFace(FakeFace):
+        def tessellate(self, tolerance):
+            # Represents a fine export mesh ignoring later coarse requests.
+            raise AssertionError('Preview reused original cached triangulation')
+
+    shape = FakeShape()
+    original = CachedFace(600)
+    shape.Faces = [original]
+    result = adaptive_pick_mesh([('curved', shape)], 0.5)
+    assert result['status'] == 'degraded'
+    assert shape.Faces[0] is original
+    assert result['attempts'][-1]['facets'] < result['attempts'][0]['facets']
 
 
 def test_every_rung_over_budget_is_unavailable_with_contributions(monkeypatch):

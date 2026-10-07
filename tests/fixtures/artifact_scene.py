@@ -15,13 +15,13 @@ def tetra_mesh(*, volume=1.0, tolerance=0.5):
 
 
 def publish_scene(data_dir, *, model_id="part", version=0, attempt="a1", mesh=None,
-                  scene=None):
+                  scene=None, source_ir=None):
     from tcad.render.scene import SceneModel
 
     store = ArtifactStore(data_dir)
     root = store.staging_dir(model_id, version, attempt)
     root.mkdir(parents=True)
-    raw = IrDocument(model_id=model_id, version=version).model_dump_json()
+    raw = (source_ir or IrDocument(model_id=model_id, version=version)).model_dump_json()
     ir_hash = hashlib.sha256(raw.encode()).hexdigest()
     (root / "ir.json").write_text(raw)
     (root / f"{model_id}.step").write_text("synthetic geometry fixture")

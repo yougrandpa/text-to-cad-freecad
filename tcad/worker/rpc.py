@@ -125,6 +125,7 @@ def dispatch(request: dict) -> dict:
                 feature_id=detail.get("feature_id"),
                 tb=detail.get("traceback") or "",
                 elapsed=elapsed,
+                hint=detail.get('hint') or '',
             )
 
         return {
@@ -138,8 +139,10 @@ def dispatch(request: dict) -> dict:
                       elapsed=elapsed)
 
 
-def _error(req_id, method, kind, message, feature_id=None, tb="", elapsed=None) -> dict:
+def _error(req_id, method, kind, message, feature_id=None, tb="", elapsed=None, hint="") -> dict:
     err = {K_KIND: kind, K_MESSAGE: message, K_FEATURE_ID: feature_id, K_TRACEBACK: tb}
+    if hint:
+        err['hint'] = hint
     resp = {K_ID: req_id, K_OK: False, K_RESULT: None, K_ERROR: err}
     if elapsed is not None:
         resp["elapsed_s"] = round(elapsed, 4)

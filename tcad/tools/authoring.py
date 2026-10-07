@@ -9,6 +9,7 @@ from tcad.ir.builders import AUTO_REASON, BuildParts, parts_patch, resolve_attac
 from tcad.ir.rotary import RotaryRig
 from tcad.ir.schema import ConstraintExpr
 from tcad.loop.intent import PlanCall
+from tcad.agent.shape_guidance import SHAPE_CHOICES, SHAPE_REVIEW, shape_example
 
 
 def inline_schema(schema):
@@ -110,8 +111,8 @@ def _check_body_rules(part, ir, old):
     * a body that does not exist is created;
     * an existing EMPTY body is filled;
     * a recipe this tool generated is updated through its stable IDs;
-    * anything else — a body that already holds geometry this call is not
-      updating — is refused by name.
+    * a cut or explicit extend_existing appends a refinement to local history;
+    * other new additions to a populated body are refused by name.
 
     The refusal is the point: fusing new material into hand-made or
     third-party geometry silently rewrites someone's custom modification, and
@@ -126,6 +127,8 @@ def _check_body_rules(part, ir, old):
         raise ValueError(
             f'body {body.id} is a referenced component; recipes cannot add local '
             f'features to it. Build into a new body_id or edit the source model.')
+    if getattr(part, 'operation', 'add') == 'cut' or getattr(part, 'extend_existing', False):
+        return  # explicit refinement; append history without replacing geometry
     if body.sketches or body.features:
         # The refusal is correct — but when the body is also part of the current
         # assembly, the model's next move ("rebuild it") is itself refused by the
@@ -138,9 +141,11 @@ def _check_body_rules(part, ir, old):
             if _assembly_references(ir, body.id) else '')
         raise ValueError(
             f'body {body.id} already contains geometry; cad_build_parts only creates '
-            f'new bodies, fills empty ones, or updates its own recipes by stable ID. '
+            f'new bodies, fills empty ones, or updates its own recipes by stable ID by default. '
             f'Resend the existing recipe id to edit it, use a NEW body_id for new '
-            f'recipe material, or edit custom geometry with ir_patch.' + assembly_note)
+            f'components, set extend_existing=true to append connected material, '
+            f'or operation=cut to cut existing material. Use ir_patch for custom '
+            f'operations.' + assembly_note)
 
 
 async def build_parts_handler(services,args,ctx):
@@ -221,11 +226,11 @@ async def build_parts_handler(services,args,ctx):
             result.content=json.dumps({'version':services.store.current_version(ctx.model_id),'created_bodies':created,
                 'recipes':[{'id':p.id,'body_id':p.body_id,'shape':p.shape} for p in request.parts],
                 'features':[op['payload'].get('id',op.get('target_id')) for op in ops if op['op'] in ('add_feature','update_feature')],
-                'edit_hint':'To move/resize a loft or rotor, resend the same recipe id and body_id with revised parameters. The recipe id is a prefix; ir_get accepts the actual feature IDs listed above, or the body_id. A new recipe id adds material; it does not replace the old recipe.',
-                'next':'Complete the feature plan, then ir_commit. Use scoped ir_help for unfamiliar authoring contracts or assembly connections.'},separators=(',',':'))
+                'edit_hint':'To move/resize a recipe, resend the same recipe id and body_id with revised parameters. To refine an existing local body, use a new recipe id with operation=cut, or extend_existing=true for connected additions. Existing history and assembly connections are preserved; commit to verify the result. ir_get accepts the actual feature IDs listed above, or the body_id.',
+                'next':'Complete the primary outline, then ir_commit and inspect geo_view images in isometric and relevant orthographic views before details or motion. Fix silhouette/proportion mismatches; a valid solid is not shape acceptance. ir_help(topic=shape) compares recipes; shape selects a compact schema and example.'},separators=(',',':'))
         return result
     except (ValueError,TypeError) as exc:
-        return error(exc,'Use shape-specific fields: box center+size; cylinder/tube/beam start+end; loft section_axis+sections(center,radii); rotor center+axis+radius+blade_count+blade_width+thickness+hub_radius. Each body must be one connected solid; recipes are atomic. New recipe material goes into a new or empty body; resend a recipe id and body_id to edit its own history; custom geometry stays with ir_patch.')
+        return error(exc,'Use shape-specific fields: box center+size; cylinder/tube/beam start+end; loft section_axis+sections(center,radii); rotor center+axis+radius+blade_count+blade_width+thickness+hub_radius. Each body must be one connected solid; recipes are atomic. Resend stable IDs to resize; operation=cut refines existing material; extend_existing=true explicitly appends connected additions. Custom operations use scoped ir_help then ir_patch.')
 
 
 async def requirements_handler(services,args,ctx):
@@ -291,6 +296,28 @@ async def rotation_handler(services,args,ctx):
 
 
 async def help_handler(services,args,ctx):
+    if args['topic'] == 'shape':
+        shape = args.get('shape')
+        data = {'choices': SHAPE_CHOICES, 'review': SHAPE_REVIEW,
+                'native_alternatives': 'For non-elliptical outlines use topic=sketch for ellipse/bspline and topic=feature for pad/pocket. Fillet/chamfer treat measured edges; they do not redesign the primary outline.',
+                'next': 'Choose shape to read only that recipe schema and a standalone cad_build_parts example; mixed-shape batches remain supported.'}
+        if shape is not None:
+            if shape not in SHAPE_CHOICES:
+                return error(ValueError(f'Unknown shape: {shape}'), 'Choose a shape from the recipe catalog.')
+            schema = copy.deepcopy(build_authoring_tools(services)['cad_build_parts'].params_schema)
+            branches = schema['properties']['parts']['items']['anyOf']
+            schema['properties']['parts']['items']['anyOf'] = [
+                branch for branch in branches if branch['properties']['shape']['enum'] == [shape]]
+            data.update(shape=shape, schema=schema, example=shape_example(shape))
+            if shape == 'loft':
+                data['rules'] = ('section_axis orders section centers strictly increasing or decreasing. '
+                    'radii are positive semi-axes on world Y/Z for X, X/Z for Y, X/Y for Z. '
+                    'Use 2..12 sections; ruled=false blends smoothly, ruled=true gives straight generators. '
+                    'Choose a few intentional stations; abrupt alternating radii or center shifts can create unwanted waves. '
+                    'End sections must have positive area; no point caps, rotated sections or polar copies. '
+                    'The example is solid, not a hollow shell. Inspect the compiled shape. '
+                    'Custom cross-sections use sketch + datum_plane + additive_loft feature help.')
+        return ToolResult(ok=True, content=json.dumps(data, ensure_ascii=False, separators=(',', ':')))
     from tcad.tools.ir_tools import _ir_patch_schema
     from tcad.ir.validate import _VERIFIED_OP_PARAMS
     topic=args['topic']
@@ -332,7 +359,7 @@ async def help_handler(services,args,ctx):
             data['example']={'op':'add_feature','payload':{'id':op,'name':op,'body_id':'base','op':op,'profile_sketch':'sk','params':{'length':5}},'reason':'Extrude profile' if op=='pad' else 'Cut profile'}
         elif op in {'fillet','chamfer'}:
             key='radius' if op=='fillet' else 'size'
-            data['rules']='First commit the base geometry, then read ir_digest for actual Edge names, lengths and mid-points. Set base_feature to the feature owning those edges and sub_elements to the selected Edge names. Values are mm. Edge1 below is only a placeholder: select the measured edge matching your intent, and re-read after topology changes. A build can fail for an impossible radius/size; use the reported feature and edge geometry to revise it.'
+            data['rules']='First commit the base geometry. When appending a treatment, base_feature is the preceding solid feature in that Body (not an earlier primitive); read ir_list_features to find it, then ir_digest(feature_id=that_id) for its actual Edge names, lengths and mid-points. Select sub_elements only from that measured feature. Values are mm. Edge1 below is only a placeholder: select the measured edge matching your intent, and re-read after topology changes. After a failed build, ir_digest(artifact_id=last_passed_artifact,feature_id=that_id) still reads prior topology. Reduce radius/size or select fewer edges; remove/suppress only the failed treatment if needed and recommit, preserving the main shape.'
             data['example']={'op':'add_feature','payload':{'id':op,'name':op,'body_id':'base','op':op,'base_feature':'existing_feature','sub_elements':['Edge1'],'params':{key:1}},'reason':'Round measured edges' if op=='fillet' else 'Bevel measured edges'}
         elif op in {'additive_loft','subtractive_loft'}:
             data['rules']='Native parametric loft: profile_sketch is the first closed section; sections is an ordered list of additional distinct sketch IDs in the SAME body. Smooth mode ruled=false blends through the sections; ruled=true connects them with straight generators. closed=false caps the end profiles; closed=true loops last back to first, not cap ends. Keep matching edge counts, starting points and winding across sections to avoid twist. For separated section planes, create datum_plane features with typed world placement and attach each sketch using plane={kind:datum_plane,feature_id:plane_id}; points remain WORLD coordinates on that plane. Subtractive loft needs existing intersecting material. This builds native CAD features, not a mesh or arbitrary code.'
@@ -361,7 +388,9 @@ async def help_handler(services,args,ctx):
         data['unlocks']='assembly_configure is exposed in the next model request after successful ir_help(topic=assembly).'
         data['rules']='Create each independent part in its own Body and place it in the assembled pose. Configure actual connections through assembly_configure: Fixed for rigid connections, appropriate movable joints for moving parts, and drivers only for requested motion. Then ir_commit, assembly_solve for saved constraint evidence or assembly_simulate for saved motion frames and sampled overlap checks. Multiple Bodies alone do not prove assembly constraints. Clear body.motion before configuring native joints/drivers. Every body must build as exactly one connected solid; solid_count grades that at ir_commit. To rebuild a body the declaration references, clear the assembly first (set_assembly assembly=null), rebuild, then reconfigure.'
         data['coordinates']='Connector position and axis are WORLD coordinates (mm); use the same connector on both sides to preserve an assembled pose. Angular formulas use radians, Linear formulas mm, and time seconds. start/end/step control saved frames (at most 600).'
-        data['animation_modes']='For an assembly process / 装配动画, use assembly_export(mode="assemble") to show separated parts converging to their saved solved pose; mode="explode" shows disassembly. mode="motion" shows the working mechanism and rotating joints. Select the requested mode explicitly; operating motion alone does not demonstrate assembly. A static assembly can use Fixed joints without drivers and still export assemble/explode. Align each Revolute connector axis with the actual geometric shaft axis, then inspect intermediate saved frames and sampled overlap; changing overlap must not be dismissed as an intentional fit without checking the moving geometry.'
+        data['part_verification']='Model physical connections: shafts, supports, bearings, bores and axial stops where needed; joints create no holes or fasteners. Refine existing parts with cad_build_parts operation=cut or extend_existing=true; use scoped feature help for fillet/chamfer. After commit, geo_measure(body_id=...,what=["bbox","holes","volume"]) checks each source BRep. Review mating dimensions, clearance, proportions and details in static views before animation; missing measurements stay unresolved.'
+        data['motion_verification']='Synchronized formulas remain independent drives. A single-input mechanism needs one driven input and passive joints/couplings plus physical transmission parts; Gears/Belt equations alone are virtual coupling. assembly_simulate reports driver count and ALL-frame motion_summary (closed cycles may share endpoints). Use track_points=[{name,body_id,point:[x,y,z]}] and sample_frames for trajectories/phases. Rigid oscillation proves no contact or propulsion. Check intermediate poses and sampled overlap, repair unintended collisions; unmeasured functions remain pending.'
+        data['animation_modes']='For an assembly process / 装配动画, assembly_export(mode="assemble") shows separated parts converging; mode="explode" shows disassembly; mode="motion" shows operation. Choose the requested mode explicitly. A static assembly with Fixed joints needs no drivers for assemble/explode. Align Revolute and shaft axes; inspect intermediate frames and sampled overlap before claiming a mating fit.'
         data['example']={'assembly':{'grounded':['housing'],'joints':[{'id':'rotor_axis','type':'Revolute','side1':{'body_id':'housing','position':[0,0,30],'axis':[0,0,1]},'side2':{'body_id':'rotor','position':[0,0,30],'axis':[0,0,1]}}],'drivers':[{'joint_id':'rotor_axis','type':'Angular','formula':'2*pi*time'}],'start':0,'end':1,'step':0.05},'reason':'Attach and animate the rotor with a native revolute joint'}
     elif topic=='patch':
         data={'operations':[b['properties']['op']['enum'][0] for b in branches],
@@ -377,7 +406,7 @@ def build_authoring_tools(services):
     from tcad.ir.capability import all_ops
     part_schema=inline_schema(BuildParts.model_json_schema())
     item=part_schema['properties']['parts']['items']
-    common={'id','body_id','shape','operation','copies','attach','anchor'}
+    common={'id','body_id','shape','operation','extend_existing','copies','attach','anchor'}
     # A part placed by `attach` supplies its own local origin, so the field
     # the anchor arithmetic needs (box.center / cylinder.start) may be omitted
     # and defaults to the origin; the Python validator still enforces every
@@ -418,20 +447,20 @@ def build_authoring_tools(services):
             description='Create a connected native radial structure with rim, straight spokes, hub and optional axial bore, in mm. center/axis locate it; radius is outer radius; rim_width is radial wall; thickness is axial length; spoke_width is web width. bore_radius must be smaller than hub_radius. Geometry is editable; this does not verify meshing, loads or product functionality.',
             params_schema=inline_schema(RadialWheel.model_json_schema()),handler=functools.partial(radial_wheel_handler,services)),
         'cad_build_parts':ToolSpec(name='cad_build_parts',tier=ToolTier.WRITE,
-            description='Batch editable native CAD recipes in mm. box=center+size; cylinder=start+end+radius; tube adds inner_radius; beam=start+end+width+depth. loft uses section_axis X/Y/Z and 2..12 ordered elliptical sections {center:[x,y,z],radii:[u,v]}; semi-axes lie on world Y/Z for X, X/Z for Y, X/Y for Z. ruled=false is smooth. rotor generates a cylindrical hub and 2..8 flat rectangular radial blades from center, axis, radius, blade_count, blade_width, thickness and hub_radius; it has no rim, pitch or airfoil. Select recipes only when these geometries fit the request; scoped sketch/feature help exposes other native operations. A missing body is created; an existing EMPTY body is filled; an existing recipe is edited by resending its stable IDs and body_id. A body that already holds geometry this call is not updating is refused by name — new material goes to a NEW body_id, custom geometry is edited with ir_patch. cut needs existing material. Relations instead of coordinates: attach={to:<earlier part id in this call>,where:center|top|bottom|left|right|front|back|start|end,offset:[x,y,z]} plus anchor=<own anchor> aligns this part to that anchor (default anchor: start for cylinder/tube/beam, center otherwise); align:X|Y|Z|-X|-Y|-Z with length gives cylinder/tube/beam a direction without a second endpoint. Primitive polar copies gain indexed IDs; separate_bodies=false places all copies in ONE body (they must still INTERSECT into a single connected solid — disconnected copies fail ir_commit), separate_bodies=true gives each copy its own body. No compile yet: ir_commit builds and verifies the current version; every body must compile as exactly one connected solid.',
+            description='Choose the primary silhouette and proportions before primitives; inspect rendered static views before detail or motion. ir_help(topic=shape,shape=loft) gives compact shape-specific schema and examples. box/beam fit prismatic parts; curved/tapered outlines need loft or sketch/pad, not stacked boxes. Batch editable native CAD recipes in mm. box=center+size; cylinder=start+end+radius; tube adds inner_radius; beam=start+end+width+depth. loft uses section_axis X/Y/Z and 2..12 ordered elliptical sections {center:[x,y,z],radii:[u,v]}; semi-axes lie on world Y/Z for X, X/Z for Y, X/Y for Z. ruled=false is smooth. rotor generates a cylindrical hub and 2..8 flat rectangular radial blades from center, axis, radius, blade_count, blade_width, thickness and hub_radius; it has no rim, pitch or airfoil. Select recipes only when these geometries fit the request; scoped sketch/feature help exposes other native operations. A missing body is created; an existing EMPTY body is filled; an existing recipe is edited by resending its stable IDs and body_id. To refine an existing local body, use a NEW recipe id with operation=cut for holes/cavities, or extend_existing=true for connected additions such as supports. Both append features, preserving prior geometry and assembly connections; no rebuild is needed. Default additions to populated bodies are refused; use a NEW body_id for separate components. Referenced components cannot receive local features. Custom operations use scoped ir_help then ir_patch. Cuts must intersect existing material. Relations instead of coordinates: attach={to:<earlier part id in this call>,where:center|top|bottom|left|right|front|back|start|end,offset:[x,y,z]} plus anchor=<own anchor> aligns this part to that anchor (default anchor: start for cylinder/tube/beam, center otherwise); align:X|Y|Z|-X|-Y|-Z with length gives cylinder/tube/beam a direction without a second endpoint. Primitive polar copies gain indexed IDs; separate_bodies=false places all copies in ONE body (they must still INTERSECT into a single connected solid — disconnected copies fail ir_commit), separate_bodies=true gives each copy its own body. No compile yet: ir_commit builds and verifies the current version; every body must compile as exactly one connected solid.',
             params_schema=part_schema,handler=functools.partial(build_parts_handler,services)),
         'ir_requirements':ToolSpec(name='ir_requirements',tier=ToolTier.WRITE,
             description='Append typed measurable geometry constraints only. Original request is preserved automatically. confirmed=true requires explicit user-stated dimensions/source_text; guessed dimensions remain unconfirmed. Qualitative animation/gravity goals belong in design_review, not constraint kinds. No requirement call is needed when the user gave no measurable numbers.',
             params_schema=inline_schema(RequirementsCall.model_json_schema()),handler=functools.partial(requirements_handler,services)),
         'ir_plan':ToolSpec(name='ir_plan',tier=ToolTier.WRITE,
-            description='Record the short PART PLAN for this design and keep it true. Call once when starting a design: one entry per part with a short goal and origin=user (explicit in the user request) or model (your own choice). Re-send the SAME ids as the design evolves; a part you reduce is marked simplified/dropped — a note is required when the user required it. ir_commit compares the plan against the built IR: a planned part with no geometry is reported LOST, and a reduced user-required part is recorded as a design degradation (continue refining, or deliver a draft pending acceptance). Planning does not prove geometry, comfort or strength.',
+            description='Record the short PART PLAN for this design and keep it true. Call once when starting a design: one entry per part with a short goal describing its silhouette, proportions and chosen shape operations, and origin=user (explicit in the user request) or model (your own choice). Re-send the SAME ids as the design evolves; a part you reduce is marked simplified/dropped — a note is required when the user required it. ir_commit compares the plan against the built IR: a planned part with no geometry is reported LOST, and a reduced user-required part is recorded as a design degradation (continue refining, or deliver a draft pending acceptance). Planning does not prove geometry, comfort or strength.',
             params_schema=inline_schema(PlanCall.model_json_schema()),handler=functools.partial(ir_plan_handler,services)),
         'assembly_motion':ToolSpec(name='assembly_motion',tier=ToolTier.WRITE,
             description='Ferris-wheel/gravity-pendulum rig ONLY: a horizontal wheel axis (Z is up) with passive hanging cabins. For ordinary propellers, vertical rotors and native joints use ir_help(topic=assembly), then assembly_configure; this tool is not a general rotor driver. rotating_body_ids revolve about center/axis. cad_cabins use hanging_body_ids directly; uniform-density COM/inertia and highest vertical hanger endpoint are measured automatically. Or use suspensions with explicit body_ids/pivot. Bodies upright, COM below hinge. RK4 integrates gravity, moving-hinge acceleration and damping. duration_s/frames set saved playback. Commit, assembly_simulate for sampled collisions, assembly_export for GIF. Not contact/structural analysis.',
             params_schema=inline_schema(RotationCall.model_json_schema()),handler=functools.partial(rotation_handler,services)),
         'ir_help':ToolSpec(name='ir_help',tier=ToolTier.READ,
-            description='Discover native CAD contracts: topic=sketch explains ellipse/bspline profiles; topic=feature with feature_op explains a native operation, including loft, datum_plane and fillet. Successful scoped help unlocks matching ir_patch edits in the next request; absence from the initial tool table is not a capability limit. topic=assembly unlocks assembly_configure for joints/drivers. topic=patch lists editing operations. topic=workflow lists optional specialized workflows; provide workflow to read its assumptions and expose its tools. Choose operations and workflows from the requested geometry.',
-            params_schema={'type':'object','additionalProperties':False,'required':['topic'],'properties':{'topic':{'type':'string','enum':['sketch','feature','requirements','assembly','patch','workflow']},'feature_op':{'type':'string','enum':list(all_ops())},'workflow':{'type':'string','enum':list(WORKFLOWS)}}},handler=functools.partial(help_handler,services),concurrency_safe=True),
+            description='Discover native CAD contracts: topic=shape compares shape choices and static review criteria; optional shape gives just that cad_build_parts schema and example. topic=sketch explains ellipse/bspline profiles; topic=feature with feature_op explains a native operation, including loft, datum_plane and fillet. Successful scoped help unlocks matching ir_patch edits in the next request; absence from the initial tool table is not a capability limit. topic=assembly unlocks assembly_configure for joints/drivers. topic=patch lists editing operations. topic=workflow lists optional specialized workflows; provide workflow to read its assumptions and expose its tools. Choose operations and workflows from the requested geometry.',
+            params_schema={'type':'object','additionalProperties':False,'required':['topic'],'properties':{'topic':{'type':'string','enum':['shape','sketch','feature','requirements','assembly','patch','workflow']},'shape':{'type':'string','enum':list(SHAPE_CHOICES)},'feature_op':{'type':'string','enum':list(all_ops())},'workflow':{'type':'string','enum':list(WORKFLOWS)}}},handler=functools.partial(help_handler,services),concurrency_safe=True),
     }
 
 class RadialWheel(BaseModel):

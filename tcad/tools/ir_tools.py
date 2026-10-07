@@ -61,8 +61,27 @@ async def ir_get_handler(services: "Any", args: dict, ctx: ToolContext) -> ToolR
 
 
 async def ir_digest_handler(services: "Any", args: dict, ctx: ToolContext) -> ToolResult:
-    version = services.store.current_version(ctx.model_id)
-    digest = services.context.digest(ctx.model_id, version)
+    artifact_id = args.get('artifact_id')
+    saved_ir = None
+    if artifact_id:
+        import asyncio
+        from tcad.inspect.artifact import ArtifactReader
+        from tcad.ir.schema import IrDocument
+
+        def read_saved():
+            reader = ArtifactReader(ctx.data_dir)
+            manifest, root = reader.resolve(ctx.model_id, artifact_id=artifact_id)
+            return (manifest.ir_version, reader.digest(manifest, root),
+                    IrDocument.model_validate_json(reader.read_file(manifest, root, 'ir.json')))
+
+        try:
+            version, digest, saved_ir = await asyncio.to_thread(read_saved)
+        except (OSError, ValueError) as exc:
+            return _err(ToolErrorKind.RUNTIME, str(exc),
+                        hint='Use the artifact_id from a successful ir_commit for this model.')
+    else:
+        version = services.store.current_version(ctx.model_id)
+        digest = services.context.digest(ctx.model_id, version)
     feature_id = args.get("feature_id")
     if feature_id:
         geometry = digest.feature_geometry.get(feature_id)
@@ -72,9 +91,14 @@ async def ir_digest_handler(services: "Any", args: dict, ctx: ToolContext) -> To
                         hint="Commit the current version first. Older artifacts without feature-local topology need a fresh commit.")
         from tcad.context.digest import render_digest_text
         digest = digest.model_copy(update={"faces": geometry.faces, "edges": geometry.edges})
-        ir = services.store.load(ctx.model_id, version)
+        ir = saved_ir if saved_ir is not None else services.store.load(ctx.model_id, version)
         text = render_digest_text(digest, ir)
-        return _ok(f"Sub-element scope: feature_id={feature_id}; overall measurements remain the whole model.\n{text}")
+        prefix = f'Saved artifact {artifact_id}, v{version}; this is historical evidence, not verification of pending edits.\n' if artifact_id else ''
+        return _ok(prefix + f"Sub-element scope: feature_id={feature_id}; overall measurements remain the whole model.\n{text}")
+    if saved_ir is not None:
+        from tcad.context.digest import render_digest_text
+        return _ok(f'Saved artifact {artifact_id}, v{version}; this is historical evidence, not verification of pending edits.\n'
+                   + render_digest_text(digest, saved_ir))
     text = getattr(digest, "text", "") or digest.model_dump_json()
     return _ok(text)
 
@@ -646,7 +670,10 @@ def build_ir_tools(services: "Any") -> dict[str, ToolSpec]:
             description=("After completing ALL requested geometry and committing it, review EVERY user objective. "
                          "A passed ir_commit is only a build checkpoint. Supply a checklist with verbatim user "
                          "source_text and actual Gate check_ids that measure each objective. Generic solid/export "
-                         "checks are not functional evidence. Use empty check_ids for unmeasurable objectives. "
+                         "checks are not functional evidence. Inspect current geo_view images in isometric and relevant "
+                         "orthographic views; describe silhouette/proportion observations and unresolved shape "
+                         "differences. Small edge fillets alone do not establish faithful shape. "
+                         "Use empty check_ids for unmeasurable objectives; visual observations are model claims. "
                          "List all missing work, ambiguities and physical tests in remaining_work. Missing evidence "
                          "ends as a draft pending acceptance, never as verified functionality. Never invent user "
                          "dimensions or confirmed requirements. The engine validates the evidence."),
@@ -668,9 +695,11 @@ def build_ir_tools(services: "Any") -> dict[str, ToolSpec]:
                          "topology, bbox, volume, key dimensions, BRep-measured holes and the "
                          "planar faces and edges with their owning feature_id). FaceN/EdgeN are local "
                          "to that owner, never interchangeable between features. Defaults to body tips; "
-                         "feature_id selects an earlier feature for attachments or fillets. Cheaper than ir_get."),
+                         "feature_id selects a feature's own sub-elements. Append fillet/chamfer to the preceding solid feature, "
+                         "rather than an earlier primitive. After a failed build, artifact_id reads a prior successful build's "
+                         "topology for repair; it does not verify pending edits. Cheaper than ir_get."),
             params_schema={"type": "object", "additionalProperties": False,
-                           "properties": {"feature_id": {"type": "string"}}},
+                           "properties": {"feature_id": {"type": "string"}, "artifact_id": {"type": "string"}}},
             handler=functools.partial(ir_digest_handler, services),
             concurrency_safe=True,
         ),

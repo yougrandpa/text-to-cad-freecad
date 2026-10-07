@@ -69,6 +69,8 @@ class PartRecipe(BaseModel):
     body_id: str = Field(pattern=r'^[A-Za-z][A-Za-z0-9_]{0,40}$')
     shape: Literal['box', 'cylinder', 'tube', 'beam', 'loft', 'rotor']
     operation: Literal['add', 'cut'] = 'add'
+    extend_existing: bool = Field(default=False,
+        description='Explicitly append new connected material to an existing local body. Existing features are preserved; ir_commit verifies one solid. Cuts already edit existing material without this flag.')
     center: list[float] | None = Field(default=None, min_length=3, max_length=3)
     size: list[float] | None = Field(default=None, min_length=3, max_length=3)
     start: list[float] | None = Field(default=None, min_length=3, max_length=3)
@@ -344,8 +346,12 @@ def parts_patch(request: BuildParts, existing):
                                  'axis': dict(zip('xyz', orientation[0])), 'angle': orientation[1]}
                     feature(body, plane, 'datum_plane', {}, placement)
                     u, v = section.radii
-                    geometry = {'id':'profile','kind':'ellipse','points':[dict(zip('xyz', section.center))],
-                                'major_radius':max(u,v),'minor_radius':min(u,v),'rotation':0 if u >= v else 90}
+                    geometry = {'id':'profile','points':[dict(zip('xyz', section.center))]}
+                    if u == v:
+                        geometry.update(kind='circle', radius=u)
+                    else:
+                        geometry.update(kind='ellipse', major_radius=max(u,v),
+                                        minor_radius=min(u,v), rotation=0 if u >= v else 90)
                     ops.append({'op':'add_sketch','payload':{'id':sketch,'name':sketch,'body_id':body,
                         'plane':{'kind':'datum_plane','feature_id':plane},'geometry':[geometry],
                         'constraints':[{'type':'Block','refs':[0]}]},'reason':request.reason})

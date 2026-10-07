@@ -7,12 +7,14 @@ The harness's contract with a model is not "it is smart", it is:
   1. the tool surface is discoverable and the arguments are guessable;
   2. every failure comes back as text a model can act on (which feature, what
      value, what was expected);
-  3. the Gate is the only thing that decides "done".
+  3. geometry Gate failures are observable independently of tool execution.
 
 Those three can be tested without any model provider — by a human/agent issuing
 tool calls directly. This script is that path. It uses the **real** registry, the
-**real** `ToolContext`, and the **real** hook dispatch (pre/post tool use), so
-whatever the model would experience, this experiences.
+**real** `ToolContext`, and the **real** hook dispatch (pre/post tool use).
+It does not run LoopEngine, provider turns, dynamic tool exposure or completion
+review validation. A zero exit code means these calls and geometry checks passed,
+not that the user's functional objective has been verified.
 
 Usage
 -----
@@ -45,6 +47,7 @@ import argparse
 import asyncio
 import json
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -76,7 +79,7 @@ def _print_tool_result(name: str, result) -> None:
     if result.ok:
         print(f"✓ {name}")
         if result.content:
-            print(result.content)
+            print(result.content, flush=True)
     else:
         err = result.error
         kind = err.kind.value if err else "?"
@@ -93,7 +96,8 @@ def _print_tool_result(name: str, result) -> None:
 # ══════════════════════════════════════════════════════════════════════════
 
 
-async def run_calls(svc, model_id: str, calls: list[dict], *, kind: TurnKind) -> int:
+async def run_calls(svc, model_id: str, calls: list[dict], *, kind: TurnKind,
+                    results: list[dict] | None = None) -> int:
     """Execute a list of tool calls as one Turn. Returns the process exit code."""
     registry = build_default_registry(svc, enable_privileged=bool(svc.config.policy.allow_privileged))
     allowed = set(_ALLOWED_TIERS[kind])
@@ -130,7 +134,11 @@ async def run_calls(svc, model_id: str, calls: list[dict], *, kind: TurnKind) ->
 
         spec = registry.get(name)
         if spec is None:
-            print(f"✗ unknown tool {name!r}; available: {', '.join(sorted(registry.names_for(kind)))}")
+            message = f"unknown tool {name!r}; available: {', '.join(sorted(registry.names_for(kind)))}"
+            print(f"✗ {message}")
+            if results is not None:
+                results.append({"name": name, "args": args, "gate_report": None,
+                    "result": {"ok": False, "error": {"kind": "schema", "message": message}}})
             failures += 1
             continue
 
@@ -145,6 +153,9 @@ async def run_calls(svc, model_id: str, calls: list[dict], *, kind: TurnKind) ->
         hook_res = svc.hooks.dispatch(HookEvent.PRE_TOOL_USE, payload)
         if hook_res.decision is not HookDecision.ALLOW:
             print(f"✗ {name} blocked by hook {hook_res.hook_name}: {hook_res.reason}")
+            if results is not None:
+                results.append({"name": name, "args": args, "gate_report": None,
+                    "result": {"ok": False, "error": {"kind": "denied", "message": hook_res.reason}}})
             failures += 1
             svc.hooks.dispatch(HookEvent.POST_TOOL_USE, {**payload, "ok": False})
             continue
@@ -154,10 +165,15 @@ async def run_calls(svc, model_id: str, calls: list[dict], *, kind: TurnKind) ->
             HookEvent.POST_TOOL_USE, {**payload, "ok": outcome.result.ok}
         )
         _print_tool_result(name, outcome.result)
+        if results is not None:
+            results.append({"name": name, "args": args, "result": outcome.result.model_dump(mode="json"),
+                "gate_report": outcome.gate_report.model_dump(mode="json") if outcome.gate_report else None})
         if not outcome.result.ok:
             failures += 1
         if outcome.gate_report is not None:
             rep = outcome.gate_report
+            if not rep.passed and outcome.result.ok:
+                failures += 1
             print(f"\n   GATE passed={rep.passed}")
             for r in rep.results:
                 mark = {"pass": "·", "fail": "✗", "skip": "-", "error": "!"}.get(
@@ -182,10 +198,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--model-id")
     p.add_argument("--data-dir", default=".tcad_hand")
     p.add_argument("--calls", help="JSON file: list of {name, args}")
+    p.add_argument("--json-results", help="with --calls: save complete results/Gate verdicts as independent JSON, without console logs")
     p.add_argument("--kind", default="create", choices=[k.value for k in TurnKind])
     p.add_argument("--new", action="store_true", help="create the model first")
     p.add_argument("--requirement", default="", help="requirement text for --new")
     p.add_argument("--list-tools", action="store_true", help="print the model-facing tool surface")
+    p.add_argument("--all-kinds", action="store_true", help="with --list-tools: list every turn kind")
     p.add_argument("--full", action="store_true",
                    help="with --list-tools: print complete JSON schemas")
     p.add_argument("--only", help="with --list-tools: show just this tool")
@@ -195,6 +213,8 @@ def main(argv: list[str] | None = None) -> int:
                    help="ask the worker directly for compile/introspect/tessellate results")
 
     args = p.parse_args(argv)
+    if args.json_results and (not args.calls or args.list_tools):
+        p.error("--json-results requires --calls without --list-tools")
     cfg = load_default_config()
     cfg.storage.data_dir = str((REPO_ROOT / args.data_dir).resolve())
     cfg.storage.sqlite_path = str(Path(cfg.storage.data_dir) / "tcad.sqlite3")
@@ -203,12 +223,14 @@ def main(argv: list[str] | None = None) -> int:
         # No worker needed to inspect the surface.
         svc = build_services(cfg, start_worker=False)
         registry = build_default_registry(svc)
-        kinds = [TurnKind(args.kind)] if args.only or args.full else list(TurnKind)
+        kinds = list(TurnKind) if args.all_kinds else [TurnKind(args.kind)]
         for kind in kinds:
             tools = registry.as_openai_tools(kind)
             if args.only:
                 tools = [t for t in tools if t["function"]["name"] == args.only]
             _hr(f"{kind.value}: {len(tools)} tools")
+            if not args.full:
+                print("  Nested arguments: use --full --only TOOL to read the exact schema before calling.")
             for t in tools:
                 fn = t["function"]
                 if args.full:
@@ -281,7 +303,18 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.calls:
             calls = json.loads(Path(args.calls).read_text(encoding="utf-8"))
-            return asyncio.run(run_calls(svc, args.model_id, calls, kind=TurnKind(args.kind)))
+            records = [] if args.json_results else None
+            code = asyncio.run(run_calls(svc, args.model_id, calls, kind=TurnKind(args.kind), results=records))
+            if args.json_results:
+                target = Path(args.json_results).resolve()
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with tempfile.TemporaryDirectory(prefix=".results-", dir=target.parent) as scratch:
+                    candidate = Path(scratch) / "results.json"
+                    candidate.write_text(json.dumps({"model_id": args.model_id, "kind": args.kind,
+                        "exit_code": code, "completion_review_validated": False, "results": records},
+                        ensure_ascii=False, indent=2), encoding="utf-8")
+                    candidate.replace(target)
+            return code
         return 0
     finally:
         svc._worker_handle.close()

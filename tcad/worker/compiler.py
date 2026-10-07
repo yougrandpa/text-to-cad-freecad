@@ -830,11 +830,17 @@ def _add_geometry(sk, g: dict):
         angle = math.radians(float(g.get("rotation", 0.0)))
         major = float(g["major_radius"])
         minor = float(g["minor_radius"])
-        geo = Part.Ellipse(
-            center + App.Vector(major * math.cos(angle), major * math.sin(angle), 0),
-            center + App.Vector(-minor * math.sin(angle), minor * math.cos(angle), 0),
-            center,
-        )
+        if major == minor:
+            # A circle is a valid equal-axis ellipse, but Sketcher's ellipse
+            # solver can produce invalid bounds and abort the process for it.
+            # Use the exact equivalent curve, without perturbing dimensions.
+            geo = Part.Circle(center, App.Vector(0.0, 0.0, 1.0), major)
+        else:
+            geo = Part.Ellipse(
+                center + App.Vector(major * math.cos(angle), major * math.sin(angle), 0),
+                center + App.Vector(-minor * math.sin(angle), minor * math.cos(angle), 0),
+                center,
+            )
     elif kind == "bspline":
         local_points = [_sketch_point(sk, p) for p in pts]
         geo = Part.BSplineCurve()
@@ -1526,7 +1532,7 @@ def _invalid_feature_errors(ir: dict, ref_objects: dict) -> list[dict]:
             except Exception:  # noqa: BLE001
                 continue
             if "Invalid" in state:
-                out.append({
+                error = {
                     "kind": "compile", "feature_id": fid,
                     "message": (
                         f"feature {fid!r} (op={f.get('op')!r}) is Invalid after"
@@ -1534,7 +1540,15 @@ def _invalid_feature_errors(ir: dict, ref_objects: dict) -> list[dict]:
                         " holds an earlier shape, so the exported solid is"
                         " NOT the IR's declared result — repair this feature."
                     ),
-                })
+                }
+                if f.get('op') in {'fillet', 'chamfer'}:
+                    error['hint'] = (
+                        "Use the preceding solid feature in this Body as base_feature when appending "
+                        "an edge treatment, not an earlier primitive. Inspect its measured edges with "
+                        "ir_digest(feature_id=..., artifact_id=<last passed build>) if the current build "
+                        "failed. Edge names are feature-local. Reduce radius/size or choose fewer edges; "
+                        "remove or suppress this optional treatment if necessary, preserving the main geometry.")
+                out.append(error)
     return out
 
 

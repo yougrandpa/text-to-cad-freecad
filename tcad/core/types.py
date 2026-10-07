@@ -404,6 +404,7 @@ class MeasuredHole(BaseModel):
     """
 
     index: int
+    body_id: str | None = None
     diameter: float
     radius: float
     axis: list[float] = Field(default_factory=list)      # unit direction
@@ -462,6 +463,20 @@ class FeatureGeometry(BaseModel):
     edges: list[EdgeInfo] = Field(default_factory=list)
 
 
+class BodyMeasurements(BaseModel):
+    """Measurements of a compiled source Body, before assembly solving."""
+
+    topology: Topology = Field(default_factory=Topology)
+    bbox: BBox = Field(default_factory=BBox)
+    volume: float = 0.0
+    area: float = 0.0
+    shape_type: str = ""
+    is_valid: bool = False
+    measurements_available: bool = True
+    holes: list[MeasuredHole] = Field(default_factory=list)
+    holes_measured: bool = False
+
+
 class GeometryDigest(BaseModel):
     model_id: str
     ir_version: int
@@ -475,6 +490,9 @@ class GeometryDigest(BaseModel):
     key_dimensions: dict[str, float] = Field(default_factory=dict)
     spec_deviation: dict[str, float] = Field(default_factory=dict)
     holes: list[MeasuredHole] = Field(default_factory=list)
+    # None identifies old artifacts whose empty assembly hole list is ambiguous.
+    holes_measured: bool | None = None
+    body_measurements: dict[str, BodyMeasurements] = Field(default_factory=dict)
     #: Planar faces, so a model can name one for a ``plane: {"kind": "face"}``
     #: sketch attachment. Bounded by the worker; additive, so an older digest.json
     #: without it still parses.
@@ -508,6 +526,7 @@ class RpcError(BaseModel):
     message: str = ""
     feature_id: str | None = None
     traceback: str = ""
+    hint: str = ""
 
 
 class RpcResponse(BaseModel):

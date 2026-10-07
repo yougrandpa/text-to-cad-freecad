@@ -317,6 +317,7 @@ def test_a_fillet_that_cannot_be_built_is_not_reported_as_a_success(worker, tmp_
         err = exc.rpc_error
         assert err.feature_id == "ft_fillet", err
         assert err.message, err
+        assert 'preceding solid feature' in err.hint and 'Reduce radius' in err.hint, err
         return
 
     m = res.get("measurements") or {}

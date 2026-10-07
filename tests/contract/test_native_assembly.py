@@ -82,6 +82,41 @@ def test_native_gear_and_belt_coupling(worker,tmp_path,kind,expected_sign):
     assert final[4] == pytest.approx(expected_sign*2**-0.5,abs=1e-5)
 
 
+def test_saved_motion_summary_observes_closed_harmonic_cycle_and_passive_follower(worker, tmp_path):
+    import math
+    from tcad.inspect.motion import assembly_definition, measure_saved_motion
+
+    ir = native_ir(drivers=[{'joint_id': 'joint', 'type': 'Angular',
+                            'formula': '0.35*sin(2*pi*time)'}])
+    ir['bodies'].append({'id': 'follower', 'name': 'follower', 'features': [
+        {'id': 'follow_box', 'op': 'additive_box', 'params': {'length': 4, 'width': 1, 'height': 1}}]})
+    ir['assembly']['joints'].extend([
+        {'id': 'follower_axis', 'type': 'Revolute', 'side1': {'body_id': 'base', 'position': [5, 0, 0]},
+         'side2': {'body_id': 'follower', 'position': [5, 0, 0]}},
+        {'id': 'coupling', 'type': 'Gears', 'side1': {'body_id': 'arm'},
+         'side2': {'body_id': 'follower', 'position': [5, 0, 0]}, 'distance': 2, 'distance2': 2},
+    ])
+    ir['assembly'].update(end=2, step=0.05)
+    ir['assembly'] = AssemblySpec.model_validate(ir['assembly']).model_dump()
+    result = worker.request_sync('simulate_assembly', {'ir': ir, 'out_dir': str(tmp_path)}, timeout_s=180)
+    assert result['ok'], result
+    summary = measure_saved_motion(result, result['mesh']['vertices'],
+        track_points=[{'name': 'tip', 'body_id': 'arm', 'point': [6, 0, 0]}], sample_frames=[0, 5, 15, 40])
+    assert summary['frames_examined'] == 41
+    assert set(summary['moving_bodies']) == {'arm', 'follower'}
+    assert assembly_definition(ir['assembly'])['prescribed_driver_count'] == 1
+    measured = {b['body_id']: b for b in summary['bodies']}
+    assert measured['base']['max_rotation_from_first_deg'] == 0
+    assert measured['arm']['max_rotation_from_first_deg'] == pytest.approx(math.degrees(0.35), abs=1e-5)
+    assert measured['follower']['max_rotation_from_first_deg'] == pytest.approx(math.degrees(0.35), abs=1e-5)
+    assert result['frames'][0]['arm'] == pytest.approx(result['frames'][-1]['arm'], abs=1e-5)
+    assert result['frames'][5]['arm'][4] == pytest.approx(math.sin(0.35), abs=1e-5)
+    assert result['frames'][5]['follower'][4] == pytest.approx(-math.sin(0.35), abs=1e-5)
+    samples = summary['point_tracks'][0]['samples']
+    assert samples[1]['world_mm'] == pytest.approx([6 * math.cos(0.35), 6 * math.sin(0.35), 0], abs=1e-5)
+    assert samples[2]['world_mm'] == pytest.approx([6 * math.cos(0.35), -6 * math.sin(0.35), 0], abs=1e-5)
+
+
 @pytest.mark.parametrize('kind', ['Screw','RackPinion'])
 def test_native_rotation_translation_coupling(worker,tmp_path,kind):
     ir=native_ir()

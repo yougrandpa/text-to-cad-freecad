@@ -105,13 +105,28 @@ async def geo_measure_handler(services: "Any", args: dict, ctx: ToolContext) -> 
         artifact_id = args.get("artifact_id")
         version = None if artifact_id else services.store.current_version(ctx.model_id)
         manifest, root = reader.resolve(ctx.model_id, version, artifact_id)
-        return reader.digest(manifest, root).model_dump(mode="json")
+        return manifest.artifact_id, reader.digest(manifest, root).model_dump(mode="json")
 
     try:
-        digest = await asyncio.to_thread(read_measurements)
+        artifact_id, digest = await asyncio.to_thread(read_measurements)
     except (OSError, ValueError) as exc:
         return _err(ToolErrorKind.RUNTIME, str(exc),
                     hint="Commit this version first, or supply the artifact_id of an existing build.")
+    body_id = args.get("body_id")
+    if body_id is not None:
+        bodies = digest.get("body_measurements") or {}
+        if not bodies:
+            return _err(ToolErrorKind.RUNTIME, "artifact lacks per-Body measurements; commit again with the current worker")
+        if body_id not in bodies:
+            return _err(ToolErrorKind.NOT_FOUND, f"unknown measured body_id {body_id!r}",
+                        hint="Available: " + ", ".join(sorted(bodies)))
+        digest = bodies[body_id]
+    if "holes" in what and (digest.get("holes_measured") is False or (
+            digest.get("holes_measured") is None and (digest.get("topology") or {}).get("solids") != 1
+            and not digest.get("holes"))):
+        return _err(ToolErrorKind.RUNTIME,
+                    "hole measurements unavailable for this artifact; an empty list does not prove absence of holes",
+                    hint="Commit again with the current worker. Use body_id to inspect an individual part.")
     # introspect_document returns a GeometryDigest-shaped dict — there is no
     # "measurements" key. Map each requested item onto the digest's real
     # fields; an unmeasured build must error, not report "{}".
@@ -146,7 +161,11 @@ async def geo_measure_handler(services: "Any", args: dict, ctx: ToolContext) -> 
             f"unknown measurement(s): {', '.join(unknown)}",
             hint="supported: " + ", ".join(sorted(catalog)),
         )
-    return _ok(json.dumps({w: catalog[w] for w in what}, indent=2))
+    payload = {w: catalog[w] for w in what}
+    if body_id is not None:
+        payload.update(body_id=body_id, artifact_id=artifact_id,
+            scope="Compiled source Body BRep in world mm; not solved assembly poses or IR-declared dimensions.")
+    return _ok(json.dumps(payload, indent=2))
 
 
 async def asset_export_handler(services: "Any", args: dict, ctx: ToolContext) -> ToolResult:
@@ -223,17 +242,26 @@ async def _assembly_result(services, ctx, checks=None):
 
 
 async def assembly_simulate_handler(services, args, ctx):
+    from tcad.inspect.motion import summarize_interferences
     try:
         result, path = await _assembly_result(services, ctx, args or None)
     except (OSError, ValueError) as exc:
         return _err(ToolErrorKind.SOLVER, str(exc))
     return _ok(json.dumps({"solver": result["solver"], "frames": len(result["frames"]),
         "bodies": [p["body_id"] for p in result["parts"]], "start": result["start"], "step": result["step"],
-        "animation": path, "fcstd": result["export"], "artifact_id": result["artifact_id"], "scope": result["scope"], "max_swing_deg": result.get('max_swing_deg'), "interferences": (result["interferences"][:10] if result.get("interferences") is not None else None), "interference_count": len(result.get("interferences") or []), "frames_checked": result.get("frames_checked", 0)}, ensure_ascii=False, separators=(",", ":")))
+        "animation": path, "fcstd": result["export"], "artifact_id": result["artifact_id"], "scope": result["scope"],
+        "assembly_definition": result["assembly_definition"], "motion_summary": result["motion_summary"],
+        "max_swing_deg": result.get('max_swing_deg'),
+        "interferences": (result["interferences"][:10] if result.get("interferences") is not None else None),
+        "interference_summary": (summarize_interferences(result["interferences"]) if result.get("interferences") is not None else None),
+        "interference_count": (len(result["interferences"]) if result.get("interferences") is not None else None),
+        "collision_status": ("not_checked" if result.get("interferences") is None else
+                             "sampled_overlap" if result["interferences"] else "sampled_clear"),
+        "frames_checked": result.get("frames_checked", 0)}, ensure_ascii=False, separators=(",", ":")))
 
 
 async def assembly_solve_handler(services, args, ctx):
-    return await assembly_simulate_handler(services, {"solve_only": True}, ctx)
+    return await assembly_simulate_handler(services, args, ctx)
 
 
 async def assembly_export_handler(services, args, ctx):
@@ -280,8 +308,12 @@ def build_geo_tools(services: "Any") -> dict[str, ToolSpec]:
         ),
         "assembly_simulate": ToolSpec(
             name="assembly_simulate", tier=ToolTier.READ,
-            description="Read saved native Assembly or gravity-pendulum animation frames (artifact_id optional; defaults to the latest committed build). Returns compact summary, solver scope and measured max_swing_deg, not large frame arrays. Optional check_pairs performs sampled BRep overlap checks on saved poses, check_stride selects frames. Commit after edits. A clear sample set does not prove continuous clearance or contact forces; this is separate from the geometry Gate.",
+            description="Read saved native Assembly or gravity-pendulum animation (artifact_id optional; defaults to the latest committed build). Returns saved driver count/targets and motion_summary measured across ALL saved frames: body orientation change, preview-center travel, moving bodies. max_swing_deg is gravity-only and may be null for native joints. Optional track_points=[{name,body_id,point:[x,y,z]}] measures reference point trajectories; point is WORLD mm in pre-solve geometry, not first-frame local coordinates. sample_frames selects up to 12 output samples; extrema still use all frames. Default point samples include endpoints and extrema. Optional check_pairs/check_stride performs sampled BRep overlap checks; interference_summary covers every overlapping pair even when raw examples are truncated. Commit after edits. Motion/clear samples do not prove continuous clearance, physical transmission or ground contact; this is separate from the geometry Gate.",
             params_schema={"type":"object", "additionalProperties":False, "properties":{"artifact_id":{"type":"string"},
+                "track_points":{"type":"array","minItems":1,"maxItems":12,"items":{"type":"object","additionalProperties":False,
+                    "required":["name","body_id","point"],"properties":{"name":{"type":"string","minLength":1,"maxLength":64},
+                    "body_id":{"type":"string"},"point":{"type":"array","minItems":3,"maxItems":3,"items":{"type":"number"}}}}},
+                "sample_frames":{"type":"array","minItems":1,"maxItems":12,"items":{"type":"integer","minimum":0,"maximum":599}},
                 "check_pairs":{"type":"array","minItems":1,"maxItems":100,"items":{"type":"array","minItems":2,"maxItems":2,"items":{"type":"string"}}},
                 "check_stride":{"type":"integer","minimum":1,"maximum":30}}},
             handler=functools.partial(assembly_simulate_handler, services), timeout_s=190.0,
@@ -325,13 +357,14 @@ def build_geo_tools(services: "Any") -> dict[str, ToolSpec]:
         "geo_measure": ToolSpec(
             name="geo_measure",
             tier=ToolTier.READ,
-            description="Read geometric measurements (volume/bbox/faces/edges/solids/holes) from a committed artifact. `what` is an ARRAY of names, e.g. ['bbox','volume'] — a bare string is rejected; omitted returns volume/bbox/faces/edges/solids. Optional artifact_id pins an earlier build; otherwise this IR version must already have an artifact. Never rebuilds the current IR. 'holes' are measured on the BRep and can disagree with the IR.",
+            description="Read actual BRep geometric measurements from a committed artifact. Optional body_id scopes volume/bbox/area/topology/holes to an individual source part, useful for dimensions and bore fits; omitted measures the whole source model. `what` is an ARRAY, e.g. ['bbox','holes']; omitted returns volume/bbox/faces/edges/solids. Hole entries retain body_id; separate coaxial bores are counted per part. Missing/unsupported hole measurements return an error, not a misleading empty array. Older artifacts need a fresh commit for per-Body measurements. Optional artifact_id pins a build; otherwise commit this IR version first. Never rebuilds current IR or measures solved animation poses. Values come from compiled material and may disagree with IR declarations.",
             params_schema={
                 "type": "object",
                 "properties": {
                     "what": {"type": "array", "items": {"type": "string", "enum":["volume","area","bbox","faces","edges","solids","vertexes","shells","is_valid","shape_type","holes"]},
                              "description": "Measurement names to return, as an array (e.g. [\"bbox\",\"volume\"]); a bare string is rejected."},
                     "artifact_id": {"type": "string", "description": "sha256:<64 hex digits>"},
+                    "body_id": {"type": "string", "minLength": 1, "description": "Compiled source Body ID; omit for whole-model measurements."},
                 },
             },
             handler=functools.partial(geo_measure_handler, services),
