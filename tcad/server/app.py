@@ -68,6 +68,8 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 from starlette.concurrency import run_in_threadpool
 from tcad.core.access import AccessMode
+from tcad.core.user_files import TextFile
+from tcad.core.user_images import MAX_IMAGES, UserImage
 
 from tcad.config.schema import Config
 from tcad.core.types import RenderStyle, TurnKind, TurnState
@@ -151,12 +153,16 @@ class SessionFolderRequest(BaseModel):
 class ChatRequest(BaseModel):
     model_id: str
     text: str
+    images: list[UserImage] = Field(default_factory=list, max_length=MAX_IMAGES)
+    files: list[TextFile] = Field(default_factory=list, max_length=MAX_IMAGES)
     thread_id: str | None = None
     selection_context: SelectionContext | None = None
     operation_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
     @model_validator(mode="after")
     def require_operation_id(self):
+        if len(self.images) + len(self.files) > MAX_IMAGES:
+            raise ValueError("每条消息最多添加 4 个附件")
         if self.selection_context is not None and self.operation_id is None:
             raise ValueError("Reference requests require operation_id for safe retries")
         return self
@@ -1028,6 +1034,8 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
 
     @app.post("/chat")
     async def chat(req: ChatRequest) -> StreamingResponse:
+        if req.images and not current_llm().llm.resolved_supports_vision():
+            raise HTTPException(400, "当前模型不支持图片输入。请在模型配置中切换到支持视觉的模型后重试；输入内容和图片已保留。")
         s = svc()
         thread_id = req.thread_id or f"th-{req.model_id}"
         if db().is_deleted(thread_id):
@@ -1116,7 +1124,9 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
                 d = db()
                 if d.get_thread(thread_id) is None:
                     d.create_thread(model_id, thread_id=thread_id)
-                d.add_message(thread_id, "user", req.text)
+                d.add_message(thread_id, "user", req.text,
+                              images=[image.model_dump() for image in req.images],
+                              files=[file.model_dump() for file in req.files])
             except Exception:  # noqa: BLE001 — history is a convenience, not a guarantee
                 pass
 
@@ -1381,6 +1391,7 @@ def create_app(services: Any = None, *, config: Config | None = None) -> FastAPI
         path = settings_path(c.storage.data_dir)
         return {
             "settings": rs.llm.masked(),
+            "attachments_supported": True,
             "persisted": path.exists(),
             "settings_file": str(path),
             "hot_swap_available": app.state.services is not None,
@@ -1732,7 +1743,7 @@ async def run_turn_request(
     token = build_observer.set(callback)
     try:
         return await engine.run_turn(
-            thread, UserMessage(kind=req.kind, text=req.text,
+            thread, UserMessage(kind=req.kind, text=req.text, images=req.images, files=req.files,
                                 privileged_requested=req.privileged_requested, access_mode=req.access_mode,
                                 selection_context=req.selection_context)
         )

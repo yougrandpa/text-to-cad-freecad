@@ -58,14 +58,18 @@ def messages_from_rows(
     for rec in records:
         role = str(rec.get("role") or "")
         content = rec.get("content") or ""
-        if role not in _REPLAYABLE_ROLES or not content.strip():
+        if role not in _REPLAYABLE_ROLES or (not content.strip() and not rec.get("images") and not rec.get("files")):
             continue
         out.append(
             Message(
                 role=role,
                 content=content,
                 kind="history",
-                tokens_estimate=max(1, len(content) // 4),
+                images=rec.get("images") or [],
+                files=rec.get("files") or [],
+                tokens_estimate=(max(1, len(content) // 4) + 8192 * len(rec.get("images") or [])
+                                 + sum(len(file.get("content", "").encode("utf-8")) // 3 + 64
+                                       for file in rec.get("files") or [])),
             )
         )
     return out

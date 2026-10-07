@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
+import { AttachmentInput } from '../../tcad/server/ui/attachments.mjs';
 import { readFile } from 'node:fs/promises';
 
 const source = (await readFile(new URL('../../tcad/server/ui/app.js', import.meta.url), 'utf8'))
@@ -12,9 +13,11 @@ function harness() {
     if (!nodes.has(id)) nodes.set(id, {
       value: '', style: {}, disabled: false, scrollHeight: 100, listeners: {}, attrs: {},
       classList: { toggle() {} },
+      replaceChildren() {}, querySelectorAll() { return []; },
       setAttribute(key, value) { this.attrs[key] = value; },
       addEventListener(type, handler) { this.listeners[type] = handler; },
       focus() { this.focused = true; },
+      showModal() { this.open = true; },
       setSelectionRange(start, end) { this.selection = [start, end]; },
     });
     return nodes.get(id);
@@ -24,10 +27,10 @@ function harness() {
   const sent = [];
   const context = vm.createContext({
     document: { getElementById: node, querySelectorAll: () => [sample] },
-    localStorage: { setItem() {} }, console,
+    localStorage: { setItem() {} }, console, AttachmentInput,
   });
-  vm.runInContext(source + '\nglobalThis.testing = {state, bindComposer, toggleSidebar};', context);
-  context.send = text => sent.push(text);
+  vm.runInContext(source + '\nglobalThis.testing = {state, bindComposer, toggleSidebar, checkAttachmentInput, images: () => attachmentInput, stubApi(fn) { api = fn; }};', context);
+  context.send = (text, images, accepted) => { sent.push(text); accepted(); };
   const composer = node('composer');
   composer.requestSubmit = () => composer.listeners.submit({ preventDefault() {} });
   context.testing.bindComposer();
@@ -88,4 +91,55 @@ test('sidebar visibility is announced to assistive technology', () => {
   assert.equal(h.node('sidebarToggle').attrs['aria-expanded'], 'false');
   h.toggleSidebar(false);
   assert.equal(h.node('sidebarToggle').attrs['aria-expanded'], 'true');
+});
+
+
+test('unsupported image model opens a popup without changing draft or selected images', async () => {
+  const h = harness();
+  h.node('input').value = '按照图片设计';
+  h.images().attachments = [{ name: '图.png', data_url: 'data:image/png;base64,picture' }];
+  h.stubApi(async () => ({ settings: { supports_vision: false }, attachments_supported: true }));
+  assert.equal(await h.checkAttachmentInput([{}]), false);
+  assert.equal(h.node('composerErrorDialog').open, true);
+  assert.match(h.node('composerErrorMessage').textContent, /不支持图片输入/);
+  assert.equal(h.node('input').value, '按照图片设计');
+  assert.equal(h.images().attachments.length, 1);
+  assert.equal(h.node('attachmentBtn').disabled, false);
+  assert.equal(h.node('sendBtn').disabled, false);
+  assert.equal(h.sent.length, 0);
+});
+
+test('capability lookup locks send and ignores replies after switching sessions', async () => {
+  const h = harness();
+  let resolve;
+  h.stubApi(() => new Promise(done => { resolve = done; }));
+  const lookup = h.checkAttachmentInput();
+  assert.equal(h.node('sendBtn').disabled, true);
+  assert.equal(h.node('attachmentBtn').disabled, true);
+  h.state.sessionEpoch += 1;
+  resolve({ settings: { supports_vision: false }, attachments_supported: true });
+  assert.equal(await lookup, false);
+  assert.equal(h.node('composerErrorDialog').open, undefined);
+  assert.equal(h.node('sendBtn').disabled, false);
+});
+
+test('supported image model allows send while lookup errors produce a popup', async () => {
+  const h = harness();
+  h.stubApi(async () => ({ settings: { supports_vision: true }, attachments_supported: true }));
+  assert.equal(await h.checkAttachmentInput([{}]), true);
+  h.stubApi(async () => { throw new Error('offline'); });
+  assert.equal(await h.checkAttachmentInput([{}]), false);
+  assert.equal(h.node('composerErrorDialog').open, true);
+  assert.match(h.node('composerErrorMessage').textContent, /offline/);
+  assert.equal(h.node('sendBtn').disabled, false);
+});
+
+
+test('text attachments skip vision checks and an older backend cannot silently drop them', async () => {
+  const h = harness();
+  h.stubApi(async () => ({ settings: { supports_vision: false }, attachments_supported: true }));
+  assert.equal(await h.checkAttachmentInput([]), true);
+  h.stubApi(async () => ({ settings: { supports_vision: false } }));
+  assert.equal(await h.checkAttachmentInput([]), false);
+  assert.match(h.node('composerErrorMessage').textContent, /重启服务/);
 });

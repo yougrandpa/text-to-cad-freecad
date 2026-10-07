@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Awaitable, Callable
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Message(BaseModel):
@@ -25,6 +25,8 @@ class Message(BaseModel):
 
     role: str = "user"
     content: str = ""
+    images: list[dict] = Field(default_factory=list)
+    files: list[dict] = Field(default_factory=list)
     kind: str = "history"
     tokens_estimate: int = 0
 

@@ -18,6 +18,7 @@ import { validateArtifactScene } from "../../viewer/core/artifact.js";
 import { ReferenceController } from "./references.mjs";
 import { StructureController } from "./structure.mjs";
 import { TreeHighlighter } from "./highlight.mjs";
+import { AttachmentInput } from "./attachments.mjs";
 import { PaneResizeController } from "./pane-resize.mjs";
 
 let references = null;
@@ -28,6 +29,8 @@ let sourceIr = null;
 let displayedArtifact = null;
 let structureRequest = 0;
 let treeHighlighter = null;
+let attachmentInput = null;
+let composerPending = false;
 let historyRequest = 0;
 let openHistoryMenu = null;
 
@@ -310,7 +313,12 @@ async function streamChat(body, handlers, signal) {
     signal,
   });
   if (!res.ok || !res.body) {
-    throw new Error(`${res.status} ${await res.text()}`);
+    let message = await res.text();
+    try {
+      const body = JSON.parse(message);
+      message = typeof body.detail === "string" ? body.detail : "附件或消息格式无效，请检查文件格式、大小与编码后重试。";
+    } catch { /* provider or proxy returned plain text */ }
+    throw new Error(`${res.status} ${message}`);
   }
 
   const reader = res.body.getReader();
@@ -344,8 +352,23 @@ async function streamChat(body, handlers, signal) {
 // chat rendering
 // ══════════════════════════════════════════════════════════════════════════
 
-function pushUser(text) {
-  append(el("div", { class: "msg user" }, el("div", { class: "bubble", text })));
+function pushUser(text, images = [], files = []) {
+  const bubble = el("div", { class: "bubble" });
+  if (images.length) bubble.append(el("div", { class: "message-images" }, images.map(image =>
+    el("img", { src: image.data_url, alt: image.name || "用户图片", loading: "lazy" }))));
+  if (files.length) bubble.append(el("div", { class: "message-files" }, files.map(file => {
+    const details = el("details", { class: "message-file" });
+    details.append(el("summary", { text: file.name }), el("pre", { text: file.content }));
+    return details;
+  })));
+  if (text) bubble.append(el("div", { text }));
+  append(el("div", { class: "msg user" }, bubble));
+}
+
+function showComposerError(message) {
+  const dialog = $("composerErrorDialog");
+  $("composerErrorMessage").textContent = message;
+  if (!dialog.open) dialog.showModal();
 }
 
 let assistantBody = null;
@@ -647,17 +670,55 @@ async function stopTurn() {
   }
 }
 
-async function send(text) {
+async function checkAttachmentInput(images = []) {
+  composerPending = true;
+  attachmentInput?.setBusy(true);
+  $("sendBtn").disabled = true;
+  const token = sessionToken();
+  try {
+    const current = await api("/settings/llm");
+    if (stale(token)) return false;
+    state.settings = current.settings;
+    if (images.length && !current.settings.supports_vision) {
+      showComposerError("当前模型不支持图片输入。请在右上角模型配置中切换到支持视觉的模型后重试。文字和图片已保留。");
+      return false;
+    }
+    if (!current.attachments_supported) {
+      showComposerError("当前运行的后端尚未加载附件功能，请重启服务后重试。文字和附件已保留。");
+      return false;
+    }
+  } catch (err) {
+    if (stale(token)) return false;
+    showComposerError(`无法检查附件输入配置：${err.message}。文字和附件已保留，请重试。`);
+    return false;
+  } finally {
+    composerPending = false;
+    attachmentInput?.setBusy(false);
+    $("sendBtn").disabled = state.busy || Boolean(attachmentInput?.pending);
+  }
+  return true;
+}
+
+async function send(text, { images = [], files = [] } = {}, accepted = () => {}) {
   const trimmed = text.trim();
-  if (!trimmed || state.busy) return;
+  if ((!trimmed && !images.length && !files.length) || state.busy || composerPending) return;
+  if ((images.length || files.length) && !await checkAttachmentInput(images)) return;
 
   // Nothing selected means nothing to send into. Create the session first, and
   // before the message is rendered: switching sessions clears the stream, which
   // would otherwise erase the bubble we had just appended.
   if (!state.threadId) {
+    composerPending = true;
+    attachmentInput?.setBusy(true);
+    $("sendBtn").disabled = true;
     try {
       await newSession({ announce: false });
+      composerPending = false;
     } catch (err) {
+      composerPending = false;
+      attachmentInput?.setBusy(false);
+      $("sendBtn").disabled = false;
+      if (images.length || files.length) showComposerError(`无法新建会话：${err.message}`);
       pushNotice("bad", `无法新建会话：${err.message}`);
       return;
     }
@@ -688,6 +749,7 @@ async function send(text) {
 
   state.busy = true;
   referenceUI().setBusy(true);
+  attachmentInput?.setBusy(true);
   state.abort = turn.controller;
   assistantBody = null;
   $("sendBtn").disabled = true;
@@ -696,7 +758,6 @@ async function send(text) {
   setStatus("busy", "生成中…");
   setLive("正在请求模型…");
   renderSessions();   // the sidebar marks this session as running
-  pushUser(trimmed);
 
   let resultWork = Promise.resolve();
   let needsReferenceRefresh = false;
@@ -707,6 +768,8 @@ async function send(text) {
       {
         model_id: state.modelId,
         text: trimmed,
+        ...(images.length ? { images } : {}),
+        ...(files.length ? { files } : {}),
         thread_id: state.threadId,
         request_id: turn.requestId,
         access_mode: turn.inspectionOnly ? "read_only" : turn.accessMode,
@@ -716,6 +779,8 @@ async function send(text) {
       {
         start: (d) => {
           if (!current()) return;
+          pushUser(trimmed, images, files);
+          accepted();
           state.threadId = d.thread_id;
           $("threadLabel").textContent = d.thread_id;
         },
@@ -724,11 +789,16 @@ async function send(text) {
         error: (d) => {
           if (current()) {
             terminalReceived = true;
+            if (images.length || files.length) showComposerError(d.message || "模型处理附件失败");
             pushNotice("bad", `${d.type}: ${d.message}`); needsReferenceRefresh = true;
           }
         },
         result: (r) => {
-          if (current()) { terminalReceived = true; resultWork = handleResult(r); }
+          if (current()) {
+            terminalReceived = true;
+            if ((images.length || files.length) && r.error) showComposerError(`请求失败：${r.error}`);
+            resultWork = handleResult(r);
+          }
         },
       },
       turn.controller.signal,
@@ -755,6 +825,7 @@ async function send(text) {
         ? "已打断本次回合。打断前的改动仍在，但此后没有任何东西经过 Gate 验证。"
         : "已离开该会话，本次回合已中断。");
     } else {
+      if (images.length || files.length) showComposerError(`附件发送失败：${err.message}`);
       pushNotice("bad", `请求失败：${err.message}`);
       setStatus("bad", "出错");
     }
@@ -766,6 +837,7 @@ async function send(text) {
       state.turn = null;
       state.busy = false;
       referenceUI().setBusy(false);
+      attachmentInput?.setBusy(false);
       if (needsReferenceRefresh && turn.selectionContext) {
         referenceUI().clear();
         refreshInspector();
@@ -1654,7 +1726,7 @@ function wire() {
   // ⌘/Ctrl+K for a new session, the shortcut people already have in their fingers.
   document.addEventListener("keydown", (e) => {
     if (e.defaultPrevented) return;
-    if ($("historyDialog")?.open) return;
+    if ($("historyDialog")?.open || $("composerErrorDialog")?.open) return;
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
       e.preventDefault();
       $("newSessionBtn").click();
@@ -2140,6 +2212,7 @@ async function switchSession(threadId, { force = false } = {}) {
   sourceIr = null;
   clearDisplayedStructure();
   referenceUI().reset();
+  attachmentInput?.setBusy(false);
   referenceUI().setBusy(false);
   cancelViewRequest();
   meshViewer?.clear({ resetCamera: true });
@@ -2203,7 +2276,7 @@ async function loadMessages(threadId) {
   if (welcome) welcome.hidden = true;
   for (const message of messages) {
     if (message.role === "user") {
-      pushUser(message.content);
+      pushUser(message.content, message.images || [], message.files || []);
     } else if (message.role === "assistant") {
       assistantBody = null;             // each stored message is its own bubble
       pushAssistantText(message.content);
@@ -2234,13 +2307,23 @@ function bindComposer() {
     input.style.height = "auto";
     input.style.height = Math.min(input.scrollHeight, 180) + "px";
   };
+  attachmentInput = new AttachmentInput({
+    input, composer: $("composer"), picker: $("attachmentPicker"), button: $("attachmentBtn"), previews: $("attachmentPreviews"),
+    error: showComposerError,
+    changed: pending => { $("sendBtn").disabled = state.busy || composerPending || pending; },
+  });
   $("composer").addEventListener("submit", (event) => {
     event.preventDefault();
-    if (state.busy || input.disabled || !input.value.trim()) return;
+    if (state.busy || composerPending || attachmentInput.pending || input.disabled) return;
     const text = input.value;
-    input.value = "";
-    input.style.height = "";
-    send(text);
+    const attachments = attachmentInput.snapshot();
+    const images = attachments.filter(attachment => attachment.data_url);
+    const files = attachments.filter(attachment => "content" in attachment);
+    if (!text.trim() && !attachments.length) return;
+    send(text, { images, files }, () => {
+      if (input.value === text) { input.value = ""; input.style.height = ""; }
+      attachmentInput.consume(attachments);
+    });
   });
   input.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {

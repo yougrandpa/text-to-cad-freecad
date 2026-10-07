@@ -13,6 +13,7 @@ writer.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 import uuid
@@ -132,6 +133,11 @@ class SessionDB:
                 self._conn.execute("ALTER TABLE threads ADD COLUMN folder_id TEXT")
             if "archived" not in columns:
                 self._conn.execute("ALTER TABLE threads ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
+
+            message_columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(messages)")}
+            for column in ("images", "files"):
+                if column not in message_columns:
+                    self._conn.execute(f"ALTER TABLE messages ADD COLUMN {column} TEXT NOT NULL DEFAULT '[]'")
 
     # ── context ───────────────────────────────────────────────────────────────
 
@@ -307,13 +313,15 @@ class SessionDB:
     # ── messages ────────────────────────────────────────────────────────────────
 
     def add_message(self, thread_id: str, role: str, content: str,
-                    turn_id: str | None = None) -> str:
+                    turn_id: str | None = None, *, images: list[dict] | None = None,
+                    files: list[dict] | None = None) -> str:
         mid = _uid("msg")
         with self._tx() as cur:
             cur.execute(
                 "INSERT INTO messages(message_id, thread_id, turn_id, role, content, "
-                "created_at) VALUES(?,?,?,?,?,?)",
-                (mid, thread_id, turn_id, role, content, _now()))
+                "created_at, images, files) VALUES(?,?,?,?,?,?,?,?)",
+                (mid, thread_id, turn_id, role, content, _now(),
+                 json.dumps(images or []), json.dumps(files or [])))
         return mid
 
     # ── token usage ─────────────────────────────────────────────────────────────
@@ -421,7 +429,8 @@ class SessionDB:
         routinely share a value and would come back in arbitrary order.
         """
         rows = self._fetchall(
-            "SELECT message_id, thread_id, turn_id, role, content, created_at "
+            "SELECT message_id, thread_id, turn_id, role, content, created_at, images, files "
             "FROM messages WHERE thread_id=? ORDER BY rowid ASC LIMIT ?",
             (thread_id, int(limit)))
-        return [dict(r) for r in rows]
+        return [{**dict(row), "images": json.loads(row["images"]),
+                 "files": json.loads(row["files"])} for row in rows]

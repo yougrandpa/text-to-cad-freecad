@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>tcad · 对话式 CAD</title>
 <link rel="icon" type="image/svg+xml" href="./favicon.svg?v=hakimi-cute">
-<link rel="stylesheet" href="./styles.css?v=20261007-pane-hover">
+<link rel="stylesheet" href="./styles.css?v=20261007-attachments">
 </head>
 <body>
 
@@ -118,10 +118,15 @@
     </div>
     <form class="composer" id="composer">
       <div id="referenceChips" class="reference-chips" aria-label="消息引用的模型对象" aria-live="polite" hidden></div>
+      <div id="attachmentPreviews" class="attachment-previews" aria-label="待发送附件" aria-live="polite" hidden></div>
+      <input id="attachmentPicker" type="file" accept=".txt,.md,image/png,image/jpeg,image/webp,image/gif" multiple hidden>
       <label class="composer-label" for="input">你的设计要求</label>
       <textarea id="input" rows="3" aria-describedby="composerHint" placeholder="例如：一个 80 × 50 mm 的底板，厚 8 mm，中间开通槽…"></textarea>
       <div class="composer-actions">
-      <span class="composer-hint" id="composerHint">Enter 发送 <span>· Shift + Enter 换行</span></span>
+      <button type="button" id="attachmentBtn" class="attachment-add" title="添加附件：TXT、Markdown、图片（最多 4 个）" aria-label="添加附件">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
+      <span class="composer-hint" id="composerHint">Enter 发送 <span>· Shift + Enter 换行 / 粘贴图片</span></span>
       <!-- While a turn runs the only useful thing to do to it is stop it: the
            model is already working, so "send" is disabled and this takes its
            place. Hidden (not merely disabled) the rest of the time — an always
@@ -131,6 +136,11 @@
       <button type="submit" id="sendBtn" class="primary">发送 <span aria-hidden="true">↑</span></button>
       </div>
     </form>
+    <dialog class="history-dialog composer-error-dialog" id="composerErrorDialog" aria-labelledby="composerErrorTitle" aria-describedby="composerErrorMessage">
+      <h3 id="composerErrorTitle">附件输入失败</h3>
+      <p id="composerErrorMessage"></p>
+      <form method="dialog" class="history-dialog-actions"><button class="history-confirm" autofocus>知道了</button></form>
+    </dialog>
   </section>
 
   <!-- ── 视图 ───────────────────────────────────────────────── -->
@@ -297,6 +307,6 @@
   </div>
 </div>
 
-<script type="module" src="./app.js?v=20261007-desktop-panes"></script>
+<script type="module" src="./app.js?v=20261007-attachments"></script>
 </body>
 </html>

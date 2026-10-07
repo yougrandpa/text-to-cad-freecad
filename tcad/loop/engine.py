@@ -52,6 +52,8 @@ from tcad.loop.budget import Budget, BudgetLimits
 from tcad.loop.recovery import RepeatedFailures
 from tcad.loop.strategies import LoopUntilDoneStrategy, make_strategy
 from tcad.tools.base import Services, ToolOutcome, execute_tool
+from tcad.core.user_files import TextFile
+from tcad.core.user_images import MAX_IMAGES, UserImage, user_content
 from tcad.selection.types import SelectionContext
 
 
@@ -71,9 +73,17 @@ class UserMessage(BaseModel):
 
     kind: TurnKind = TurnKind.CREATE
     text: str
+    images: list[UserImage] = Field(default_factory=list, max_length=MAX_IMAGES)
+    files: list[TextFile] = Field(default_factory=list, max_length=MAX_IMAGES)
     privileged_requested: bool = False
     access_mode: AccessMode | None = None
     selection_context: SelectionContext | None = None
+
+    def as_provider_message(self) -> dict[str, Any]:
+        return {"role": "user", "content": user_content(
+            self.text, [image.model_dump() for image in self.images],
+            [file.model_dump() for file in self.files],
+        )}
 
 
 class TurnResult(BaseModel):
@@ -1129,7 +1139,7 @@ class LoopEngine:
             *self._selection_messages(),
             *([{"role": "system", "content": "Authoritative user requirements:\n" + self._request_text}]
               if self._request_text else []),
-            {"role": "user", "content": user_msg.text},
+            user_msg.as_provider_message(),
         ]
 
     async def _prepare_step_context(self, turn: Turn, messages: list[dict], tools: list[dict]) -> None:
@@ -1211,7 +1221,7 @@ class LoopEngine:
                     {"role": "system", "content": self.config.system_prompt},
                     *({"role": "system", "content": text} for text in blocks.values() if text),
                     *self._pinned_history,
-                    {"role": "user", "content": user_msg.text},
+                    user_msg.as_provider_message(),
                 ]
             history = self._load_history(turn.thread_id, user_msg.text)
             ctx = AssembleContext(
@@ -1222,18 +1232,20 @@ class LoopEngine:
                 history=history,
             )
             assembled = await self._context_assembler.build(ctx, [])
-            messages = to_openai_messages(assembled)
+            descriptor = getattr(getattr(self.services, "llm", None), "descriptor", {})
+            supports_vision = isinstance(descriptor, dict) and descriptor.get("supports_vision") is True
+            messages = to_openai_messages(assembled, supports_vision=supports_vision)
             self._pinned_history = to_openai_messages([
                 message for message in assembled
                 if message.kind not in ("system", "requirements", "digest", "gate")
-            ])
+            ], supports_vision=supports_vision)
         except Exception:  # noqa: BLE001 — see the degradation note above
             if require_state:
                 raise
             return self._init_messages(user_msg, turn)
 
         # The current request always goes last, verbatim, exactly once.
-        messages.append({"role": "user", "content": user_msg.text})
+        messages.append(user_msg.as_provider_message())
         messages[0:0] = self._access_messages()
         messages[0:0] = self._selection_messages()
         return messages

@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from tcad.context.compactor import Message, summarize_history
 from tcad.core.types import ContextLevel, ImageRef
+from tcad.core.user_images import user_content
 
 
 class ContextBudget(BaseModel):
@@ -159,7 +160,7 @@ class ContextAssembler:
         return msgs
 
 
-def to_openai_messages(messages: list[Message]) -> list[dict]:
+def to_openai_messages(messages: list[Message], *, supports_vision: bool = False) -> list[dict]:
     """Convert assembled :class:`Message` objects into the OpenAI wire shape.
 
     Empty *context blocks* are dropped rather than sent as ``content: ""``: a
@@ -175,5 +176,7 @@ def to_openai_messages(messages: list[Message]) -> list[dict]:
         content = m.content or ""
         if m.role == "system" and not content.strip():
             continue
-        out.append({"role": m.role, "content": content})
+        if m.images and not supports_vision:
+            content += f"\n[附带 {len(m.images)} 张历史图片；当前模型不支持读取图片]"
+        out.append({"role": m.role, "content": user_content(content, m.images if supports_vision else [], m.files)})
     return out
