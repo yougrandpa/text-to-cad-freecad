@@ -103,7 +103,7 @@ async def evaluate(args, cases: dict, baseline: dict) -> int:
         if settings.llm.needs_key() and not settings.llm.resolved_api_key():
             raise ValueError("The selected provider requires explicitly configured credentials.")
     settings = settings.model_copy(deep=True)
-    root = Path(args.output_dir or (REPO_ROOT / ".tcad_eval" /
+    root = Path(args.output_dir or (REPO_ROOT / "output/local/tcad_eval" /
                                     ("regression-" + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")))).resolve()
     root.mkdir(parents=True, exist_ok=False)
     (root / "baseline.json").write_text(json.dumps(baseline, ensure_ascii=False, indent=2), encoding="utf-8")

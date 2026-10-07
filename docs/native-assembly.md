@@ -114,7 +114,7 @@ Screw 的 distance 按原生 pitch 语义传入。
 
 ```sh
 .venv/bin/python tools/agent_driver.py --new --model-id sharpener_native_trial \
-  --data-dir .tcad_native --calls tools/sessions/pencil_sharpener_native.json
+  --data-dir output/local/tcad_native --calls tools/sessions/pencil_sharpener_native.json
 ```
 
 实现参考本地上游 `Mod/Assembly/JointObject.py`、`CommandCreateSimulation.py` 和

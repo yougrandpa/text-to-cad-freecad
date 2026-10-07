@@ -196,7 +196,7 @@ async def run_calls(svc, model_id: str, calls: list[dict], *, kind: TurnKind,
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="drive tcad by hand (the operator is the LLM)")
     p.add_argument("--model-id")
-    p.add_argument("--data-dir", default=".tcad_hand")
+    p.add_argument("--data-dir", default="output/local/tcad_hand")
     p.add_argument("--calls", help="JSON file: list of {name, args}")
     p.add_argument("--json-results", help="with --calls: save complete results/Gate verdicts as independent JSON, without console logs")
     p.add_argument("--kind", default="create", choices=[k.value for k in TurnKind])

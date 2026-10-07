@@ -2,7 +2,7 @@
 """Start the HTTP front end.
 
     python tools/serve.py                                  # 127.0.0.1:8000, ./data
-    python tools/serve.py --data-dir .tcad_hand --port 8765
+    python tools/serve.py --data-dir output/local/tcad_hand --port 8765
     python tools/serve.py --base-url http://127.0.0.1:8123/v1 --model stub-scripted
 
 Command-line overrides are applied **in memory only** (``persist=False``): a

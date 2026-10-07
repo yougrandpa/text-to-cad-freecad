@@ -22,6 +22,7 @@ __pycache__/
 .playwright-cli/
 /output/playwright/
 /output/renders/
+/output/local/
 /build/
 dist/
 
@@ -33,7 +34,8 @@ tools/probes/*.step
 tools/probes/*.stl
 tools/probes/*.FCStd
 
-# 本地运行期工作区：data/ 是默认数据目录；.tcad_* 是临时/演示/验证用的。
+# 本地运行期工作区：data/ 是默认数据目录；临时/演示/验证数据统一放 output/local/。
+# 兼容旧命令生成的 .tcad_* 目录，避免误提交。
 # 用通配而不是逐条列举 —— 验证时随手起的目录名不会提前知道，漏一个就会把
 # 运行期数据提交进仓库。
 .tcad_*/

@@ -53,7 +53,7 @@ Linux 嵌入式 FreeCADCmd 无法启动、但系统 Python 能加载匹配 ABI �
 .venv/bin/python tools/stub_llm.py --script tools/sessions/demo_bracket.json --port 8123
 
 # 终端 B：仍使用真实 FreeCAD 编译
-.venv/bin/python tools/serve.py --data-dir .tcad_demo --port 8765 \
+.venv/bin/python tools/serve.py --data-dir output/local/tcad_demo --port 8765 \
   --base-url http://127.0.0.1:8123/v1 --model stub-scripted
 ```
 
@@ -116,7 +116,15 @@ runner 保存脱敏事件、结果与 HTTP 交付检查；`delivery_passed` 可�
 | `tcad/viewer/`、`render/`、`server/` | 交互视图、截图、API 与 Web UI |
 | `configs/`、`tools/`、`tests/` | 配置、运行脚本与测试 |
 | `docs/`、`review/` | 设计说明与验收记录 |
+| `output/local/` | 本地测试缓存、演示数据和评估产物，均不入库 |
 | `data/`、`free-cad/` | 本地运行数据与 FreeCAD 源码/构建，均不入库 |
+
+本地临时目录统一放在 `output/local/`：pytest 使用 `pytest_tmp/` 和
+`pytest_cache/`，Playwright CLI 日志使用 `playwright-cli/`，建模演示与评估
+使用 `tcad_*/`。新建验证工作区时请用 `--data-dir output/local/tcad_<名称>`
+或 `--output-dir output/local/tcad_<名称>`。原根目录 `.tcad_*` 数据已迁入此处，
+目录名去掉开头的点；历史日志里的绝对路径仍记录原位置，文件内容没有改写。
+已打开的 Playwright CLI 会话需在下次重新打开时加载新的日志路径配置。
 
 修改代码时保留 IR/worker 边界：写入需经过校验 patch，Gate 读取本次冻结产物，
 只有通过的构建才能替换正式版本。HTTP 接口详见运行服务的 [API 文档](http://127.0.0.1:8000/docs)。

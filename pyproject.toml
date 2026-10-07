@@ -24,7 +24,8 @@ asyncio_mode = "auto"
 # The execution sandbox denies writes to the OS temp dir, which is where pytest
 # puts tmp_path by default. Pinning basetemp inside the repo keeps `tmp_path`
 # usable (many tests here rely on real files: STEP round-trips, SQLite, PNGs).
-addopts = "--basetemp=.pytest_tmp"
+addopts = "--basetemp=output/local/pytest_tmp"
+cache_dir = "output/local/pytest_cache"
 markers = [
     "contract: needs a real FreeCADCmd process (slow)",
 ]

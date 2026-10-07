@@ -64,7 +64,7 @@
       "tokens_out": 6513,
       "elapsed_s": 178.02,
       "tool_errors": 6,
-      "artifact_dir": "/Users/slg/workspace/text_to_cad/.tcad_eval/20261006-134625-930415/t_slot_disk/artifact_sets/82ae19fe3da169ecc9e960ef6a4f40061a52c460ad54b531f35ac711a7993202",
+      "artifact_dir": "/Users/slg/workspace/text_to_cad/output/local/tcad_eval/20261006-134625-930415/t_slot_disk/artifact_sets/82ae19fe3da169ecc9e960ef6a4f40061a52c460ad54b531f35ac711a7993202",
       "turn_error": null
     },
     {
@@ -119,7 +119,7 @@
       "tokens_out": 12617,
       "elapsed_s": 594.12,
       "tool_errors": 9,
-      "artifact_dir": "/Users/slg/workspace/text_to_cad/.tcad_eval/20261006-134625-930415/helicopter/artifact_sets/5858c9e812816e700e06dc79a3387ecf4f12035ef6b2b04cf39f545892d5601f",
+      "artifact_dir": "/Users/slg/workspace/text_to_cad/output/local/tcad_eval/20261006-134625-930415/helicopter/artifact_sets/5858c9e812816e700e06dc79a3387ecf4f12035ef6b2b04cf39f545892d5601f",
       "turn_error": "budget exhausted: max_steps_per_turn (limit=40)"
     }
   ],

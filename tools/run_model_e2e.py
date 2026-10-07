@@ -75,7 +75,7 @@ async def run(args, *, settings_override=None, contract_check=None):
         if isinstance(value,dict): return {k:redact(v) for k,v in value.items()}
         return value
     request=args.request if args.request is not None else Path(args.request_file).read_text(encoding='utf-8')
-    root=Path(args.output_dir or ('.tcad_e2e/live-'+datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S-%f'))).resolve()
+    root=Path(args.output_dir or (Path(__file__).resolve().parents[1]/'output/local/tcad_e2e'/('live-'+datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S-%f')))).resolve()
     root.mkdir(parents=True,exist_ok=False)
     cfg.storage.data_dir=str(root); cfg.storage.sqlite_path=''
     cfg.loop.max_steps_per_turn=args.max_steps; cfg.loop.turn_wall_clock_s=args.timeout

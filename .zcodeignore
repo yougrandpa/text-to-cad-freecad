@@ -16,6 +16,7 @@ __pycache__/
 *.egg-info/
 
 # 测试与构建产物
+/output/local/
 .pytest_tmp/
 .pytest_cache/
 build/

@@ -65,14 +65,14 @@
 ```sh
 .venv/bin/python tools/run_model_e2e.py \
   --request '创建一个带装配动画的直升机。' \
-  --output-dir .tcad_e2e/helicopter-new-run \
+  --output-dir output/local/tcad_e2e/helicopter-new-run \
   --require-animation-mode assemble --max-steps 60 --timeout 1200
 ```
 
 本地原始记录保存在忽略目录，未把二进制产物加入代码改动：
 
-- `.tcad_e2e/helicopter-before-20261007/`：events.jsonl、result.json、summary.json、IR 和构建产物。
-- `.tcad_e2e/helicopter-after-20261007/`：上述记录、两段 GIF、assemble-frames.png、motion-frames.png。
+- `output/local/tcad_e2e/helicopter-before-20261007/`：events.jsonl、result.json、summary.json、IR 和构建产物。
+- `output/local/tcad_e2e/helicopter-after-20261007/`：上述记录、两段 GIF、assemble-frames.png、motion-frames.png。
 - 复测目录的 delivery-verification.json：最后追加的 HTTP 动画下载与严格模式验收结果。
 
 最终验证：1611 项单元测试、25 项真实 FreeCAD 契约测试、77 项前端测试通过；

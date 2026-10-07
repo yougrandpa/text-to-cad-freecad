@@ -12,7 +12,7 @@ scripted stub with a delay is enough, and costs no tokens:
 
     .venv/bin/python tools/stub_llm.py --script tools/sessions/demo_bracket.json \\
         --port 8766 --delay 1.5
-    .venv/bin/python tools/serve.py --data-dir .tcad_interrupt --port 8767 \\
+    .venv/bin/python tools/serve.py --data-dir output/local/tcad_interrupt --port 8767 \\
         --base-url http://127.0.0.1:8766/v1 --model stub-scripted
     .venv/bin/python tools/probes/interrupt_live.py --port 8767
 
