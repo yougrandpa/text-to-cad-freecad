@@ -7,20 +7,40 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from tcad.core.limits import MAX_SCENE_FACETS, MAX_SCENE_VERTICES
 from tcad.core.types import BBox, Mesh
 from tcad.render.picking import PickMapping
 from tcad.ir.animation import pose_frame
 from tcad.ir.motion import pose_vertices
 from tcad.ir.schema import RotaryMotionSpec
 
-MAX_SCENE_VERTICES = 100_000
-MAX_SCENE_FACETS = 200_000
+__all__ = ["MAX_SCENE_FACETS", "MAX_SCENE_VERTICES", "SceneMotion", "SceneModel",
+           "ScenePreview", "preview_from_build", "render_preview_note"]
 
 
 class SceneMotion(RotaryMotionSpec):
     body_id: str
     vertex_start: int = Field(ge=0)
     vertex_count: int = Field(gt=0)
+
+
+class ScenePreview(BaseModel):
+    """How the saved preview mesh relates to the CAD result it renders.
+
+    ``ok`` means the base tessellation was published; ``degraded`` means the
+    same BRep was re-tessellated at a coarser ``tolerance`` to fit the viewport
+    budget; the CAD result is identical either way. There is no
+    ``unavailable`` scene: a preview that cannot be published leaves no
+    ``scene.json`` at all and says why through the build result instead.
+    """
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    status: Literal["ok", "degraded"] = "ok"
+    tolerance: float = Field(gt=0)
+    reason: str = ""
+    attempts: list[dict] = Field(default_factory=list)
+    bodies: list[dict] = Field(default_factory=list)
 
 
 class SceneModel(BaseModel):
@@ -32,6 +52,7 @@ class SceneModel(BaseModel):
     motion: list[SceneMotion] = Field(default_factory=list)
     animation: dict | None = None
     pick_mapping: PickMapping | None = None
+    preview: ScenePreview | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -123,7 +144,8 @@ class SceneModel(BaseModel):
             animation.update({k: result[k] for k in ('scope','suspension_angles_deg','max_swing_deg') if k in result})
         scene = cls(mesh=result["mesh"], body_ids=[body["id"] for body in ir.get("bodies", [])],
                     motion=[] if assembly else result.get("motion", []), animation=animation,
-                    pick_mapping=result.get("pick_mapping"))
+                    pick_mapping=result.get("pick_mapping"),
+                    preview=ScenePreview.model_validate(result["preview"]) if result.get("preview") else None)
         if assembly is None:
             declared = {b["id"]: b["motion"] for b in ir.get("bodies", []) if b.get("motion")}
             actual = {p.body_id: {k: p.model_dump()[k] for k in ("pivot", "axis", "ratio")}
@@ -163,3 +185,110 @@ class SceneModel(BaseModel):
         bbox = BBox(**dict(zip(("x", "y", "z", "x_min", "y_min", "z_min"),
                               [highs[j] - lows[j] for j in range(3)] + lows)))
         return mesh.model_copy(update={"vertices": vertices, "bbox": bbox})
+
+
+# ─── preview publication: never a reason a valid build fails ───────────────
+#
+# The budget above is a VIEWPORT budget. A build whose preview cannot be
+# published is still a build: the FCStd, the STEP, the parametric history and
+# the Gate verdict all stand on their own. What must not happen is the two
+# being conflated — a model told "build failed" because a triangle count
+# crossed a line, then deleting structural features to make a number smaller.
+# So preview problems come back as *status*, with the real counts and the
+# parts that spent the budget, and the caller continues either way.
+
+_UNAVAILABLE_STAGES = {
+    "tessellation": "tessellation (mesh generation from the saved BRep)",
+    "scene_validation": "scene validation (declaration cross-check)",
+}
+
+
+def _preview_payload(result: dict) -> dict:
+    """Normalize the worker's preview summary into the supervisor's shape."""
+    raw = result.get("preview") or {}
+    attempts = [a for a in raw.get("attempts") or [] if isinstance(a, dict)]
+    last = attempts[-1] if attempts else {}
+    return {
+        "status": raw.get("status") or "unknown",
+        "tolerance": raw.get("tolerance"),
+        "reason": raw.get("reason") or "",
+        "attempts": attempts,
+        "bodies": [b for b in raw.get("bodies") or [] if isinstance(b, dict)],
+        "counts": {"vertices": last.get("vertices"), "facets": last.get("facets")},
+        "limits": {"vertices": MAX_SCENE_VERTICES, "facets": MAX_SCENE_FACETS},
+    }
+
+
+def preview_from_build(result: dict, ir: dict) -> tuple["SceneModel | None", dict]:
+    """Validate a worker preview result; preview problems become status.
+
+    Returns ``(scene, preview)``. ``scene`` is ``None`` whenever the preview
+    cannot be published — the caller records ``preview`` and carries on with
+    the CAD result. This function never raises for preview-only problems; a
+    programmer error in the *caller's* data still surfaces, because that is
+    not a preview problem.
+    """
+    preview = _preview_payload(result)
+    if not result.get("mesh") or preview["status"] == "unavailable":
+        preview.update({
+            "status": "unavailable",
+            "stage": "tessellation",
+            "reason": preview["reason"] or "worker returned no preview mesh",
+        })
+        return None, preview
+    try:
+        scene = SceneModel.from_build(result, ir)
+    except ValueError as exc:
+        issues = exc.errors() if hasattr(exc, "errors") else []
+        message = "; ".join(issue["msg"] for issue in issues) if issues else str(exc)
+        preview.update({
+            "status": "unavailable",
+            "stage": "scene_validation",
+            "reason": "preview scene validation failed: " + message,
+        })
+        return None, preview
+    return scene, preview
+
+
+def render_preview_note(preview: dict | None) -> str:
+    """The model-facing sentence for a preview status, or "" when there is none.
+
+    Carries the facts a repair needs and nothing a repair does not: the stage,
+    the error class, the actual counts against the limits, the bodies that
+    spent the budget, and the recovery options. Deleting structure is never
+    one of them — the CAD result is not in question.
+    """
+    if not preview or preview.get("status") in (None, "ok", "unknown"):
+        return ""
+    counts = preview.get("counts") or {}
+    limits = preview.get("limits") or {}
+    bodies = preview.get("bodies") or []
+    if preview["status"] == "degraded":
+        return (
+            f"PREVIEW DEGRADED — the saved preview was regenerated at tolerance "
+            f"{preview.get('tolerance')} mm (coarser than the default) so it fits the "
+            f"viewport budget ({limits.get('vertices')} vertices / {limits.get('facets')} facets). "
+            f"The CAD result, exports and parametric history are unchanged. No repair needed."
+        )
+    stage = _UNAVAILABLE_STAGES.get(preview.get("stage"), preview.get("stage") or "unknown")
+    kind = ("preview_mesh_limit" if preview.get("stage") != "scene_validation"
+            else "preview_scene_invalid")
+    vertices, facets = counts.get("vertices"), counts.get("facets")
+    measured = (f"actual: {vertices} vertices, {facets} facets; " if vertices is not None else "")
+    parts = "; ".join(
+        f"body {b.get('body_id')} spent {b.get('vertices')} vertices/{b.get('facets')} facets"
+        for b in bodies[:3]) or "per-body counts unavailable"
+    return (
+        "PREVIEW UNAVAILABLE — this is a PREVIEW failure, not a CAD build failure. "
+        "The geometry compiled, the exports are valid and the Gate still graded them; "
+        "only the viewport scene could not be published.\n"
+        f"  stage: {stage}\n"
+        f"  type: {kind} ({measured}limit: {limits.get('vertices')} vertices, "
+        f"{limits.get('facets')} facets)\n"
+        f"  main contributors: {parts}\n"
+        f"  reason: {preview.get('reason') or 'mesh exceeds the viewport budget'}\n"
+        "  recovery (do NOT delete structural features to shrink a triangle count): "
+        "reduce near-coincident or tightly curved profile edges on the named bodies, "
+        "split an over-detailed decorative feature into its own description, or accept the "
+        "coarser preview by committing again — the CAD result itself needs no change."
+    )

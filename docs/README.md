@@ -10,6 +10,7 @@
 - [特征引用](feature-references.md)：特征树、面边引用和选择身份。
 - [功能验收](functional-acceptance.md)：需求复核与完成条件。
 - [提示冻结与独立评测](generalization-evaluation.md)：按需流程、固定基线和真实模型验收边界。
+- [小模型固定回归评测](small-model-regression.md)：固定任务集、重复运行的流水线指标与独立验收边界。
 - [Agent 运行时加固](agent-runtime-hardening.md)：预算、重试和停滞检测。
 - [权限模式](access-modes.md)：访问与工具权限配置。
 

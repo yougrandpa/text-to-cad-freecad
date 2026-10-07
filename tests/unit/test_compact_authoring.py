@@ -202,3 +202,48 @@ async def test_tube_to_cylinder_is_rejected_atomically_and_tube_updates_work(tmp
         assert result.ok,result.error
         assert all(len(body.features)==1 for body in services.store.load('m').bodies)
     finally: services.worker.close()
+
+
+def test_an_unknown_recipe_shape_answers_with_every_valid_shape():
+    tools=build_authoring_tools(SimpleNamespace())
+    problems=check({'parts':[{'id':'x','body_id':'x','shape':'wing'}],'reason':'Make'},
+                   tools['cad_build_parts'].params_schema)
+    assert problems and 'wing' in problems[0]
+    for shape in ('box','cylinder','tube','beam','loft','rotor'):
+        assert shape in problems[0], f"合法形状 {shape} 没有出现在报错里"
+
+
+def test_rebuilding_an_assembly_referenced_body_names_the_escape_path():
+    """The interlock observed live: recipes refuse a used body, and the assembly
+    refuses its removal — the escape path (clear, rebuild, reconfigure) must be
+    named at the first refusal, not discovered after four rounds."""
+    from tcad.ir.schema import IrDocument, BodySpec, FeatureSpec
+    from tcad.ir.assembly import AssemblySpec
+    from tcad.tools.authoring import _check_body_rules
+    ir=IrDocument(model_id='m',bodies=[BodySpec(id='landing',name='landing',
+        features=[FeatureSpec(id='skid',name='skid',op='additive_box')])])
+    part=SimpleNamespace(id='skid',body_id='landing',shape='box')
+    with pytest.raises(ValueError,match='already contains geometry') as plain:
+        _check_body_rules(part,ir,{})
+    assert 'set_assembly' not in str(plain.value)
+    ir.assembly=AssemblySpec(grounded=['landing'])
+    with pytest.raises(ValueError,match='set_assembly assembly=null') as referenced:
+        _check_body_rules(part,ir,{})
+    assert 'rebuild' in str(referenced.value) and 'reconfigure' in str(referenced.value)
+
+
+def test_an_assembly_mismatch_patch_hint_names_clear_rebuild_reconfigure():
+    from tcad.ir.schema import IrDocument, IrPatch, BodySpec
+    from tcad.ir.patch import apply_patch, PatchError
+    from tcad.ir.assembly import AssemblySpec
+    ir=IrDocument(model_id='m',bodies=[BodySpec(id='base',name='base'),BodySpec(id='rot',name='rot')])
+    ir.assembly=AssemblySpec(grounded=['base'],joints=[{'id':'axis','type':'Revolute',
+        'side1':{'body_id':'base','position':[0,0,0],'axis':[0,0,1]},
+        'side2':{'body_id':'rot','position':[0,0,0],'axis':[0,0,1]}}])
+    with pytest.raises(PatchError) as excinfo:
+        apply_patch(ir,IrPatch(base_version=0,ops=[
+            {'op':'remove_body','target_id':'rot','reason':'Rebuild the rotor'}]))
+    error=excinfo.value.error
+    assert 'assembly references unknown bodies' in error.message
+    assert 'set_assembly' in error.hint and 'null' in error.hint
+    assert 'reconfigure' in error.hint

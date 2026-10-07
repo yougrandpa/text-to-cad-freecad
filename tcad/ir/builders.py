@@ -5,6 +5,12 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+#: Default for the non-geometric ``reason`` field of compact recipe calls.
+#: The marker ("auto:") keeps the audit log honest about which reasons the
+#: model actually wrote and which a default filled in. Dimensions, axes and
+#: confirmed constraints are never defaulted — only provenance text is.
+AUTO_REASON = "auto: compact recipe (model supplied no reason)"
+
 
 class PolarCopies(BaseModel):
     model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
@@ -27,6 +33,34 @@ class LoftSection(BaseModel):
         if min(self.radii) <= 0:
             raise ValueError('section radii must be positive semi-axes')
         return self
+
+
+class AttachSpec(BaseModel):
+    """Place this part against an EARLIER part in the same call.
+
+    ``where`` names an anchor point derived from the target's *declared*
+    geometry (its center/size/start/end) — deterministic arithmetic, no BRep
+    measurement and no model-side coordinate math. ``offset`` nudges the
+    result in world millimetres.
+
+    Anchors (a shape refuses the ones it does not define):
+      box: center, top, bottom, left, right, front, back
+      cylinder/tube/beam/loft/rotor: center, start, end, top(=end), bottom(=start)
+    """
+
+    model_config = ConfigDict(extra='forbid', allow_inf_nan=False)
+    to: str = Field(pattern=r'^[A-Za-z][A-Za-z0-9_]{0,40}$')
+    where: Literal['center', 'top', 'bottom', 'left', 'right', 'front', 'back',
+                   'start', 'end'] = 'center'
+    offset: list[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0],
+                                min_length=3, max_length=3)
+
+
+_ALIGN_VECTORS = {'X': [1, 0, 0], '-X': [-1, 0, 0],
+                  'Y': [0, 1, 0], '-Y': [0, -1, 0],
+                  'Z': [0, 0, 1], '-Z': [0, 0, -1]}
+AnchorName = Literal['center', 'top', 'bottom', 'left', 'right', 'front', 'back',
+                     'start', 'end']
 
 
 class PartRecipe(BaseModel):
@@ -52,6 +86,34 @@ class PartRecipe(BaseModel):
     thickness: float | None = Field(default=None, gt=0)
     hub_radius: float | None = Field(default=None, gt=0)
     copies: PolarCopies | None = None
+    # ── relation expressions the builder resolves for the model ──────────
+    # Positions/axes stop being hand-computed coordinates: `attach` puts this
+    # part against an earlier part's anchor, `align`+`length` gives a
+    # cylinder/beam its direction without a second endpoint.
+    attach: AttachSpec | None = None
+    anchor: AnchorName | None = None
+    align: Literal['X', '-X', 'Y', '-Y', 'Z', '-Z'] | None = None
+    length: float | None = Field(default=None, gt=0)
+
+    @model_validator(mode='before')
+    @classmethod
+    def attach_origin_default(cls, data):
+        """A part placed by ``attach`` supplies its own local origin.
+
+        The anchor arithmetic is translation-invariant: the final position
+        depends only on the anchor pair, so the model does not need to invent
+        a nominal coordinate for the fields the anchors are computed from.
+        """
+        if isinstance(data, dict) and data.get('attach') is not None:
+            shape = data.get('shape')
+            defaults = {}
+            if shape == 'box' and data.get('center') is None:
+                defaults['center'] = [0.0, 0.0, 0.0]
+            if shape in {'cylinder', 'tube', 'beam'} and data.get('start') is None:
+                defaults['start'] = [0.0, 0.0, 0.0]
+            if defaults:
+                return {**data, **defaults}
+        return data
 
     @model_validator(mode='after')
     def dimensions(self):
@@ -60,15 +122,30 @@ class PartRecipe(BaseModel):
                 'beam': {'start', 'end', 'width', 'depth'},
                 'loft': {'sections', 'section_axis'},
                 'rotor': {'center', 'axis', 'radius', 'blade_count', 'blade_width', 'thickness', 'hub_radius'}}[self.shape]
+        if self.align is not None:
+            if self.shape not in {'cylinder', 'tube', 'beam'}:
+                raise ValueError('align applies to cylinder/tube/beam; box/loft/rotor carry their own orientation')
+            if self.length is None:
+                raise ValueError('align needs length: a direction alone does not define the solid')
+            if self.end is not None:
+                raise ValueError('use either end or align+length, not both')
+            used = (used - {'end'}) | {'align', 'length'}
+        elif self.length is not None:
+            raise ValueError('length only applies together with align')
         fields = {'center','size','start','end','radius','inner_radius','width','depth',
-                  'sections','section_axis','axis','blade_count','blade_width','thickness','hub_radius'}
+                  'sections','section_axis','axis','blade_count','blade_width','thickness','hub_radius',
+                  'align','length'}
         for field in fields:
             if (getattr(self, field) is not None) != (field in used):
                 raise ValueError(f'{self.shape} requires exactly {sorted(used)}; invalid/missing {field}')
         if self.size and min(self.size) <= 0:
             raise ValueError('box size must be positive')
-        if self.start and math.dist(self.start, self.end) <= 1e-8:
+        if self.start and self.end and math.dist(self.start, self.end) <= 1e-8:
             raise ValueError('start and end must differ')
+        if self.anchor is not None and self.attach is None:
+            raise ValueError('anchor only applies together with attach')
+        if self.attach is not None and self.copies is not None:
+            raise ValueError('attach cannot combine with copies; attach places one part, copies repeat it')
         if self.shape == 'tube' and (self.inner_radius >= self.radius or self.operation == 'cut'):
             raise ValueError('tube requires inner_radius < radius and operation=add')
         if self.copies and math.hypot(*self.copies.axis) <= 1e-12:
@@ -94,7 +171,7 @@ class PartRecipe(BaseModel):
 class BuildParts(BaseModel):
     model_config = ConfigDict(extra='forbid')
     parts: list[PartRecipe] = Field(min_length=1, max_length=40)
-    reason: str = Field(min_length=1)
+    reason: str = Field(default=AUTO_REASON)
     base_version: int | Literal['current'] = 'current'
 
 
@@ -125,12 +202,130 @@ def _composed_rotation(placement: dict, axis: list[float], angle: float) -> dict
     return {'axis': dict(zip('xyz', direction)), 'angle': theta}
 
 
+# ─── relation resolution: deterministic anchor arithmetic ─────────────────
+#
+# `attach`/`align` remove coordinate arithmetic from the model's job. The model
+# says "put the lid on the base"; the builder computes the translation from the
+# parts' DECLARED geometry — the same numbers that generate the IR — so nothing
+# here measures or guesses, and the result is an ordinary IR patch.
+
+
+def _axis_unit(part):
+    """(unit axis, end point) for an axis-shaped part; align-aware."""
+    if part.shape in {'cylinder', 'tube', 'beam'}:
+        end = part.end
+        if end is None:
+            direction = _ALIGN_VECTORS[part.align]
+            end = [part.start[i] + direction[i]*part.length for i in range(3)]
+        delta = [end[i]-part.start[i] for i in range(3)]
+        norm = math.hypot(*delta)
+        return [d/norm for d in delta], end
+    if part.shape == 'rotor':
+        norm = math.hypot(*part.axis)
+        return [a/norm for a in part.axis], None
+    if part.shape == 'loft':
+        index = 'XYZ'.index(part.section_axis)
+        delta = part.sections[-1].center[index] - part.sections[0].center[index]
+        direction = [0.0, 0.0, 0.0]
+        direction[index] = 1.0 if delta >= 0 else -1.0
+        return direction, None
+    return [0.0, 0.0, 1.0], None
+
+
+def _anchor_point(part, name):
+    if part.shape == 'box':
+        c, s = part.center, part.size
+        points = {
+            'center': c,
+            'top': [c[0], c[1], c[2]+s[2]/2], 'bottom': [c[0], c[1], c[2]-s[2]/2],
+            'right': [c[0]+s[0]/2, c[1], c[2]], 'left': [c[0]-s[0]/2, c[1], c[2]],
+            'back': [c[0], c[1]+s[1]/2, c[2]], 'front': [c[0], c[1]-s[1]/2, c[2]],
+        }
+    elif part.shape in {'cylinder', 'tube', 'beam'}:
+        _, end = _axis_unit(part)
+        mid = [part.start[i]+(end[i]-part.start[i])/2 for i in range(3)]
+        points = {'center': mid, 'start': list(part.start), 'end': list(end),
+                  'bottom': list(part.start), 'top': list(end)}
+    elif part.shape == 'loft':
+        first, last = part.sections[0].center, part.sections[-1].center
+        mid = [(first[i]+last[i])/2 for i in range(3)]
+        points = {'center': mid, 'start': list(first), 'end': list(last),
+                  'bottom': list(first), 'top': list(last)}
+    else:
+        c = part.center
+        u, _ = _axis_unit(part)
+        top = [c[i]+u[i]*part.thickness/2 for i in range(3)]
+        bottom = [c[i]-u[i]*part.thickness/2 for i in range(3)]
+        points = {'center': list(c), 'top': top, 'end': top, 'bottom': bottom, 'start': bottom}
+    if name not in points:
+        raise ValueError(f'{part.shape} {part.id!r} has no {name!r} anchor; use {sorted(points)}')
+    return points[name]
+
+
+def _default_anchor(part):
+    return 'start' if part.shape in {'cylinder', 'tube', 'beam'} else 'center'
+
+
+def _shift(value, delta):
+    return [value[i]+delta[i] for i in range(3)]
+
+
+def _translated(part, delta):
+    if part.shape in {'box', 'rotor'}:
+        return part.model_copy(update={'center': _shift(part.center, delta)})
+    if part.shape in {'cylinder', 'tube', 'beam'}:
+        update = {'start': _shift(part.start, delta)}
+        if part.end is not None:
+            update['end'] = _shift(part.end, delta)
+        return part.model_copy(update=update)
+    sections = [section.model_copy(update={'center': _shift(section.center, delta)})
+                for section in part.sections]
+    return part.model_copy(update={'sections': sections})
+
+
+def resolve_attachments(parts):
+    """Normalize ``align`` into an endpoint, then place every ``attach`` part.
+
+    Targets must be declared EARLIER in the same call: a deterministic builder
+    can only anchor to geometry whose numbers it already knows, and "the part
+    I mention below" is not knowable. Attaching to a repeated part is refused
+    for the same reason — there is no single anchor to mean.
+
+    Idempotent: a resolved part carries ``attach=None`` and a concrete
+    ``end``, so calling this again (the handler resolves once, then each
+    per-part ``parts_patch`` pass repeats it) changes nothing.
+    """
+    resolved, placed = [], {}
+    for part in parts:
+        if part.attach is not None:
+            target = placed.get(part.attach.to)
+            if target is None:
+                raise ValueError(
+                    f'attach target {part.attach.to!r} must be an EARLIER part in the same call; '
+                    f'declared so far: {sorted(placed) or "none"}')
+            if target.copies is not None:
+                raise ValueError(f'attach target {part.attach.to!r} is a repeated part; attach to a single part')
+            where = _anchor_point(target, part.attach.where)
+            own = _anchor_point(part, part.anchor or _default_anchor(part))
+            delta = [where[i]-own[i]+part.attach.offset[i] for i in range(3)]
+            # The relation is spent: the resolved part carries ordinary
+            # coordinates, so a second pass over it resolves nothing further.
+            part = _translated(part, delta).model_copy(update={'attach': None, 'anchor': None})
+        if part.align is not None:
+            direction = _ALIGN_VECTORS[part.align]
+            end = [part.start[i]+direction[i]*part.length for i in range(3)]
+            part = part.model_copy(update={'end': end, 'align': None, 'length': None})
+        placed[part.id] = part
+        resolved.append(part)
+    return resolved
+
+
 def parts_patch(request: BuildParts, existing):
     bodies = set(existing); ops = []; created = []
     def feature(body, id, op, params, placement):
         ops.append({'op':'add_feature', 'payload':{'body_id':body,'id':id,'name':id,
-            'op':op,'params':params,'placement':placement}, 'reason':request.reason})
-    for part in request.parts:
+            'op':op,'params':params,'placement':placement,'recipe_id':part.id}, 'reason':request.reason})
+    for part in resolve_attachments(request.parts):
         if part.shape in {'loft', 'rotor'}:
             body = part.body_id
             if body not in bodies:
@@ -156,6 +351,7 @@ def parts_patch(request: BuildParts, existing):
                         'constraints':[{'type':'Block','refs':[0]}]},'reason':request.reason})
                     sketches.append(sketch)
                 ops.append({'op':'add_feature','payload':{'id':part.id,'name':part.id,'body_id':body,
+                    'recipe_id':part.id,
                     'op':'additive_loft' if part.operation == 'add' else 'subtractive_loft',
                     'profile_sketch':sketches[0],'sections':sketches[1:],
                     'params':{'ruled':part.ruled,'closed':False}},'reason':request.reason})

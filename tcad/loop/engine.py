@@ -283,6 +283,11 @@ class LoopEngine:
         self._access_mode = None
         self._authoring_topics = set()
         self._authoring_workflows = set()
+        #: Feature ops whose scoped field set is exposed on ir_patch, most
+        #: recently requested last (task P1-3: help unlocks fields, not tables).
+        self._authoring_features: list[str] = []
+        #: Tool name -> schema-rejected call kept for local repair (task P0-2).
+        self._retained_calls: dict[str, dict] = {}
 
     # ─── hook dispatch ────────────────────────────────────────────────────
 
@@ -319,6 +324,11 @@ class LoopEngine:
                 tool=copy.deepcopy(tool)
                 items=tool['function']['parameters']['properties']['ops']['items']
                 items['anyOf']=[b for b in items['anyOf'] if b['properties']['op']['enum'][0] in selected]
+                if self._authoring_features and selected & {'add_feature','update_feature'}:
+                    # Only the fields of the operation(s) help was actually read
+                    # for. The full table stays one `ir_help` call away.
+                    from tcad.tools.feature_scope import scope_branches
+                    items['anyOf']=scope_branches(items['anyOf'], self._authoring_features)
             result.append(tool)
         return result
 
@@ -430,6 +440,7 @@ class LoopEngine:
         self._last_commit_passed = False
         self._candidate_reports = []
         self._repeated_failures = RepeatedFailures(self.config.repeated_tool_failure_limit)
+        self._retained_calls = {}
         self._current_user_message = user_msg
         self._completion_review = None
         self._request_text = None
@@ -448,6 +459,7 @@ class LoopEngine:
         self.budget = Budget(self.budget_limits)
         self._authoring_topics = set()
         self._authoring_workflows = set()
+        self._authoring_features = []
 
         # pre_turn hook (quota / content-safety pre-check).
         #
@@ -716,6 +728,7 @@ class LoopEngine:
         halt_after_this = False
         for idx, tc in enumerate(reply.tool_calls):
             spec = self.registry.get(tc.name)
+            call_args = tc.args
             if tc.name == "ir_commit":
                 # The most recent attempted commit owns the verification state.
                 # A failed recommit cannot reuse an earlier green report.
@@ -756,6 +769,13 @@ class LoopEngine:
                     )
                 )
             else:
+                # Local repair (task P0-2): a schema-rejected call is retained,
+                # and a reply that supplies ONLY the missing fields completes
+                # it. The merged payload then walks the ordinary path below —
+                # hook dispatch, access checks, validate_tool_args — so
+                # retention is a convenience for the model, never a bypass.
+                call_args, merged_from_retained = self._prepare_call_args(
+                    tc.name, tc.args, spec)
                 # Engine-managed visual-checkpoint hint consumed by geo_view.
                 # Set on THIS step's context, never on the shared services bundle:
                 # two concurrent turns share that bundle, so a commit in one
@@ -765,14 +785,14 @@ class LoopEngine:
                 )
                 if spec.tier == ToolTier.PRIVILEGED:
                     # privileged owns its own hook dispatch (triple gate).
-                    outcome = await execute_tool(spec, tc.args, ctx, allowed_tiers=allowed)
+                    outcome = await execute_tool(spec, call_args, ctx, allowed_tiers=allowed)
                 else:
                     hook_res = self._dispatch(
                         HookEvent.PRE_TOOL_USE,
                         {
                             "tool_name": tc.name,
                             "tier": spec.tier.value,
-                            "args": tc.args,
+                            "args": call_args,
                             "thread_id": turn.thread_id,
                             "turn_id": turn.turn_id,
                             "model_id": turn.model_id,
@@ -797,7 +817,7 @@ class LoopEngine:
                         # could never be let through. The id is surfaced in the
                         # message so a client knows what to POST /approvals.
                         approval_id = self._request_approval(
-                            tc.name, tc.args,
+                            tc.name, call_args,
                             thread_id=turn.thread_id, turn_id=turn.turn_id,
                         )
                         extra = (
@@ -820,13 +840,28 @@ class LoopEngine:
                         # Objective §5-D: "ASK 不能继续执行后续写操作".
                         halt_after_this = True
                     else:
-                        args = hook_res.mutated_args if hook_res.mutated_args is not None else tc.args
-                        outcome = await execute_tool(spec, args, ctx, allowed_tiers=allowed)
+                        if hook_res.mutated_args is not None:
+                            call_args = hook_res.mutated_args
+                        outcome = await execute_tool(spec, call_args, ctx, allowed_tiers=allowed)
+
+                # Retention bookkeeping runs for every executed call in this
+                # branch: a success clears the retained predecessor; a schema
+                # rejection keeps (or refreshes) it so the next reply can fill
+                # only the missing fields.
+                self._settle_retained_call(tc.name, call_args, spec, outcome,
+                                           completed=merged_from_retained)
 
             if tc.name == 'ir_help' and outcome.result.ok:
-                self._authoring_topics.add(tc.args.get('topic'))
-                if tc.args.get('topic') == 'workflow' and tc.args.get('workflow'):
-                    self._authoring_workflows.add(tc.args['workflow'])
+                self._authoring_topics.add(call_args.get('topic'))
+                if call_args.get('topic') == 'feature' and call_args.get('feature_op'):
+                    from tcad.tools.feature_scope import MAX_SCOPED_OPS
+                    op = call_args['feature_op']
+                    if op in self._authoring_features:
+                        self._authoring_features.remove(op)
+                    self._authoring_features.append(op)
+                    del self._authoring_features[:-MAX_SCOPED_OPS]
+                if call_args.get('topic') == 'workflow' and call_args.get('workflow'):
+                    self._authoring_workflows.add(call_args['workflow'])
             if tc.name == "design_review" and outcome.result.ok:
                 if not self.config.require_design_review:
                     outcome.result = ToolResult(ok=False, error=ToolError(
@@ -842,9 +877,26 @@ class LoopEngine:
                 else:
                     from tcad.loop.completion import DesignReview, validate_review
                     self._completion_review = validate_review(
-                        DesignReview.model_validate(tc.args), self.services.store.load(turn.model_id),
+                        DesignReview.model_validate(call_args), self.services.store.load(turn.model_id),
                         self._last_gate_report, self._request_text or "",
                     )
+                    # A recorded design degradation (a user-required planned part
+                    # that was lost or simplified) keeps the delivery a draft
+                    # pending acceptance, no matter how green the Gate is.
+                    try:
+                        from tcad.loop.intent import degradation_items
+                        degradations = degradation_items(
+                            self.config.data_dir, turn.model_id,
+                            self.services.store.load(turn.model_id))
+                    except Exception:  # noqa: BLE001 — review bookkeeping is best-effort
+                        degradations = []
+                    if degradations:
+                        self._completion_review["remaining_work"] = (
+                            list(self._completion_review["remaining_work"]) + degradations)
+                        self._completion_review["verified"] = False
+                        self._completion_review["note"] = (
+                            self._completion_review.get("note", "")
+                            + " 设计退化已记录；交付保持待审草稿。").strip()
                     outcome.result = ToolResult(ok=True, content=json.dumps(self._completion_review, ensure_ascii=False))
                     gate_report = self._last_gate_report
                     if not self._completion_review["verified"]:
@@ -944,7 +996,7 @@ class LoopEngine:
                             outcome.gate_report.blocking_failures, sort_keys=True
                         ),
                     )
-                repeats = self._repeated_failures.record(tc.name, tc.args, effective_error, current_version)
+                repeats = self._repeated_failures.record(tc.name, call_args, effective_error, current_version)
                 limit = self.config.repeated_tool_failure_limit
                 if limit is not None and repeats >= limit:
                     turn.state = TurnState.FAILED
@@ -1281,6 +1333,73 @@ class LoopEngine:
             request_text=self._request_text,
             access_mode=self._access_mode,
             edit_precondition=self._edit_precondition,
+        )
+
+    # ─── retained rejected calls (local repair, task P0-2) ────────────────
+    #
+    # A call rejected for missing fields used to be erased. The model's only
+    # recorded remedy was to re-send the whole payload — and rewriting a long
+    # batch is exactly where parts/topic-class field swaps creep in (observed:
+    # a compact-recipe batch came back with its `parts` written into `topic`).
+    # So the rejected call is kept, and a later reply that supplies only the
+    # missing fields completes it through the ordinary checks.
+
+    def _prepare_call_args(self, name: str, args: dict, spec) -> tuple[dict, bool]:
+        """Merge a partial retry with the call it is completing.
+
+        Returns ``(args_to_run, merged)``. A retry containing only missing
+        required fields completes the retained call; a complete replacement
+        supersedes it. Other incomplete calls merge over it. The
+        merged payload is what the hook dispatch, access checks and
+        ``validate_tool_args`` see — there is no separate trust path.
+        """
+        from tcad.tools.schema_check import validate_tool_args
+
+        retained = self._retained_calls.get(name)
+        if not retained or not isinstance(args, dict):
+            return args, False
+        missing = set(spec.params_schema.get('required') or []) - set(retained)
+        if missing and set(args) <= missing:
+            return {**retained, **args}, True
+        if not validate_tool_args(args, spec):
+            self._retained_calls.pop(name, None)  # a complete call replaces it
+            return args, False
+        return {**retained, **args}, True
+
+    def _settle_retained_call(self, name: str, args: dict, spec, outcome, *, completed: bool) -> None:
+        """Keep a call rejected for missing fields; clear it on success."""
+        error = outcome.result.error
+        if outcome.result.ok:
+            if completed:
+                self._retained_calls.pop(name, None)
+                outcome.result.content = (
+                    "(completed the retained call with only its missing fields) "
+                    + (outcome.result.content or ""))
+            return
+        if error is None or error.kind != ToolErrorKind.SCHEMA:
+            if completed:
+                self._retained_calls.pop(name, None)
+            return
+        from tcad.tools.schema_check import validate_tool_args
+
+        missing = []
+        for problem in validate_tool_args(args, spec):
+            marker = "missing required property "
+            index = problem.find(marker)
+            if index < 0:
+                missing = []  # a type/shape error is not repaired by adding fields
+                break
+            missing.append(problem[index + len(marker):].strip().split(" ")[0].strip("'"))
+        if not missing:
+            self._retained_calls.pop(name, None)
+            return
+        self._retained_calls[name] = dict(args)
+        fields = ", ".join(sorted(set(missing)))
+        error.hint = (
+            f"The call was REJECTED but RETAINED untouched. Reply with ONLY the missing "
+            f"field(s): {fields}. They are merged into the retained call and re-validated "
+            f"before anything runs — do not resend the fields that already parsed, and do "
+            f"not rewrite the payload from scratch."
         )
 
     def _request_approval(

@@ -58,6 +58,46 @@ OCC 的光滑曲面包围盒可能保守，仍需测量或渲染实际产物。
 `cad_wheel`；普通旋翼的原生关节/驱动使用 `ir_help(topic=assembly)` 与
 `assembly_configure`，重力吊舱才使用 `assembly_motion`。
 
+## 统一的创建 / 更新规则
+
+每个配方批次对 Body 只有四种合法关系：不存在则创建；已存在但为空则填充；本工具生成的
+配方按稳定 ID 重发即更新；其余（Body 已有本批次未在更新的几何、引用组件、自定义特征）
+一律按名称明确拒绝，保护自定义修改。新配方材料请使用新的 `body_id`，自定义几何继续用
+`ir_patch`。`reason` 这类非几何元数据可省略，缺省值带 `auto:` 来源标记；尺寸、轴向与
+确认约束仍需显式给出。
+
+## 关系表达（attach / align）
+
+部件之间不再依赖手算坐标：
+
+- `attach = {to, where, offset}` 把本部件按锚点对齐到**同一批请求中更早声明**的部件。
+  `where` 是目标锚点，`anchor` 是本部件锚点（省略时 cylinder/tube/beam 默认 `start`，
+  其余默认 `center`）。`offset` 为世界毫米微调。
+  锚点由声明的几何确定性推导，不做 BRep 测量：
+  - box：`center`、`top/bottom/left/right/front/back`；
+  - cylinder/tube/beam/loft/rotor：`center`、`start`、`end`、`top`(=end)、`bottom`(=start)。
+  同一批请求内允许链式引用（后一个部件可以 attach 到前一个已对齐的部件）。
+- 方向表达：`align = X|Y|Z|-X|-Y|-Z` 配 `length`，为 cylinder/tube/beam 指定
+  方向与长度，无需第二个端点。
+- 被 `attach` 放置的 box 可以省略 `center`，cylinder/tube/beam 可以省略 `start`：
+  定位由锚点运算决定，模型不需要发明一个占位坐标。
+
+```json
+{
+  "parts": [
+    {"id": "base", "body_id": "frame", "shape": "box", "center": [0, 0, 0], "size": [20, 20, 4]},
+    {"id": "lid", "body_id": "frame", "shape": "box", "size": [20, 20, 2],
+     "attach": {"to": "base", "where": "top"}, "anchor": "bottom"},
+    {"id": "post", "body_id": "frame", "shape": "cylinder", "radius": 1,
+     "align": "Z", "length": 6, "attach": {"to": "lid", "where": "top"}}
+  ],
+  "reason": "底座上放盖板，盖板顶面上立一根立柱"
+}
+```
+
+向前引用、对重复（`copies`）部件 attach、或与 `copies` 同时使用 attach 都会被
+明确拒绝并给出原因；重复结构仍优先使用既有极坐标复制。
+
 ## 编辑与反馈
 
 重发原来的 `id`、`body_id` 及新尺寸，工具原子更新已有特征和截面；不要用新 ID

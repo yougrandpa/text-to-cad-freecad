@@ -110,6 +110,16 @@ def check(args: Any, schema: dict, *, path: str = "arguments", root: dict | None
                     matching = [b for b in branches if args[discriminator] in b.get('properties', {}).get(discriminator, {}).get('enum', [])]
                     if len(matching) == 1:
                         return check(args, matching[0], path=path, root=root)
+                    if not matching:
+                        # A value that matches NO branch must answer with the FULL
+                        # legal set. Reporting the "closest" branch's single enum
+                        # value instead told a live model that `['add_body']` was
+                        # the whole operation set — it nearly abandoned legal
+                        # edits (set_assembly/remove_body) it had already used.
+                        allowed = sorted({value for branch in branches
+                                          for value in branch.get('properties', {}).get(discriminator, {}).get('enum', [])})
+                        if allowed:
+                            return [f"{path}: {_describe(args[discriminator])} is not one of {allowed}"]
             attempt = [check(args, b, path=path, root=root) for b in branches]
             if not any(not a for a in attempt):
                 # Prefer the value's actual type, then the fewest problems.

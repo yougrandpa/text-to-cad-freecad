@@ -71,3 +71,32 @@ Final integrated run (2026-10-02): **1,252 Python tests passed, 6 skipped**;
 **17 Node frontend runtime tests passed**. Compileall and whitespace checks
 passed. The six skips remain four unconfigured commercial-provider checks,
 one macOS backend check, and one legacy embedded-FreeCADCmd flag probe.
+
+## Local repair and design intent (P0-2 / P1-5)
+
+Two additions to the same bounded loop:
+
+- **Retained rejected calls.** A call rejected for *missing* fields is kept
+  (`LoopEngine._retained_calls`); a later reply that supplies only the missing
+  fields is merged over the retained payload and re-runs the ordinary path —
+  hook dispatch, access checks, schema validation — so retention is a
+  convenience for the model, never a bypass. Observed motivation: a model
+  told to "resend the payload" rewrote a compact-recipe batch and swapped its
+  `parts` value into `topic`. A complete call supersedes the retained one;
+  the state resets each turn; type errors are never accumulated.
+- **Part plan + intent check.** `ir_plan` records a short part plan
+  (goal + origin: user/model) when the design starts; `ir_commit` compares it
+  against the built IR and reports planned-but-missing parts, and a
+  user-required part the model marked simplified/dropped is a *design
+  degradation* — recorded in the commit notes and appended to the completion
+  review's remaining work, which keeps the delivery a draft pending
+  acceptance. A user-required curvature goal whose features are all straight
+  primitives raises an advisory "verify visually". The same check aggregates
+  blocking failure classes across recorded gate reports: the same class
+  recurring after several edits is named by count, so "a new IR version" is
+  not read as recovery. Geometry validity, visual conformance and physical
+  performance remain separately accepted.
+
+Compact recipe features persist their `recipe_id` in the IR, so rotor and
+polar-copy plans match their generated features even after renaming. Matching
+uses this recorded identity rather than guessing from feature-name prefixes.

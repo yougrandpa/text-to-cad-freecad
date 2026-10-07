@@ -110,6 +110,27 @@ def test_force_refresh_never_rebuilds_geometry_or_changes_tolerance(client):
     assert not client.services.worker.calls
 
 
+def test_degraded_scene_is_served_with_its_actual_tolerance(client):
+    """A degraded preview is the best mesh this build has; serve it and say so.
+
+    The strict equality check still guards ordinary scenes (previous test);
+    what changes is that a scene explicitly marked degraded is served even to
+    a client that asked for the default fidelity, because refusing it would
+    leave a valid CAD result with no viewport at all.
+    """
+    from tcad.render.scene import SceneModel, ScenePreview
+    publish_scene(client.services.config.storage.data_dir, attempt="degraded",
+                  scene=SceneModel(mesh=tetra_mesh(volume=2, tolerance=1.2),
+                                   preview=ScenePreview(status="degraded", tolerance=1.2,
+                                                        reason="regenerated at 1.2 mm")))
+    response = client.get("/models/part/mesh", params={"tolerance": 0.5})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["mesh"]["tolerance"] == 1.2
+    assert body["preview"]["status"] == "degraded"
+    assert body["preview"]["tolerance"] == 1.2
+
+
 @pytest.mark.parametrize("query", ["version=-1", "version=nope", "tolerance=0", "tolerance=0.01", "tolerance=6", "tolerance=nan", "tolerance=inf"])
 def test_detail_and_version_inputs_are_bounded(client, query):
     assert client.get(f"/models/part/mesh?{query}").status_code == 422

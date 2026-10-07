@@ -26,6 +26,32 @@ def test_native_revolute_frames_and_grounded_part(worker,tmp_path):
     assert Path(result['export']).is_file()
 
 
+@pytest.mark.parametrize('method,first_z,last_z', [
+    ('solve_assembly', -10, -10),
+    ('simulate_assembly', 10, 20),
+])
+def test_native_preview_applies_solved_pose_once(worker, tmp_path, method, first_z, last_z):
+    from tcad.ir.animation import pose_frame
+
+    ir = native_ir()
+    if method == 'solve_assembly':
+        ir['assembly']['drivers'] = []
+        ir['assembly']['joints'][0]['type'] = 'Fixed'
+        ir['assembly']['joints'][0]['side2']['position'] = [0, 0, 10]
+    else:
+        ir['assembly']['joints'][0]['type'] = 'Slider'
+        ir['assembly']['drivers'] = [
+            {'joint_id': 'joint', 'type': 'Linear', 'formula': '10+10*time'}]
+    result = worker.request_sync(method, {'ir': ir, 'out_dir': str(tmp_path)}, timeout_s=180)
+    assert result['ok'], result
+    arm = next(part for part in result['parts'] if part['body_id'] == 'arm')
+    start, end = arm['vertex_start'], arm['vertex_start'] + arm['vertex_count']
+    for frame, expected_z in ((result['frames'][0], first_z), (result['frames'][-1], last_z)):
+        vertices = pose_frame(result['mesh']['vertices'], result['parts'], frame)[start:end]
+        assert min(point[2] for point in vertices) == pytest.approx(expected_z, abs=1e-5)
+        assert max(point[2] for point in vertices) == pytest.approx(expected_z + 1, abs=1e-5)
+
+
 @pytest.mark.parametrize('kind,drivers', [
     ('Slider',[{'joint_id':'joint','type':'Linear','formula':'10*time'}]),
     ('Cylindrical',[{'joint_id':'joint','type':'Angular','formula':'pi/2*time'},

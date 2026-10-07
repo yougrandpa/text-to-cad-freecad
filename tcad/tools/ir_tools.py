@@ -566,7 +566,8 @@ def _ir_patch_schema() -> dict:
         branches.append({'type':'object','additionalProperties':False,'required':required,'properties':{
             'op':{'type':'string','enum':[op]},'target_id':{'type':'string'},'payload':shape,'reason':{'type':'string','minLength':1}}})
     return {'type':'object','additionalProperties':False,'required':['base_version','ops'],'properties':{
-        'base_version':{'anyOf':[{'type':'integer'},{'type':'string','enum':['current']},{'type':'string','pattern':'^[0-9]+$'}]},
+        'base_version':{'anyOf':[{'type':'integer'},{'type':'string','enum':['current']},{'type':'string','pattern':'^[0-9]+$'}],
+            'description':'Pass "current" (the latest version when the patch applies — no read-back needed), or the integer you last read to detect stale edits; an explicit stale version is rejected, never rebased.'},
         'ops':{'type':'array','minItems':1,'items':{'anyOf':branches}},'summary':{'type':'string'}}}
 
 
@@ -596,7 +597,7 @@ def build_ir_tools(services: "Any") -> dict[str, ToolSpec]:
         **build_selection_tools(services),
         "assembly_configure": ToolSpec(
             name="assembly_configure", tier=ToolTier.WRITE,
-            description="Configure native FreeCAD Assembly: grounded body IDs, all 13 joint types, world connector positions/axes/roll, limits and time drivers. Replaces assembly declaration; null clears it. Clear prescribed body.motion first. Angular drivers target Revolute/Cylindrical; Linear target Slider/Cylindrical. Formula is native math in time (seconds); Angular uses radians (e.g. pi/2*time for 90 degrees/s), Linear mm, initialValue is supported. Gears/Belt distance and distance2 are positive pitch radii; RackPinion distance=pitch radius; Screw distance=native pitch. Native constraints must make the mechanism solvable; grounding graph alone does not prove solvability. Then ir_commit to build and save actual solver frames; assembly_simulate reads them. ir_commit still grades zero-pose part geometry separately.",
+            description="Configure native FreeCAD Assembly: grounded body IDs, all 13 joint types, world connector positions/axes/roll (mm; use the same connector on both sides to preserve the assembled pose), joint limits and time drivers. Joint angle/angle_min/angle_max are degrees; length limits are mm. Every body must build as exactly one connected solid or solid_count fails at ir_commit. Replaces assembly declaration; null clears it; to rebuild a referenced body, clear it first (set_assembly assembly=null), rebuild, then reconfigure. Clear prescribed body.motion first. Angular drivers target Revolute/Cylindrical; Linear target Slider/Cylindrical. Formula is native math in time (seconds); Angular uses radians (e.g. pi/2*time for 90 degrees/s), Linear mm, initialValue is supported. Gears/Belt distance and distance2 are positive pitch radii; RackPinion distance=pitch radius; Screw distance=native pitch. Native constraints must make the mechanism solvable; grounding graph alone does not prove solvability. Then ir_commit to build and save actual solver frames; assembly_simulate reads them. ir_commit still grades zero-pose part geometry separately.",
             params_schema={"type": "object", "additionalProperties": False, "required": ["assembly", "reason"],
                 "$defs": assembly_defs,
                 "properties": {"assembly": {"anyOf": [assembly_schema, {"type": "null"}]},
@@ -669,7 +670,9 @@ def build_ir_tools(services: "Any") -> dict[str, ToolSpec]:
             name="ir_commit",
             tier=ToolTier.WRITE,
             description=(
-                "Compile the current IR and run the Gate. Returns the GateReport. "
+                "Compile the current IR and run the Gate. Every body must build as exactly one "
+                "connected solid; disconnected lumps in one body fail solid_count — repair the "
+                "named body first. Returns the GateReport. "
                 "passed=true verifies the build, not completion of the full user request. "
                 "Continue missing features after intermediate commits, then call design_review. "
                 "If it fails, repair the named feature(s) and call ir_patch + ir_commit again."

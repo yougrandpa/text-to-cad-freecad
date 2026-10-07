@@ -37,3 +37,18 @@
 不把本次诊断答案写回全局提示。
 
 本轮记录：[冻结评测 v1](../review/generalization/results-v1.md)。
+
+## 按操作解锁 schema
+
+`ir_help(topic=feature, feature_op=X)` 之后的下一请求只携带该操作真正读取的字段
+（`tcad/tools/feature_scope.py`，规则取自 validator 的同一批表）：查询放样帮助后
+`add_feature`/`update_feature` 只列出 `profile_sketch`、`sections` 与该操作的参数键，
+其它操作字段不再出现。单个操作的 ir_patch 声明由约 16 KB 降至约 10 KB（−36%）；
+多个操作合并为一条并集分支，且当作用域化不会更小时自动回退到完整分支，保证不会反而变大。
+作用域只是呈现层：服务端仍按完整声明做参数校验。
+
+## 基线版本
+
+本轮修改了模型可见契约（新增 `ir_plan`、配方工具描述与作用域解锁），因此评测前需要
+冻结新的基线；旧基线按约定不再复用，不覆盖。基线包含运行配置，应在评测环境中生成。
+小模型固定回归集见 [小模型固定回归评测](small-model-regression.md)。

@@ -51,9 +51,6 @@ def simulate_assembly(ir=None, out_dir='', check_pairs=None, check_stride=1, sol
         doc = built['doc']
         assembly = doc.addObject('Assembly::AssemblyObject', 'Assembly')
         group = assembly.newObject('Assembly::JointGroup', 'Joints')
-        from tcad.worker.pick_mapping import PickMesh
-        indexed = PickMesh()
-        vertices, facets, ranges = indexed.vertices, indexed.facets, indexed.parts
         parts, initial = {}, {}
         for body in built['body_results']:
             part = assembly.newObject('Part::Feature', 'Component')
@@ -61,7 +58,6 @@ def simulate_assembly(ir=None, out_dir='', check_pairs=None, check_stride=1, sol
             part.Shape = body['shape'].copy()
             parts[body['id']] = part
             initial[body['id']] = part.Placement.copy()
-            indexed.add(body['id'], part.Shape, 0.5)
         for id in spec['grounded']:
             obj = group.newObject('App::FeaturePython', 'GroundedJoint')
             JointObject.GroundedJoint(obj, parts[id])
@@ -146,10 +142,28 @@ def simulate_assembly(ir=None, out_dir='', check_pairs=None, check_stride=1, sol
         path = os.path.join(out_dir, 'assembly.FCStd')
         doc.recompute()
         doc.saveAs(path)
-        return {'ok': True, 'mesh': {'vertices': vertices, 'facets': facets, 'vertex_count':len(vertices), 'facet_count':len(facets), 'bbox': _measure(built['result_shape'])['bbox'], 'volume': _measure(built['result_shape'])['volume'], 'tolerance':0.5}, 'pick_mapping': indexed.mapping(), 'parts': ranges,
-                'frames': frames, 'interferences':interferences if selected else None, 'frames_checked':frames_checked, 'start': spec['start'], 'step': spec['step'], 'export': path,
-                'solver': 'FreeCAD Assembly / OndselSolver',
-                'scope': 'Native kinematic joint solution; no contact forces or material removal.'}
+        # The solved frames are the CAD evidence; the mesh is the viewport's
+        # budget-bounded rendering of the same BRep. A mesh that cannot fit is
+        # reported as an unavailable preview, never as a solver failure.
+        from tcad.worker.preview import adaptive_pick_mesh, summarize
+        # Frame matrices are relative to the unsolved input. Tessellate that
+        # same geometry so rendering does not apply the solved placement twice.
+        result = adaptive_pick_mesh(
+            [(body['id'], body['shape']) for body in built['body_results']], 0.5)
+        preview = summarize(result)
+        payload = {'ok': True, 'preview': preview, 'mesh': None, 'pick_mapping': None, 'parts': [],
+                   'frames': frames, 'interferences':interferences if selected else None, 'frames_checked':frames_checked, 'start': spec['start'], 'step': spec['step'], 'export': path,
+                   'solver': 'FreeCAD Assembly / OndselSolver',
+                   'scope': 'Native kinematic joint solution; no contact forces or material removal.'}
+        if preview['status'] != 'unavailable':
+            indexed, chosen = result['pick_mesh'], result['tolerance']
+            measure = _measure(built['result_shape'])
+            payload.update({
+                'mesh': {'vertices': indexed.vertices, 'facets': indexed.facets,
+                         'vertex_count': len(indexed.vertices), 'facet_count': len(indexed.facets),
+                         'bbox': measure['bbox'], 'volume': measure['volume'], 'tolerance': chosen},
+                'pick_mapping': indexed.mapping(), 'parts': indexed.parts})
+        return payload
     finally:
         if not _extra.get("_built"):
             _close_doc(built['doc'])

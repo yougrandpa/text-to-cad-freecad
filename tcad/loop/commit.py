@@ -363,6 +363,7 @@ async def _build_and_grade(
     manifest_writer = getattr(services.store, "write_manifest", None)
     runtime = getattr(services, "build_runtime", None)
     pipeline_notes = []
+    preview_status: dict | None = None
     if runtime is not None:
         from tcad.build.components import ComponentBuildFailed
 
@@ -376,6 +377,10 @@ async def _build_and_grade(
             return _err(ToolErrorKind.RUNTIME, f"build runtime failed: {exc}"), None
         if not response.get("ok"):
             return _worker_error(response.get("error")), None
+        # The runtime published (or refused) the viewport scene while it built;
+        # carrying its status forward keeps the model-facing text truthful even
+        # though the scene step below regenerates the same scene.
+        preview_status = response.get("preview") or preview_status
         runtime.progress("gate", state="verifying")
     else:
         # 3. compile in the worker (FreeCAD — the only place that touches FreeCAD).
@@ -442,7 +447,7 @@ async def _build_and_grade(
         # commit protocol.
         manifest_writer = getattr(services.store, "write_manifest", None)
         if callable(manifest_writer):
-            from tcad.render.scene import SceneModel
+            from tcad.render.scene import preview_from_build
             if ir.assembly is not None:
                 method = "simulate_assembly" if ir.assembly.drivers else "solve_assembly"
                 params = {"ir": ir.model_dump(mode="json"), "out_dir": artifact_dir}
@@ -455,10 +460,24 @@ async def _build_and_grade(
             try:
                 response = await _worker_call(services, method, params, timeout_s=180.0)
                 if not response.get("ok"):
+                    # A hard worker error (bad document, solver failure) is a
+                    # build problem and still fails the commit. A mesh that
+                    # cannot fit the viewport budget no longer is one.
                     return _worker_error(response.get("error")), None
-                scene = SceneModel.from_build(response["result"], ir.model_dump(mode="json"))
-                await asyncio.to_thread((Path(artifact_dir) / "scene.json").write_text,
-                                        scene.model_dump_json(), encoding="utf-8")
+                try:
+                    scene, preview_status = preview_from_build(
+                        response["result"], ir.model_dump(mode="json"))
+                except Exception as exc:  # noqa: BLE001 — publication, not the build
+                    scene = None
+                    preview_status = {
+                        "status": "unavailable", "stage": "scene_validation",
+                        "reason": f"artifact scene generation failed: {type(exc).__name__}: {exc}"}
+                if scene is not None:
+                    await asyncio.to_thread((Path(artifact_dir) / "scene.json").write_text,
+                                            scene.model_dump_json(), encoding="utf-8")
+                elif preview_status.get("status") == "unavailable":
+                    pipeline_notes.append(
+                        "viewport preview unavailable — CAD result unaffected (see PREVIEW note below)")
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -539,6 +558,25 @@ async def _build_and_grade(
         text += "\n\nUpstream failures that hid the geometry from the Gate:\n" + "\n".join(
             f"  - {n}" for n in pipeline_notes
         )
+    from tcad.render.scene import render_preview_note
+    note = render_preview_note(preview_status)
+    if note:
+        text += "\n\n" + note
+    # Design intent is checked at every commit (task P1-5): which planned parts
+    # survived, which user-required ones were degraded, and whether the same
+    # failure class keeps returning across versions. This never changes the
+    # verdict — geometry validity, visual conformance and physical performance
+    # remain separately accepted.
+    data_dir = getattr(getattr(services, "config", None), "storage", None)
+    data_dir = getattr(data_dir, "data_dir", None)
+    if data_dir:
+        try:
+            from tcad.loop.intent import design_notes
+            notes = design_notes(data_dir, model_id, ir)
+        except Exception:  # noqa: BLE001 — intent bookkeeping must not fail a build
+            notes = ""
+        if notes:
+            text += "\n\n" + notes
     return (_ok(text), report)
 
 

@@ -265,7 +265,7 @@ def build_geo_tools(services: "Any") -> dict[str, ToolSpec]:
         ),
         "assembly_export": ToolSpec(
             name="assembly_export", tier=ToolTier.READ,
-            description="Export saved artifact animation as GIF, MP4, AVI or WebM; commit this version first or pin artifact_id. mode=motion exports solved motion (default); mode=assemble shows separated parts converging to their saved solved pose, mode=explode reverses it. Assembly presentation keeps grounded parts fixed and uses straight eased paths; it does not solve joints or validate assembly-path collisions. duration_s (default 3), frames (default 41) and explode_distance_mm (automatic by model size) apply to assemble/explode. Fixed camera bounds avoid frame-to-frame zoom; stride samples frames and includes the final pose. GIF needs Pillow, video optional PyAV and matching encoder.",
+            description="Export saved artifact animation as GIF, MP4, AVI or WebM; commit this version first, or pin an earlier artifact_id — otherwise the latest committed build is used. mode=motion exports solved motion (default); mode=assemble shows separated parts converging to their saved solved pose, mode=explode reverses it. Assembly presentation keeps grounded parts fixed and uses straight eased paths; it does not solve joints or validate assembly-path collisions. duration_s (default 3), frames (default 41) and explode_distance_mm (automatic by model size) apply to assemble/explode. Fixed camera bounds avoid frame-to-frame zoom; stride samples frames and includes the final pose. GIF needs Pillow, video optional PyAV and matching encoder.",
             params_schema={"type":"object", "additionalProperties":False, "properties":{"artifact_id":{"type":"string"},
                 "mode":{"type":"string","enum":["motion","assemble","explode"]},
                 "duration_s":{"type":"number","minimum":0.1,"maximum":60},
@@ -280,7 +280,7 @@ def build_geo_tools(services: "Any") -> dict[str, ToolSpec]:
         ),
         "assembly_simulate": ToolSpec(
             name="assembly_simulate", tier=ToolTier.READ,
-            description="Read saved native Assembly or gravity-pendulum animation frames. Returns compact summary, solver scope and measured max_swing_deg, not large frame arrays. Optional check_pairs performs sampled BRep overlap checks on saved poses, check_stride selects frames. Commit after edits. A clear sample set does not prove continuous clearance or contact forces; this is separate from the geometry Gate.",
+            description="Read saved native Assembly or gravity-pendulum animation frames (artifact_id optional; defaults to the latest committed build). Returns compact summary, solver scope and measured max_swing_deg, not large frame arrays. Optional check_pairs performs sampled BRep overlap checks on saved poses, check_stride selects frames. Commit after edits. A clear sample set does not prove continuous clearance or contact forces; this is separate from the geometry Gate.",
             params_schema={"type":"object", "additionalProperties":False, "properties":{"artifact_id":{"type":"string"},
                 "check_pairs":{"type":"array","minItems":1,"maxItems":100,"items":{"type":"array","minItems":2,"maxItems":2,"items":{"type":"string"}}},
                 "check_stride":{"type":"integer","minimum":1,"maximum":30}}},
@@ -324,11 +324,12 @@ def build_geo_tools(services: "Any") -> dict[str, ToolSpec]:
         "geo_measure": ToolSpec(
             name="geo_measure",
             tier=ToolTier.READ,
-            description="Read geometric measurements (volume/bbox/faces/edges/solids/holes) from a committed artifact. Optional artifact_id pins an earlier build; otherwise this IR version must already have an artifact. Never rebuilds the current IR. 'holes' are measured on the BRep and can disagree with the IR.",
+            description="Read geometric measurements (volume/bbox/faces/edges/solids/holes) from a committed artifact. `what` is an ARRAY of names, e.g. ['bbox','volume'] — a bare string is rejected; omitted returns volume/bbox/faces/edges/solids. Optional artifact_id pins an earlier build; otherwise this IR version must already have an artifact. Never rebuilds the current IR. 'holes' are measured on the BRep and can disagree with the IR.",
             params_schema={
                 "type": "object",
                 "properties": {
-                    "what": {"type": "array", "items": {"type": "string", "enum":["volume","area","bbox","faces","edges","solids","vertexes","shells","is_valid","shape_type","holes"]}},
+                    "what": {"type": "array", "items": {"type": "string", "enum":["volume","area","bbox","faces","edges","solids","vertexes","shells","is_valid","shape_type","holes"]},
+                             "description": "Measurement names to return, as an array (e.g. [\"bbox\",\"volume\"]); a bare string is rejected."},
                     "artifact_id": {"type": "string", "description": "sha256:<64 hex digits>"},
                 },
             },

@@ -252,6 +252,8 @@ class FeatureSpec(BaseModel):
     id: str
     name: str  # stable, human readable, e.g. "mounting_hole_1"
     op: FeatureOp
+    recipe_id: str | None = Field(default=None, pattern=r'^[A-Za-z][A-Za-z0-9_]{0,40}$',
+                                  description='Compact recipe provenance; does not alter geometry.')
     profile_sketch: str | None = None  # -> SketchSpec.id
     sections: list[str] = Field(default_factory=list)  # ordered additional loft SketchSpec IDs
     params: dict[str, Any] = Field(default_factory=dict)

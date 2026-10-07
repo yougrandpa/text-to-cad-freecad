@@ -269,3 +269,31 @@ def test_motion_angle_numeric_bounds_are_enforced(value):
 @pytest.mark.parametrize("value", [-720, 0, 720])
 def test_motion_angle_boundary_values_are_allowed(value):
     assert check(value, {"type": "number", "minimum": -720, "maximum": 720}) == []
+
+
+def test_an_unknown_op_answers_with_the_full_legal_set_not_one_branch():
+    """The anyOf's first branch is not the operation set.
+
+    A live session read `is not one of ['add_body']` as "only add_body is
+    legal" and nearly abandoned edits (set_assembly/remove_body) it had
+    already used successfully.
+    """
+    problems = check({'base_version': 'current', 'ops': [
+        {'op': 'made_up_op', 'payload': {}, 'reason': 'probe'}]}, _ir_patch_schema())
+    assert len(problems) == 1 and 'made_up_op' in problems[0]
+    for op in ('add_body', 'update_body', 'remove_body', 'set_assembly', 'add_sketch'):
+        assert op in problems[0], f"{op} missing from the legal-set answer"
+
+
+async def test_a_write_tool_in_an_inspect_turn_points_at_the_right_turn_kind():
+    """The denial must name the remedy; a bare "not permitted" cost a probe."""
+
+    async def handler(args, ctx):
+        return ToolResult(ok=True, content="ran")
+
+    spec = ToolSpec(name="design_review", tier=ToolTier.WRITE, description="d",
+                    params_schema={"type": "object"}, handler=handler)
+    outcome = await execute_tool(spec, {}, _ctx(), allowed_tiers={ToolTier.READ})
+    assert outcome.result.ok is False
+    assert outcome.result.error.kind == ToolErrorKind.DENIED
+    assert "create or modify turn" in (outcome.result.error.hint or "")

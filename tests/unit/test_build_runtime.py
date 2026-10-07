@@ -29,22 +29,37 @@ def test_cross_body_dependencies_require_joint_build(reference):
     assert not requires_joint_build(ir)
 
 
-def test_component_preview_limit_error_names_body_and_retains_actionable_hint(tmp_path):
-    from tcad.build.components import compile_components, ComponentBuildFailed
+def test_component_preview_over_budget_never_fails_the_component(tmp_path):
+    """A mesh over the viewport budget is a PREVIEW problem, not a build one.
+
+    The worker normally regenerates previews adaptively; when a worker still
+    hands back an over-limit scene, the supervisor must record the preview as
+    unavailable (without publishing a scene) and keep the compiled component —
+    the CAD body and its FCStd are what the next stage consumes.
+    """
+    from pathlib import Path
+    from tcad.build.components import compile_components
     from tcad.render.scene import MAX_SCENE_VERTICES
-    runtime = SimpleNamespace(compiler="test", pool=SimpleNamespace(handles=[1], cancel_owner=lambda *a: None),
-        cache=GeometryCache(tmp_path / "cache"), worker=SimpleNamespace(request=lambda *a, **kw: {
-            "ok": True, "result": {"scene": {"mesh": {"vertices": [[0, 0, 0]] * (MAX_SCENE_VERTICES + 1)}}}}))
-    ir = {"model_id": "mouse", "bodies": [{"id": "left_key", "name": "left key"},
-                                          {"id": "right_key", "name": "right key"}]}
-    with pytest.raises(ComponentBuildFailed) as caught:
-        compile_components(runtime, ir, ["1", "0"], tmp_path, {})
-    error = caught.value.error
-    assert "body left_key" in error["message"] and "allocation limits" in error["message"]
-    assert error["kind"] == "runtime" and "CAD body compiled" in error["hint"]
-    assert len(error["message"]) < 300
-    from tcad.loop.commit import _worker_error
-    assert _worker_error(error).error.hint == error["hint"]
+
+    def fake_request(method, params, timeout_s=None, **kw):
+        target = Path(params["out_dir"])
+        (target / (params["ir"]["model_id"] + ".FCStd")).write_bytes(b"document bytes")
+        return {"ok": True, "result": {"scene": {"mesh": {
+            "vertices": [[0, 0, 0]] * (MAX_SCENE_VERTICES + 1)}}}}
+
+    runtime = SimpleNamespace(
+        compiler="test",
+        pool=SimpleNamespace(handles=[1, 2], cancel_owner=lambda *a: None),
+        cache=GeometryCache(tmp_path / "cache"),
+        worker=SimpleNamespace(request=fake_request))
+    ir = {"model_id": "mouse", "bodies": [
+        {"id": "left_key", "name": "left key"}, {"id": "right_key", "name": "right key"}]}
+    components, nodes = compile_components(runtime, ir, ["1", "0"], tmp_path, {})
+    assert set(components) == {"left_key", "right_key"}
+    assert [node.id for node in nodes] == ["left_key", "right_key"]
+    for component in components.values():
+        assert Path(component["path"]).is_file()
+        assert not (Path(component["path"]).parent / "scene.json").exists()
 
 
 def test_digest_ignores_version_but_keeps_geometry_backend_and_asset_identity():

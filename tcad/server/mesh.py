@@ -18,13 +18,13 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field, ValidationError
 
 from tcad.core.ids import InvalidIdentifier, ensure_safe_id
+from tcad.core.limits import MAX_SCENE_FACETS as MAX_FACETS
+from tcad.core.limits import MAX_SCENE_VERTICES as MAX_VERTICES
 from tcad.core.types import Mesh
 from tcad.ir.schema import RotaryMotionSpec
 
 MIN_TOLERANCE = 0.1
 MAX_TOLERANCE = 5.0
-MAX_VERTICES = 100_000
-MAX_FACETS = 200_000
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 # Keep preview callers from occupying every shared ASGI worker thread while
 # waiting for scene serialization. Admission itself runs on the event loop.
@@ -53,6 +53,7 @@ class MeshPreviewResponse(BaseModel):
     motion: list[PreviewMotion] = Field(default_factory=list)
     animation: dict | None = None
     pick_mapping: dict | None = None
+    preview: dict | None = None
 
 
 def _checked_animation(result: dict, ir_data: dict, vertex_count: int) -> dict:
@@ -222,7 +223,13 @@ def mesh_preview(
     except (OSError, ValueError) as exc:
         raise HTTPException(409, str(exc)) from exc
     if not math.isclose(tolerance, scene.mesh.tolerance):
-        raise HTTPException(409, f"saved scene tolerance is {scene.mesh.tolerance}; requested {tolerance}")
+        # A degraded preview was saved at a coarser tolerance on purpose: it is
+        # the best mesh this build has, and refusing to serve it would leave a
+        # valid CAD result with no viewport at all. The response states the
+        # actual tolerance, so the client is never misled about fidelity.
+        degraded = scene.preview is not None and scene.preview.status != "ok"
+        if not degraded:
+            raise HTTPException(409, f"saved scene tolerance is {scene.mesh.tolerance}; requested {tolerance}")
     key = (manifest.artifact_id, 1)
 
     def build() -> bytes:
@@ -235,6 +242,8 @@ def mesh_preview(
             payload["motion"] = [part.model_dump(mode="json") for part in scene.motion]
         if scene.animation:
             payload["animation"] = scene.animation
+        if scene.preview is not None:
+            payload["preview"] = scene.preview.model_dump(mode="json")
         body = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
         if len(body) > MAX_RESPONSE_BYTES:
             raise HTTPException(413, "mesh response exceeds the viewport size limit")

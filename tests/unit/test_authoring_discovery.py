@@ -116,6 +116,33 @@ async def test_scoped_help_keeps_usage_guidance_without_repeating_tool_schemas(t
     assert len(json.dumps(data)) < 4000
 
 
+async def test_assembly_help_names_the_one_solid_rule_and_the_rebuild_escape():
+    """Both were declared only after a failed commit in a live session."""
+    data = json.loads((await help_handler(None, {'topic': 'assembly'}, None)).content)
+    assert 'one connected solid' in data['rules'] and 'solid_count' in data['rules']
+    assert 'set_assembly assembly=null' in data['rules'] and 'reconfigure' in data['rules']
+
+
+def test_prerequisite_and_unit_contracts_are_declared_on_the_tools():
+    registry = build_default_registry(SimpleNamespace())
+    for name in ('cad_build_parts', 'assembly_configure', 'ir_commit'):
+        assert 'connected solid' in registry.get(name).description, name
+    assert 'INTERSECT' in registry.get('cad_build_parts').description
+    defs = registry.get('assembly_configure').params_schema['$defs']
+    joint = defs['AssemblyJoint']['properties']
+    for field in ('angle', 'angle_min', 'angle_max'):
+        assert 'degrees' in joint[field]['description'], field
+    assert 'mm' in joint['length_min']['description']
+    assert 'degrees' in defs['Connector']['properties']['angle_deg']['description']
+    assert 'radians' in defs['AssemblyDriver']['properties']['formula']['description']
+
+
+async def test_workflow_catalog_points_general_mechanisms_at_native_joints():
+    catalog = json.loads((await help_handler(None, {'topic': 'workflow'}, None)).content)
+    note = catalog['general_mechanisms']
+    assert 'topic=assembly' in note and 'assembly_configure' in note
+
+
 async def test_assembly_discovery_names_unlock_and_demonstrates_valid_native_driver():
     tools = build_default_registry(SimpleNamespace())
     description = tools.get('ir_help').description

@@ -86,18 +86,20 @@ def compile_components(runtime, ir, backend, directory, references):
                 if not response.get("ok"):
                     raise ComponentBuildFailed(body["id"], response.get("error"))
                 check_cancelled()
-                from tcad.render.scene import SceneModel
+                # The preview is published when it fits the viewport budget and
+                # degraded/reported when it does not — but a preview problem is
+                # never a component build failure. The document this step wrote
+                # is what the final assembly reads.
+                from tcad.render.scene import preview_from_build
                 try:
-                    scene = SceneModel.from_build(response["result"]["scene"], part_ir)
-                except ValueError as exc:
-                    issues = exc.errors() if hasattr(exc, "errors") else []
-                    message = "; ".join(issue["msg"] for issue in issues) if issues else str(exc)
-                    raise ComponentBuildFailed(body["id"], {
-                        "kind": "runtime", "message": "preview scene validation failed: " + message,
-                        "hint": "The CAD body compiled, but its preview could not be published. "
-                                "For mesh allocation limits, simplify tightly curved or near-coincident profile edges before retrying.",
-                    }) from exc
-                (target / "scene.json").write_text(scene.model_dump_json(), encoding="utf-8")
+                    scene, _preview = preview_from_build(response["result"]["scene"], part_ir)
+                except Exception as exc:  # noqa: BLE001 — preview publication is not the build
+                    scene = None
+                    _preview = {
+                        "status": "unavailable", "stage": "scene_validation",
+                        "reason": f"component preview scene failed: {type(exc).__name__}: {exc}"}
+                if scene is not None:
+                    (target / "scene.json").write_text(scene.model_dump_json(), encoding="utf-8")
                 runtime.cache.store(digest, target, part_ir["model_id"])
         document = target / (part_ir["model_id"] + ".FCStd")
         sha = hashlib.sha256(document.read_bytes()).hexdigest()

@@ -124,3 +124,21 @@ async def test_geo_measure_holes_are_empty_not_missing_when_unmeasured(tmp_path)
     res = await geo_measure_handler(_services(_digest(), tmp_path), {"what": ["holes"]}, _ctx(tmp_path))
     assert res.ok, res.error
     assert json.loads(res.content)["holes"] == []
+
+
+def test_geo_measure_schema_declares_what_is_an_array():
+    """A probe passed `what="bbox"` and got a type error it could have avoided:
+    the description said "volume/bbox/faces/edges/solids/holes" without saying
+    the argument is a list."""
+    from tcad.tools.geo_tools import build_geo_tools
+    spec = build_geo_tools(SimpleNamespace())["geo_measure"]
+    assert "ARRAY" in spec.description
+    what = spec.params_schema["properties"]["what"]
+    assert "array" in what["description"] and "bbox" in what["description"]
+
+
+def test_assembly_reads_name_the_default_artifact():
+    from tcad.tools.geo_tools import build_geo_tools
+    tools = build_geo_tools(SimpleNamespace())
+    for name in ("assembly_simulate", "assembly_export"):
+        assert "latest committed build" in tools[name].description, name

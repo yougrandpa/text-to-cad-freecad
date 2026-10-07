@@ -15,9 +15,11 @@ class Connector(BaseModel):
     body_id: str
     element: str = ""  # optional FaceN / EdgeN / VertexN on the final body
     vertex: str = ""
-    position: list[float] = Field(default_factory=lambda: [0, 0, 0], min_length=3, max_length=3)
-    axis: list[float] = Field(default_factory=lambda: [0, 0, 1], min_length=3, max_length=3)
-    angle_deg: float = 0  # roll about connector Z, after aligning Z with axis
+    position: list[float] = Field(default_factory=lambda: [0, 0, 0], min_length=3, max_length=3,
+                                  description='World position in mm.')
+    axis: list[float] = Field(default_factory=lambda: [0, 0, 1], min_length=3, max_length=3,
+                              description='World direction; use the same connector on both joint sides to keep the assembled pose.')
+    angle_deg: float = Field(default=0, description='Roll about the connector axis, in degrees (after Z is aligned with axis).')
 
     @model_validator(mode='after')
     def axis_nonzero(self):
@@ -35,13 +37,13 @@ class AssemblyJoint(BaseModel):
                   'Parallel', 'Perpendicular', 'Angle', 'RackPinion', 'Screw', 'Gears', 'Belt']
     side1: Connector
     side2: Connector
-    distance: float = 0  # native Distance: length / gear radius1 / pinion pitch radius / screw pitch
-    distance2: float = 0  # gear/belt radius2
-    angle: float = 0
-    length_min: float | None = None
-    length_max: float | None = None
-    angle_min: float | None = None
-    angle_max: float | None = None
+    distance: float = Field(default=0, description='Native Distance: length in mm / gear radius1 / pinion pitch radius / screw pitch.')
+    distance2: float = Field(default=0, description='Gear/belt radius2 in mm; positive for Gears/Belt.')
+    angle: float = Field(default=0, description='Joint angle used by the Angle joint, in degrees.')
+    length_min: float | None = Field(default=None, description='Lower length limit in mm (nullable).')
+    length_max: float | None = Field(default=None, description='Upper length limit in mm (nullable).')
+    angle_min: float | None = Field(default=None, description='Lower angle limit in degrees (nullable).')
+    angle_max: float | None = Field(default=None, description='Upper angle limit in degrees (nullable).')
     suppressed: bool = False
 
     @model_validator(mode='after')
@@ -62,7 +64,8 @@ class AssemblyDriver(BaseModel):
     model_config = ConfigDict(extra='forbid')
     joint_id: str
     type: Literal['Angular', 'Linear']
-    formula: str = Field(min_length=1, max_length=512)
+    formula: str = Field(min_length=1, max_length=512,
+                         description='Native math expression of time in seconds; radians for Angular, mm for Linear (e.g. "2*pi*time").')
 
     @model_validator(mode='after')
     def formula_is_native(self):
@@ -77,9 +80,9 @@ class AssemblySpec(BaseModel):
     joints: list[AssemblyJoint] = Field(default_factory=list, max_length=100)
     drivers: list[AssemblyDriver] = Field(default_factory=list, max_length=100)
     rotation: RotaryRig | None = None
-    start: float = 0
-    end: float = 1
-    step: float = Field(default=0.025, ge=1e-6)
+    start: float = Field(default=0, description='Saved-frame start time in seconds.')
+    end: float = Field(default=1, description='Saved-frame end time in seconds; (end-start)/step must be at most 600 frames.')
+    step: float = Field(default=0.025, ge=1e-6, description='Frame step in seconds.')
 
     @model_validator(mode='after')
     def valid_simulation(self):

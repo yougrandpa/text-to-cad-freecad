@@ -69,17 +69,22 @@ class BuildRuntime(BuildScheduler):
                     "components": components}, timeout_s=240)
             if response.get("ok"):
                 check_cancelled()
-                from tcad.render.scene import SceneModel
-                scene = SceneModel.from_build(response["result"]["scene"], ir)
-                (Path(directory) / "scene.json").write_text(scene.model_dump_json(), encoding="utf-8")
+                from tcad.render.scene import preview_from_build
+                scene, preview = preview_from_build(response["result"]["scene"], ir)
+                if scene is not None:
+                    (Path(directory) / "scene.json").write_text(scene.model_dump_json(), encoding="utf-8")
                 self.cache.store(digest, directory, ir["model_id"])
-            self._write_build(directory, digest, backend, False)
+                response["preview"] = preview
+            self._write_build(directory, digest, backend, False,
+                              preview=response.get("preview") if response.get("ok") else None)
             return {**response, "cache_hit": False, "build_digest": digest}
 
-    def _write_build(self, directory, digest, backend, cache_hit):
-        (Path(directory) / "build.json").write_text(json.dumps({
-            "build_digest": digest, "compiler": self.compiler,
-            "freecad_version": backend, "geometry_cache_hit": cache_hit}), encoding="utf-8")
+    def _write_build(self, directory, digest, backend, cache_hit, preview=None):
+        payload = {"build_digest": digest, "compiler": self.compiler,
+                   "freecad_version": backend, "geometry_cache_hit": cache_hit}
+        if preview is not None:
+            payload["preview"] = preview
+        (Path(directory) / "build.json").write_text(json.dumps(payload), encoding="utf-8")
 
     async def commit(self, services, model_id, version, factory):
         ir = services.store.load(model_id, version)

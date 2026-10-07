@@ -214,6 +214,11 @@ async def execute_tool(
                 error=ToolError(
                     kind=ToolErrorKind.DENIED,
                     message=f"tool {spec.name!r} (tier={spec.tier.value}) is not permitted in this turn kind",
+                    hint=(
+                        "write tools are unavailable in inspect turns; re-send this call in a create or modify turn"
+                        if spec.tier == ToolTier.WRITE
+                        else "this tool tier is not enabled for the current turn kind"
+                    ),
                 ),
             )
         )
@@ -243,7 +248,9 @@ async def execute_tool(
                     hint=(
                         "Nothing was applied. Call ir_get to obtain the current version, then "
                         "re-send ir_patch with base_version (integer) and ops (array of actual "
-                        "patch operations). Do not send an empty object or invent operations."
+                        "patch operations). Do not send an empty object or invent operations. "
+                        "For the available operations and their payload rules call ir_help(topic='patch'); "
+                        "scoped help (topic=sketch/feature) exposes deeper field sets."
                         if spec.name == "ir_patch" else "re-send the call with the declared argument types"
                     ),
                 ),

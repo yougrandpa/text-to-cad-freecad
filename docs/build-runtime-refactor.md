@@ -105,3 +105,15 @@ Agent CAD/Assembly contract 已接入生产 system prompt。按需导出、原�
 - 浏览器手动检查：未启动 worker 的页面能显示真实 FreeCAD 已发布模型及验证状态，标准视角可切换。截图见本地 `output/playwright/viewer-refactor.png`。
 
 真实模型服务 E2E 需要另行提供可用服务和凭据，本轮没有发起付费模型请求。
+
+## 预览降级（P0：预览失败不再阻断 CAD 构建）
+
+视口网格上限（`tcad/core/limits.py`，10 万顶点 / 20 万三角面）是**预览预算**，不是构建条件。worker 在生成 Scene 时从同一份真实 BRep 自适应细分：
+
+- 基准 tolerance 0.5 mm 超出上限时，按 1.8 倍阶梯提升重采样，最高 5 mm（`tcad/worker/preview.py`）；
+- 每次尝试记录真实顶点/面数、逐部件计数与越界项，最终结果带 `preview.status`（`ok`/`degraded`/`unavailable`）；
+- `degraded` 时 Scene 照常发布，拾取映射（mesh_digest）按粗网格重建，缓存标识随编译器指纹一并失效；导出 STEP/FCStd、参数历史与 Gate 完全不受影响；
+- `unavailable` 时不写 `scene.json`：提交继续进入 Gate，构建结果明确标注“CAD 结果有效、预览不可用”，查看器显示不可用状态而不是把构建判为失败；
+- 预览降级/不可用的模型反馈包含失败阶段、错误类型、实际数量、上限与主要贡献部件，并明确禁止用删除结构特征来缩减三角面数（`tcad/render/scene.py::render_preview_note`）。
+
+服务端只在 Scene 明确标记 `degraded` 时放宽 tolerance 等值检查（响应携带真实 tolerance 与 `preview` 字段）；普通 Scene 仍严格拒绝不匹配的 tolerance 请求。

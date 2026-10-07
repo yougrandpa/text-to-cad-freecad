@@ -213,3 +213,62 @@ def test_invalid_box_parameter_is_rejected_before_persist_and_old_parameter_can_
     with pytest.raises(PatchError,match='same key'):
         apply_patch(repaired.ir,IrPatch(base_version=1,ops=[{'op':'update_feature','target_id':'box',
             'payload':{'params_remove':['height'],'params':{'height':2}},'reason':'Ambiguous'}]))
+
+
+async def test_recipe_fills_empty_bodies_and_refuses_foreign_geometry(recipe_services):
+    """One uniform rule: create / fill empty / update own by stable ID / refuse.
+
+    Fusing new recipe material into a body that already holds geometry this
+    call is not updating silently rewrites custom modifications — the refusal
+    protects them, and names the supported routes instead.
+    """
+    services,ctx=recipe_services
+    from tcad.tools.ir_tools import ir_patch_handler
+    assert (await ir_patch_handler(services,{'base_version':'current','ops':[
+        {'op':'add_body','payload':{'id':'blank','name':'blank'},'reason':'Empty target'}],
+        'summary':''},ctx)).ok
+    fill={'id':'fill','body_id':'blank','shape':'box','center':[0,0,0],'size':[4,4,4]}
+    assert (await build_parts_handler(services,{'parts':[fill],'reason':'Fill empty body'},ctx)).ok
+    # Hand-made geometry now lives beside the recipe in the same body.
+    assert (await ir_patch_handler(services,{'base_version':'current','ops':[
+        {'op':'add_feature','payload':{'id':'custom','name':'custom','body_id':'blank',
+         'op':'additive_box','params':{'length':1,'width':1,'height':1},
+         'placement':{'position':{'x':0,'y':0,'z':0}}},'reason':'Custom edit'}],'summary':''},ctx)).ok
+    before=services.store.load('m')
+    result=await build_parts_handler(services,{'parts':[
+        {'id':'extra','body_id':'blank','shape':'box','center':[0,0,0],'size':[2,2,2]}],
+        'reason':'New material'},ctx)
+    assert not result.ok and 'already contains geometry' in result.error.message
+    assert 'stable ID' in result.error.message
+    assert services.store.load('m') == before
+    # ...but the recipe that owns the body is still editable by its stable ID.
+    assert (await build_parts_handler(services,{'parts':[{**fill,'size':[6,4,4]}],'reason':'Widen'},ctx)).ok
+    assert services.store.load('m').find_feature('fill').params['length']==6
+
+
+async def test_recipe_cannot_write_into_a_referenced_component(recipe_services):
+    services,ctx=recipe_services
+    from tcad.ir.schema import PartRef
+    ir=services.store.load('m')
+    referenced={'id':'pinned','name':'pinned','part_ref':PartRef(
+        model_id='source',artifact_id='sha256:'+'a'*64,body_id='part').model_dump(mode='json')}
+    services.store.apply_patch('m',IrPatch(base_version=ir.version,ops=[
+        {'op':'add_body','payload':referenced,'reason':'Pin component'}]))
+    result=await build_parts_handler(services,{'parts':[
+        {'id':'addon','body_id':'pinned','shape':'box','center':[0,0,0],'size':[1,1,1]}],
+        'reason':'Attach'},ctx)
+    assert not result.ok and 'referenced component' in result.error.message
+
+
+def test_recipe_reason_defaults_with_a_provenance_marker():
+    from tcad.ir.builders import AUTO_REASON
+    request=BuildParts(parts=[{'id':'b','body_id':'b','shape':'box','center':[0,0,0],'size':[1,1,1]}])
+    assert request.reason == AUTO_REASON and AUTO_REASON.startswith('auto:')
+    ops,_=parts_patch(request,[])
+    assert ops and all(op['reason'] == AUTO_REASON for op in ops)
+    schema=build_authoring_tools(SimpleNamespace())['cad_build_parts'].params_schema
+    assert 'reason' not in schema.get('required', [])
+    assert not check({'parts':[{'id':'b','body_id':'b','shape':'box','center':[0,0,0],'size':[1,1,1]}]}, schema)
+    # Dimensions are never defaulted — only provenance text is.
+    with pytest.raises(ValueError):
+        BuildParts(parts=[{'id':'b','body_id':'b','shape':'box','center':[0,0,0]}])

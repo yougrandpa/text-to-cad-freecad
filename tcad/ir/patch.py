@@ -727,10 +727,20 @@ def apply_patch(ir: IrDocument, patch: IrPatch, *, replay_legacy_body_routing: b
     errors = [i for i in validate_ir(new_ir) if i.severity == "error"]
     if errors:
         joined = "; ".join(f"[{i.code}] {i.message}" for i in errors)
+        # An assembly that no longer matches the bodies is the one interlock with
+        # a genuine escape path, and a live session burned four rounds finding it
+        # with no hint text at all. Name the path exactly where the model is stuck.
+        if any(i.code == "assembly_invalid" for i in errors):
+            hint = ("the assembly declaration no longer matches the bodies: include a set_assembly op "
+                    "with corrected grounded/joints in the SAME patch, or clear it first with "
+                    '{"op":"set_assembly","payload":{"assembly":null}}, rebuild, then reconfigure '
+                    "(ir_help topic=assembly)")
+        else:
+            hint = "fix the reported issues and re-propose the patch"
         raise _reject(
             kind=ToolErrorKind.SEMANTIC,
             message=f"patch produces an invalid IR: {joined}",
-            hint="fix the reported issues and re-propose the patch")
+            hint=hint)
 
     new_ir.version = out.version
     out.ir = new_ir
