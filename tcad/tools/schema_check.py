@@ -110,6 +110,11 @@ def check(args: Any, schema: dict, *, path: str = "arguments", root: dict | None
                     matching = [b for b in branches if args[discriminator] in b.get('properties', {}).get(discriminator, {}).get('enum', [])]
                     if len(matching) == 1:
                         return check(args, matching[0], path=path, root=root)
+                    if len(matching) > 1:
+                        # Endpoint and align+length variants share a shape enum.
+                        # Diagnose only those variants, never an unrelated shape.
+                        branches = matching
+                        break
                     if not matching:
                         # A value that matches NO branch must answer with the FULL
                         # legal set. Reporting the "closest" branch's single enum

@@ -41,7 +41,8 @@ def _track(points: list[list[float]], start: float, step: float,
 
 
 def measure_saved_motion(animation: dict, vertices: list[list[float]], *,
-                         track_points: Sequence[dict] = (), sample_frames: list[int] | None = None) -> dict:
+                         track_points: Sequence[dict] = (), sample_frames: list[int] | None = None,
+                         assembly: dict | None = None) -> dict:
     """Use all saved frames for extrema; bound the returned point samples."""
     frames, parts = animation["frames"], animation["parts"]
     start, step = animation["start"], animation["step"]
@@ -83,7 +84,15 @@ def measure_saved_motion(animation: dict, vertices: list[list[float]], *,
     tracks = [{"name": p["name"], "body_id": p["body_id"], "reference_point_world_mm": p["point"],
                **_track([_point(f[p["body_id"]], p["point"]) for f in frames],
                         start, step, sample_frames)} for p in track_points]
+    joints = measure_joint_motion(animation, assembly or {})
+    drivers = {d['joint_id']: d for d in (assembly or {}).get('drivers', []) if d['type'] == 'Angular'}
+    warnings = [f"Joint {joint['joint_id']}: time-dependent Angular driver has no sampled relative rotation. "
+                "Parent/body movement does not prove this joint turns. Reduce playback speed or step, "
+                "recommit, and verify intermediate relative poses; sampled frames may alias rapid rotation."
+                for joint in joints if joint['sampled_angular_path_deg'] <= 1e-5
+                and 'time' in drivers.get(joint['joint_id'], {}).get('formula', '')]
     return {"frames_examined": len(frames), "moving_bodies": moving, "bodies": bodies,
+            "joints": joints, "warnings": warnings,
             "point_tracks": tracks,
             "scope": "All saved poses measured relative to the first saved frame. Rotation is shortest orientation change (0..180 degrees); sampled rotation path may miss turns between frames. Centers are preview bounding-box reference points, not mass centers. Probe coordinates refer to pre-solve world geometry; attachment to solid is not verified. No ground contact, forces or continuous-path proof."}
 
@@ -114,3 +123,64 @@ def summarize_interferences(interferences: list[dict] | None) -> list[dict]:
         if volume > entry["max_overlap_mm3"]:
             entry.update(max_overlap_mm3=volume, peak_frame=item["frame"])
     return sorted(pairs.values(), key=lambda p: (-p["max_overlap_mm3"], p["bodies"]))
+
+
+def measure_joint_motion(animation: dict, assembly: dict) -> list[dict]:
+    """Signed relative rotation of saved revolute/cylindrical joint poses.
+
+    Matrices act on pre-solve world geometry. R1.T @ R2 removes parent motion;
+    projecting a perpendicular reference vector measures twist about side1's
+    pre-solve world axis. This reads poses only and never evaluates drivers.
+    """
+    frames = animation['frames']
+    results = []
+    for joint in assembly.get('joints', []):
+        if joint.get('suppressed') or joint['type'] not in ('Revolute', 'Cylindrical'):
+            continue
+        a, b = joint['side1']['body_id'], joint['side2']['body_id']
+        axis = joint['side1'].get('axis', [0, 0, 1])
+        norm = math.hypot(*axis)
+        axis = [v / norm for v in axis]
+        helper = [0.0, 0.0, 0.0]
+        helper[min(range(3), key=lambda i: abs(axis[i]))] = 1.0
+        projection = sum(x*y for x, y in zip(helper, axis))
+        u = [helper[i] - projection*axis[i] for i in range(3)]
+        norm = math.hypot(*u)
+        u = [v / norm for v in u]
+        v = [axis[1]*u[2]-axis[2]*u[1], axis[2]*u[0]-axis[0]*u[2],
+             axis[0]*u[1]-axis[1]*u[0]]
+        # The solver may align initially different connector axes. A child
+        # reference parallel to side2's axis cannot reveal its rotation.
+        child_axis = joint['side2'].get('axis', [0, 0, 1])
+        child_norm = math.hypot(*child_axis)
+        child_axis = [x / child_norm for x in child_axis]
+        child_ref = [0.0, 0.0, 0.0]
+        child_ref[min(range(3), key=lambda i: abs(child_axis[i]))] = 1.0
+        child_projection = sum(x*y for x,y in zip(child_ref,child_axis))
+        child_ref = [child_ref[i] - child_projection*child_axis[i] for i in range(3)]
+        child_norm = math.hypot(*child_ref)
+        child_ref = [x / child_norm for x in child_ref]
+        angles = []
+        for frame in frames:
+            first, second = frame[a], frame[b]
+            child = [sum(second[4*i+j]*child_ref[j] for j in range(3)) for i in range(3)]
+            relative = [sum(first[4*j+i]*child[j] for j in range(3)) for i in range(3)]
+            angles.append(math.degrees(math.atan2(sum(x*y for x,y in zip(relative,v)),
+                                                  sum(x*y for x,y in zip(relative,u)))))
+        increments = [(b-a+180) % 360 - 180 for a,b in zip(angles, angles[1:])]
+        unwrapped = [0.0]
+        for delta in increments:
+            unwrapped.append(unwrapped[-1] + delta)
+        signs = [1 if d > 0 else -1 for d in increments if abs(d) > 1e-5]
+        results.append({'joint_id': joint['id'], 'type': joint['type'],
+                        'body_ids': [a,b], 'axis_world': axis,
+                        'min_angle_from_first_deg': round(min(unwrapped), 6),
+                        'max_angle_from_first_deg': round(max(unwrapped), 6),
+                        'net_angle_deg': round(unwrapped[-1], 6),
+                        'sampled_angular_path_deg': round(sum(abs(d) for d in increments), 6),
+                        'direction_reversals': sum(x != y for x,y in zip(signs, signs[1:])),
+                        'max_step_deg': round(max(map(abs, increments), default=0), 6),
+                        'scope': 'Relative twist from all saved poses, side2 relative to side1. '
+                                 'Shortest step unwrapping assumes less than 180 degrees between samples; '
+                                 'unsampled turns and physical transmission are not verified.'})
+    return results

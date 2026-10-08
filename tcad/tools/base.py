@@ -251,7 +251,10 @@ async def execute_tool(
                         "patch operations). Do not send an empty object or invent operations. "
                         "For the available operations and their payload rules call ir_help(topic='patch'); "
                         "scoped help (topic=sketch/feature) exposes deeper field sets."
-                        if spec.name == "ir_patch" else "re-send the call with the declared argument types"
+                        if spec.name == "ir_patch" else
+                        "Nothing was applied: the ENTIRE call was rejected before execution. "
+                        "Resend the COMPLETE corrected batch with the declared argument types; "
+                        "do not assume valid entries from a rejected call were retained."
                     ),
                 ),
             )

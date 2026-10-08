@@ -4,7 +4,7 @@ Produces the GeometryDigest dict shape documented in tcad/core/types.py
 (GeometryDigest / Topology / BBox / FeatureDigest). Read-only measurements only;
 the digest is program-generated, never model-summarised.
 
-Measurement truth: shape.BoundBox (axis-aligned) for the box, shape.isValid()
+Measurement truth: native optimal BRep bounds (axis-aligned) for the box, shape.isValid()
 as the primary validity signal, shape.check() inside try/except (it returns None
 on success and RAISES on failure — never write ``if shape.check():``).
 """

@@ -150,3 +150,53 @@ def test_native_passive_joint_static_solve(worker,tmp_path,kind):
     result=worker.request_sync('solve_assembly',{'ir':ir,'out_dir':str(tmp_path)},timeout_s=180)
     assert result['ok'],result
     assert len(result['frames'])==1
+
+
+@pytest.mark.parametrize('formula,step', [('2*pi*time', 0.05), ('20*pi*time', 0.01)])
+def test_nested_carrier_oscillation_and_relative_rotor_spin(worker, tmp_path, formula, step):
+    """A global moving-body list cannot distinguish inherited yaw from rotor spin."""
+    from tcad.inspect.motion import measure_joint_motion
+    ir = native_ir(drivers=[{'joint_id':'joint','type':'Angular',
+                            'formula':'pi/4*sin(2*pi*time)'}])
+    ir['bodies'].append({'id':'rotor','name':'rotor','features':[
+        {'id':'rotor_box','op':'additive_box','params':{'length':2,'width':6,'height':1}}]})
+    ir['assembly']['joints'].append({'id':'spin','type':'Revolute',
+        'side1':{'body_id':'arm','axis':[1,0,0]},
+        'side2':{'body_id':'rotor','axis':[1,0,0]}})
+    ir['assembly']['drivers'].append({'joint_id':'spin','type':'Angular','formula':formula})
+    ir['assembly']['step']=step
+    ir['assembly']=AssemblySpec.model_validate(ir['assembly']).model_dump()
+    result=worker.request_sync('simulate_assembly',{'ir':ir,'out_dir':str(tmp_path)},timeout_s=180)
+    assert result['ok'],result
+    assert len(result['frames']) == round(1/step)+1
+    yaw,spin=measure_joint_motion(result,ir['assembly'])
+    assert yaw['min_angle_from_first_deg'] == pytest.approx(-45, abs=1e-4)
+    assert yaw['max_angle_from_first_deg'] == pytest.approx(45, abs=1e-4)
+    assert yaw['direction_reversals'] == 2
+    assert spin['sampled_angular_path_deg'] == pytest.approx(360 if step==0.05 else 3600, abs=1e-4)
+    assert spin['direction_reversals'] == 0
+    assert result['frames'][0]['base'] == pytest.approx(result['frames'][-1]['base'])
+
+
+def test_native_solver_partial_success_is_not_accepted_as_completed_motion(worker, tmp_path):
+    # This rapid motion makes this Ondsel build stop after t=0 despite code=0.
+    ir = native_ir(drivers=[{'joint_id':'joint','type':'Angular','formula':'20*pi*time'}])
+    ir['assembly'].update(step=0.025)
+    from tcad.core.worker_client import WorkerCallFailed
+    try:
+        result = worker.request_sync('simulate_assembly', {'ir':ir,'out_dir':str(tmp_path)}, timeout_s=180)
+    except WorkerCallFailed as exc:
+        assert 'expected 41' in str(exc)
+    else:
+        # Newer native solvers may finish; a full series is then legitimate.
+        assert result['ok'] and len(result['frames']) == 41
+
+
+def test_relative_rotation_with_nonzero_native_initial_phase(worker, tmp_path):
+    from tcad.inspect.motion import measure_joint_motion
+    ir = native_ir(drivers=[{'joint_id':'joint','type':'Angular','formula':'pi/3+pi/2*time'}])
+    result = worker.request_sync('simulate_assembly', {'ir':ir,'out_dir':str(tmp_path)}, timeout_s=180)
+    assert result['ok'], result
+    measured = measure_joint_motion(result, ir['assembly'])[0]
+    assert measured['sampled_angular_path_deg'] == pytest.approx(90, abs=1e-4)
+    assert measured['direction_reversals'] == 0

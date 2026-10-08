@@ -9,8 +9,16 @@ import pytest
 from tcad.ir.schema import IrDocument
 from tcad.ir.validate import validate_ir
 from tcad.worker.protocol import M_BUILD_ARTIFACTS, M_REOPEN_EDIT
-from tests.contract.test_sketch_planes import compile_ir, pytestmark, worker
+from tests.contract.test_sketch_planes import pytestmark, worker
+from tcad.worker.protocol import M_COMPILE_IR
 from tests.contract.test_param_capability import FREECAD_CMD, REPO_ROOT
+
+
+def compile_ir(worker, ir, out_dir):
+    # These tests explicitly request the optional STEP round-trip; production
+    # builds retain native CAD and prepare download formats on demand.
+    return worker.request_sync(M_COMPILE_IR, {'ir':ir, 'out_dir':str(out_dir),
+        'round_trip':True}, timeout_s=180)
 
 
 def loft_ir(*, subtract=False, curved=False, rotated=False):
@@ -112,3 +120,24 @@ def test_loft_rejects_missing_duplicate_foreign_and_unused_sections():
         ir = copy.deepcopy(loft_ir())
         change(ir["bodies"][0]["features"][-1])
         assert code in [i.code for i in validate_ir(IrDocument.model_validate(ir))]
+
+
+def test_circular_loft_measures_geometric_bounds_not_spline_control_polygon(worker, tmp_path):
+    """The fan E2E rebuilt a correct round base after conservative Y was 313.69."""
+    from tcad.ir.builders import BuildParts, parts_patch
+    from tcad.ir.patch import apply_patch
+    from tcad.ir.schema import IrPatch
+    request=BuildParts(parts=[{'id':'base_outline','body_id':'base','shape':'loft',
+        'section_axis':'Z','sections':[{'center':[0,0,z],'radii':[r,r]}
+            for z,r in ((0,140),(22,132),(46,86),(64,52),(74,46))]}])
+    ops,_=parts_patch(request,[])
+    ir=IrDocument(model_id='circular_bounds')
+    ir=apply_patch(ir,IrPatch(base_version=0,ops=ops)).ir
+    result=compile_ir(worker,ir.model_dump(mode='json'),tmp_path)
+    bbox=result['measurements']['bbox']
+    assert result['measurements']['is_valid']
+    assert bbox['x'] == pytest.approx(280,abs=1e-5)
+    assert bbox['y'] == pytest.approx(280,abs=1e-5)
+    assert bbox['z'] == pytest.approx(74,abs=1e-5)
+    assert bbox['x_min'] == pytest.approx(-140,abs=1e-5)
+    assert bbox['y_min'] == pytest.approx(-140,abs=1e-5)

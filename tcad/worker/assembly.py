@@ -1,5 +1,6 @@
 """Native Assembly solver adapter. Runs only in FreeCAD's interpreter."""
 import os
+import math
 
 from tcad.worker.compiler import _build, _close_doc, _measure
 
@@ -112,8 +113,11 @@ def simulate_assembly(ir=None, out_dir='', check_pairs=None, check_stride=1, sol
             if code != 0:
                 return {'ok': False, 'error': {'kind':'solver', 'message': SOLVE_ERRORS.get(code, f'simulation code {code}')}}
             count = assembly.numberOfFrames()
-            if not 2 <= count <= 601:
-                return {'ok': False, 'error': f'native solver returned invalid frame count {count}'}
+            expected = math.floor((spec['end'] - spec['start']) / spec['step'] + 1e-8) + 1
+            if not 2 <= count <= 601 or count - 1 != expected:
+                return {'ok': False, 'error': f'native solver returned {count - 1} saved frames; '
+                        f'expected {expected} across the requested interval. Reduce driver speed or '
+                        'time step and retry; a partial simulation is not a completed motion.'}
         selected = check_pairs or []
         if not isinstance(check_stride, int) or not 1 <= check_stride <= 30 or len(selected) > 100 or any(len(pair) != 2 or pair[0] == pair[1] or any(id not in parts for id in pair) for pair in selected):
             raise ValueError('invalid collision body pairs or frame stride')

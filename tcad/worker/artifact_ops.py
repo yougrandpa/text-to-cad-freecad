@@ -44,7 +44,7 @@ def export_saved(path, sha256, bodies, out_dir, fmt, name, **_extra):
 
 
 def check_saved_motion(path, sha256, bodies, angles=None, motion=None, frames=None,
-                       pairs=None, volume_tolerance=1e-6, check_stride=1, **_extra):
+                       pairs=None, volume_tolerance=1e-6, check_stride=1, measure_distance=False, **_extra):
     motion = {p["body_id"]: p for p in motion or []}
     if frames is None:
         angles = angles if angles is not None else [0, 90, 180, 270, 360]
@@ -58,7 +58,8 @@ def check_saved_motion(path, sha256, bodies, angles=None, motion=None, frames=No
         pairs = list(combinations(shapes, 2)) if pairs is None else pairs
         if len(pairs) > 100 or any(len(p) != 2 or p[0] == p[1] or any(x not in shapes for x in p) for p in pairs):
             raise ValueError("invalid body pairs")
-        findings, samples = [], list(range(0, len(frames), check_stride)) if frames is not None else angles
+        findings, distances = [], []
+        samples = list(range(0, len(frames), check_stride)) if frames is not None else angles
         for sample in samples:
             posed = {}
             for id, original in shapes.items():
@@ -76,10 +77,19 @@ def check_saved_motion(path, sha256, bodies, angles=None, motion=None, frames=No
                 volume = float(common.Volume)
                 if not common.isValid() or not math.isfinite(volume):
                     raise ValueError("invalid artifact intersection result")
+                if measure_distance:
+                    distance = float(posed[a].distToShape(posed[b])[0])
+                    if not math.isfinite(distance) or distance < 0:
+                        raise ValueError('invalid artifact minimum distance')
+                    distances.append({'frame' if frames is not None else 'angle_deg': sample,
+                                      'bodies': [a,b],
+                                      'min_distance_mm': 0.0 if volume > volume_tolerance else distance,
+                                      'min_surface_distance_mm': distance, 'overlap_mm3': volume})
                 if volume > volume_tolerance:
                     findings.append({"frame" if frames is not None else "angle_deg": sample,
                                      "bodies": [a, b], "overlap_mm3": volume})
     return {"ok": True, "interferences": findings, "sampled_clear": not findings,
+            **({"pair_measurements": distances} if measure_distance else {}),
             "frames_checked": len(samples), "pairs_checked": len(pairs),
             "angles_deg": None if frames is not None else angles,
             "volume_tolerance_mm3": volume_tolerance,

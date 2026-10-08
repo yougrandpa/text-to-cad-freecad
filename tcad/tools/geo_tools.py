@@ -162,6 +162,15 @@ async def geo_measure_handler(services: "Any", args: dict, ctx: ToolContext) -> 
             hint="supported: " + ", ".join(sorted(catalog)),
         )
     payload = {w: catalog[w] for w in what}
+    if args.get('pairs'):
+        from tcad.inspect.operations import measure_source_pairs
+        try:
+            measured = await asyncio.to_thread(measure_source_pairs, services, ctx,
+                                               {**args, 'artifact_id':artifact_id})
+        except (OSError, ValueError, RuntimeError) as exc:
+            return _err(ToolErrorKind.RUNTIME, str(exc),
+                        hint='Use two distinct compiled Body IDs per pair; commit first. Pair measurements need the geometry worker.')
+        payload.update(measured)
     if body_id is not None:
         payload.update(body_id=body_id, artifact_id=artifact_id,
             scope="Compiled source Body BRep in world mm; not solved assembly poses or IR-declared dimensions.")
@@ -308,7 +317,7 @@ def build_geo_tools(services: "Any") -> dict[str, ToolSpec]:
         ),
         "assembly_simulate": ToolSpec(
             name="assembly_simulate", tier=ToolTier.READ,
-            description="Read saved native Assembly or gravity-pendulum animation (artifact_id optional; defaults to the latest committed build). Returns saved driver count/targets and motion_summary measured across ALL saved frames: body orientation change, preview-center travel, moving bodies. max_swing_deg is gravity-only and may be null for native joints. Optional track_points=[{name,body_id,point:[x,y,z]}] measures reference point trajectories; point is WORLD mm in pre-solve geometry, not first-frame local coordinates. sample_frames selects up to 12 output samples; extrema still use all frames. Default point samples include endpoints and extrema. Optional check_pairs/check_stride performs sampled BRep overlap checks; interference_summary covers every overlapping pair even when raw examples are truncated. Commit after edits. Motion/clear samples do not prove continuous clearance, physical transmission or ground contact; this is separate from the geometry Gate.",
+            description="Read saved native Assembly or gravity-pendulum animation (artifact_id optional; defaults to the latest committed build). Returns saved driver count/targets and motion_summary measured across ALL saved frames: body orientation change, preview-center travel, moving bodies, and joint-relative signed angular ranges/path/direction reversals. motion_summary.warnings identifies time-dependent angular drivers with no sampled relative rotation; reduce speed/step and recommit before claiming motion. max_swing_deg is gravity-only and may be null for native joints. Optional track_points=[{name,body_id,point:[x,y,z]}] measures reference point trajectories; point is WORLD mm in pre-solve geometry, not first-frame local coordinates. sample_frames selects up to 12 output samples; extrema still use all frames. Default point samples include endpoints and extrema. Optional check_pairs/check_stride performs sampled BRep overlap checks; interference_summary covers every overlapping pair even when raw examples are truncated. Commit after edits. Motion/clear samples do not prove continuous clearance, physical transmission or ground contact; this is separate from the geometry Gate.",
             params_schema={"type":"object", "additionalProperties":False, "properties":{"artifact_id":{"type":"string"},
                 "track_points":{"type":"array","minItems":1,"maxItems":12,"items":{"type":"object","additionalProperties":False,
                     "required":["name","body_id","point"],"properties":{"name":{"type":"string","minLength":1,"maxLength":64},
@@ -357,7 +366,7 @@ def build_geo_tools(services: "Any") -> dict[str, ToolSpec]:
         "geo_measure": ToolSpec(
             name="geo_measure",
             tier=ToolTier.READ,
-            description="Read actual BRep geometric measurements from a committed artifact. Optional body_id scopes volume/bbox/area/topology/holes to an individual source part, useful for dimensions and bore fits; omitted measures the whole source model. `what` is an ARRAY, e.g. ['bbox','holes']; omitted returns volume/bbox/faces/edges/solids. Hole entries retain body_id; separate coaxial bores are counted per part. Missing/unsupported hole measurements return an error, not a misleading empty array. Older artifacts need a fresh commit for per-Body measurements. Optional artifact_id pins a build; otherwise commit this IR version first. Never rebuilds current IR or measures solved animation poses. Values come from compiled material and may disagree with IR declarations.",
+            description="Read actual BRep geometric measurements from a committed artifact. Optional body_id scopes volume/bbox/area/topology/holes to an individual source part, useful for dimensions and bore fits; omitted measures the whole source model. `what` is an ARRAY, e.g. ['bbox','holes']; omitted returns volume/bbox/faces/edges/solids. Hole entries retain body_id; separate coaxial bores are counted per part. Missing/unsupported hole measurements return an error, not a misleading empty array. Older artifacts need a fresh commit for per-Body measurements. Optional artifact_id pins a build; otherwise commit this IR version first. Never rebuilds current IR or measures solved animation poses. Optional pairs=[[body_a,body_b],...] measures minimum BRep distance and overlap_mm3 for physical connections/clearance BEFORE native assembly configuration. A joint creates no supporting material: inspect gaps and unintended overlap; repair geometry or explain a real intermediate connector. Pair measurements require the worker and remain static source geometry. Values come from compiled material and may disagree with IR declarations.",
             params_schema={
                 "type": "object",
                 "properties": {
@@ -365,6 +374,10 @@ def build_geo_tools(services: "Any") -> dict[str, ToolSpec]:
                              "description": "Measurement names to return, as an array (e.g. [\"bbox\",\"volume\"]); a bare string is rejected."},
                     "artifact_id": {"type": "string", "description": "sha256:<64 hex digits>"},
                     "body_id": {"type": "string", "minLength": 1, "description": "Compiled source Body ID; omit for whole-model measurements."},
+                    "pairs": {"type":"array", "minItems":1, "maxItems":20,
+                              "items":{"type":"array", "minItems":2, "maxItems":2,
+                                       "items":{"type":"string", "minLength":1}},
+                              "description":"Static compiled Body pairs for minimum distance and intersection volume, before assembly solve."},
                 },
             },
             handler=functools.partial(geo_measure_handler, services),

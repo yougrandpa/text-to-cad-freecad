@@ -1608,16 +1608,20 @@ def _noop_feature_errors(ir: dict, ref_objects: dict) -> list[dict]:
             if shape is None or shape.isNull():
                 continue
             if prev_shape is not None and _same_solid(shape, prev_shape):
+                explanation = (
+                    "An additive feature fully inside existing material adds nothing. "
+                    "Check its actual endpoints and existing bounds. A separate moving shaft needs "
+                    "its own Body and surrounding bearing bore/cavity clearance; moving it inside "
+                    "the same solid cannot create that clearance."
+                    if f.get('op', '').startswith('additive_') else
+                    "A pocket/groove whose profile misses material, or an extrusion with incorrect "
+                    "plane/direction can produce this. Check attachment and direction.")
                 out.append({
                     "kind": "compile", "feature_id": f.get("id"),
                     "message": (
                         f"feature {f.get('id')!r} (op={f.get('op')!r}) did not "
                         "change the solid: the result is identical to the "
-                        "previous feature. A pocket/groove whose profile does "
-                        "not intersect the material, or a pad/revolution "
-                        "extruded into empty space, produces this. Check the "
-                        "sketch plane, attachment and direction against the "
-                        "WORLD COORDINATES contract."
+                        "previous feature. " + explanation + " Check the WORLD COORDINATES contract (mm)."
                     ),
                 })
             prev_shape = shape
@@ -1797,7 +1801,12 @@ def _measure(shape) -> dict:
     except Exception:  # noqa: BLE001
         pass
     try:
-        bb = shape.BoundBox
+        # BoundBox can enclose a spline's control polygon rather than its
+        # geometric extrema (a round loft measured 280 x 313.69 instead of
+        # 280 x 280). Use native BRep optimal bounds, independent of preview
+        # triangulation. Older kernels/fakes retain the compatibility fallback.
+        optimal = getattr(shape, 'optimalBoundingBox', None)
+        bb = optimal(False, False) if callable(optimal) else shape.BoundBox
         m["bbox"] = {
             "x": float(bb.XLength), "y": float(bb.YLength), "z": float(bb.ZLength),
             "x_min": float(bb.XMin), "y_min": float(bb.YMin), "z_min": float(bb.ZMin),
