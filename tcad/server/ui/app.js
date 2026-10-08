@@ -715,7 +715,7 @@ async function send(text, { images = [], files = [] } = {}, accepted = () => {})
     attachmentInput?.setBusy(true);
     $("sendBtn").disabled = true;
     try {
-      await newSession({ announce: false });
+      await newSession();
       composerPending = false;
     } catch (err) {
       composerPending = false;
@@ -2329,13 +2329,14 @@ async function loadMessages(threadId) {
   }));
 }
 
-async function newSession({ announce = true } = {}) {
+async function newSession() {
   const folderId = ["all", "unfiled"].includes(state.historyFolder) ? null : state.historyFolder;
   const created = await api("/sessions", { method: "POST", body: JSON.stringify({ folder_id: folderId }) });
   state.historyView = "active";
   await loadSessions();
   await switchSession(created.thread_id, { force: true });
-  if (announce) pushNotice("info", "已新建会话。直接描述你要的零件即可。");
+  // The empty transcript already shows the welcome panel and editable samples.
+  // Appending a creation notice would hide them until the page is reloaded.
   $("input").focus();
   return created;
 }

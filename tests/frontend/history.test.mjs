@@ -13,7 +13,8 @@ function element(tag = 'div') {
     get textContent() { return this.text || this.children.map(child => child.textContent || '').join(''); },
     set textContent(value) { this.text = value; this.children = []; },
     setAttribute(key, value) { this.attrs[key] = value; if (key === 'hidden') this.hidden = true; },
-    append(...children) { this.children.push(...children); },
+    append(...children) { this.children.push(...children); children.forEach(child => { child.parent = this; }); },
+    remove() { if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); },
     replaceChildren(...children) { this.children = children; },
     addEventListener(name, handler) { this.listeners[name] = handler; },
     querySelectorAll() { return []; },
@@ -23,18 +24,29 @@ function element(tag = 'div') {
   };
 }
 
-function harness() {
+function harness({ realSwitch = false } = {}) {
   const nodes = new Map(), requests = [], switches = [];
   const node = id => {
     if (!nodes.has(id)) nodes.set(id, element());
     return nodes.get(id);
   };
-  const context = vm.createContext({ console, document: { getElementById: node, createElement: element,
+  const context = vm.createContext({ console, URLSearchParams, history: { replaceState() {} }, location: { pathname: '/ui/' },
+    document: { getElementById: node, createElement: element,
     createElementNS: (_, tag) => element(tag) } });
   vm.runInContext(source + `
     globalThis.testing = { state, visibleSessions, renderSessions, loadSessions, archiveSession,
       folderDialog, moveSessionDialog, deleteSessionDialog, newSession, historyMenu, closeHistoryMenu,
-      stub(apiFn, switchFn) { api = apiFn; switchSession = switchFn; pushNotice = () => {}; },
+      switchSession, pushNotice,
+      stub(apiFn, switchFn, realSwitch) {
+        api = apiFn;
+        if (realSwitch) {
+          references = { reset() {}, setBusy() {} };
+          cancelViewRequest = clearViewImage = selectView = setViewMode = () => {};
+          refreshInspector = loadArtifacts = loadView = () => {};
+        } else {
+          switchSession = switchFn; pushNotice = () => {};
+        }
+      },
     };`, context);
   const h = context.testing;
   h.state.sessions = [
@@ -48,7 +60,7 @@ function harness() {
   h.stub(async (path, options = {}) => {
     requests.push({ path, ...options, body: options.body ? JSON.parse(options.body) : null });
     return respond(path, options);
-  }, async id => { switches.push(id); h.state.threadId = id; });
+  }, async id => { switches.push(id); h.state.threadId = id; }, realSwitch);
   return { ...h, node, requests, switches, respond(fn) { respond = fn; } };
 }
 
@@ -196,8 +208,33 @@ test('new conversation inherits selected folder and exits the archive view', asy
   const h = harness(); h.state.historyFolder = 'folder'; h.state.historyView = 'archived';
   h.respond(async path => path === '/sessions' ? { thread_id: 'fresh' }
     : path.startsWith('/sessions?') ? { sessions: h.state.sessions } : { folders: h.state.folders });
-  await h.newSession({ announce: false });
+  await h.newSession();
   assert.deepEqual(h.requests[0].body, { folder_id: 'folder' });
   assert.equal(h.state.historyView, 'active');
   assert.deepEqual(h.switches, ['fresh']);
+});
+
+test('new conversation immediately shows the same welcome panel as reloading its empty transcript', async () => {
+  const h = harness({ realSwitch: true });
+  const welcome = h.node('welcome'); welcome.id = 'welcome';
+  h.node('stream').append(welcome);
+  h.state.threadId = 'one';
+  h.pushNotice('info', 'Previous conversation');
+  assert.equal(welcome.hidden, true);
+  const fresh = { thread_id: 'fresh', model_id: 'part-fresh', title: '新会话', ir_version: 0, messages: 0 };
+  h.respond(async path => path === '/sessions' ? fresh
+    : path.startsWith('/sessions?') ? { sessions: [fresh, ...h.state.sessions] }
+    : path === '/session-folders' ? { folders: h.state.folders } : { messages: [] });
+
+  await h.newSession();
+  assert.equal(h.state.threadId, 'fresh');
+  assert.equal(welcome.hidden, false);
+  assert.deepEqual(h.node('stream').children, [welcome]);
+  assert.equal(h.node('input').focused, true);
+
+  await h.switchSession('fresh', { force: true });
+  assert.equal(welcome.hidden, false);
+  assert.deepEqual(h.node('stream').children, [welcome]);
+  h.pushNotice('bad', 'Read failed');
+  assert.equal(welcome.hidden, true, 'Real transcript notices must still hide the welcome panel');
 });
