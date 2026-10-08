@@ -18,6 +18,7 @@ import { validateArtifactScene } from "../../viewer/core/artifact.js";
 import { ReferenceController } from "./references.mjs";
 import { StructureController } from "./structure.mjs";
 import { TreeHighlighter } from "./highlight.mjs";
+import { GenerationParticles } from "./generation-particles.mjs";
 import { AttachmentInput } from "./attachments.mjs";
 import { PaneResizeController } from "./pane-resize.mjs";
 
@@ -25,6 +26,7 @@ let references = null;
 let inspectorGeneration = 0;
 let structure = null;
 let paneResizer = null;
+let generationParticles = null;
 let sourceIr = null;
 let displayedArtifact = null;
 let structureRequest = 0;
@@ -749,6 +751,7 @@ async function send(text, { images = [], files = [] } = {}, accepted = () => {})
   const current = () => state.turn === turn;
 
   state.busy = true;
+  generationParticles?.setActive(true);
   referenceUI().setBusy(true);
   attachmentInput?.setBusy(true);
   state.abort = turn.controller;
@@ -837,6 +840,7 @@ async function send(text, { images = [], files = [] } = {}, accepted = () => {})
     if (current()) {
       state.turn = null;
       state.busy = false;
+      generationParticles?.setActive(false);
       referenceUI().setBusy(false);
       attachmentInput?.setBusy(false);
       if (needsReferenceRefresh && turn.selectionContext) {
@@ -1681,6 +1685,11 @@ function wire() {
     },
     onError: () => loadView(false),
   });
+  generationParticles = new GenerationParticles({
+    root: $("generationParticles"), canvas: $("generationCanvas"), logo: $("generationWordmark"), viewport: $("viewport"),
+    previewElements: [$("viewCanvas"), $("viewImage")],
+    hasPreview: () => Boolean(meshViewer?.hasMesh || !$("viewImage").hidden),
+  });
   setViewMode(meshViewer.available, meshViewer.available
     ? "真实网格 · 自由旋转 / 缩放 / 平移" : "静态预览 · " + meshViewer.error, !meshViewer.available);
   $("pickKind").addEventListener("change", () => { meshViewer.pickMode = $("pickKind").value || null; });
@@ -2234,6 +2243,7 @@ async function switchSession(threadId, { force = false } = {}) {
     setStatus("", "已切换会话");
   }
 
+  generationParticles?.setActive(false);
   const session = state.sessions.find((s) => s.thread_id === threadId) || null;
 
   // Bump first: in-flight loaders from the previous session must not write.

@@ -1109,3 +1109,19 @@ body { height: 100dvh; min-height: 0; overflow: hidden; }
 .message-file summary { padding: 8px 10px; cursor: pointer; overflow-wrap: anywhere; font-size: 11px; color: var(--fg-dim); }
 .message-file pre { margin: 0; padding: 10px; max-height: 220px; overflow: auto; border-top: 1px solid var(--line); white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 11px; }
 @media (max-height: 650px) { .input-attachment .attachment-file-icon { height: 36px; } }
+
+/* Quiet flocking particles accompany generation; geometry stays interactive. */
+.generation-particles { position: absolute; inset: 0; z-index: 2; pointer-events: none; opacity: 0; transition: opacity .35s ease; }
+.generation-particles.is-active { opacity: 1; }
+.generation-particles canvas { display: block; width: 100%; height: 100%; }
+.viewport[data-generation="full"] > .placeholder { visibility: hidden; }
+.generation-particles .generation-wordmark { display: none; position: absolute; left: 50%; top: 47%; transform: translate(-50%, -50%); width: min(72%, 420px); max-height: 62%; border-radius: 0; background: none; box-shadow: none; }
+.generation-particles.is-static canvas { visibility: hidden; }
+.generation-particles.is-static .generation-wordmark { display: block; }
+.generation-caption { position: absolute; left: 20px; right: 20px; bottom: max(26px, 17%); text-align: center; font-size: 11px; letter-spacing: .16em; color: #9ba996; }
+.generation-particles[data-mode="compact"] { left: auto; bottom: auto; right: 6px; top: 12px; width: min(32%, 180px); height: 96px; opacity: 0; }
+.generation-particles[data-mode="compact"].is-active { opacity: .65; }
+.generation-particles[data-mode="compact"] .generation-caption { bottom: 5px; font-size: 9px; letter-spacing: .1em; }
+@media (prefers-reduced-motion: reduce) {
+  .generation-particles { transition: none; }
+}
