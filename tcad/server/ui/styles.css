@@ -914,8 +914,8 @@ button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); 
 .tab.active { background: #405044; color: #f0f3e9; border-color: #5a695c; }
 .viewport { background-color: #202927; background-image: linear-gradient(#b9c9b108 1px, transparent 1px), linear-gradient(90deg, #b9c9b108 1px, transparent 1px), radial-gradient(ellipse at 50% 45%, #3b493e55, transparent 70%); background-size: 32px 32px, 32px 32px, 100% 100%; }
 .viewport::after { content: 'TCAD / MODEL SPACE'; position: absolute; left: 20px; top: 20px; font: 9px var(--mono); letter-spacing: .16em; color: #93a58e; pointer-events: none; }
-.placeholder { color: #c4cebd; font-size: 12px; letter-spacing: .04em; }
-.placeholder::before { content: ''; display: block; width: 112px; height: 116px; margin: 0 auto 24px; background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 112 116' fill='none' stroke='%2386967d' stroke-width='1'%3E%3Cpath d='M56 10 102 36v52L56 114 10 88V36Z'/%3E%3Cpath d='m10 36 46 26 46-26M56 62v52M56 10v52M10 88l46-26 46 26'/%3E%3Cpath d='m33 23 46 26v52M33 49v52l46-26V23' stroke-opacity='.35'/%3E%3C/svg%3E") center / contain no-repeat; }
+.placeholder { width: min(100%, 360px); max-width: none; color: #c4cebd; font-size: 12px; letter-spacing: .04em; }
+.placeholder::before { content: ''; display: block; width: min(100%, 320px); aspect-ratio: 78 / 32; margin: 0 auto 24px; background: url("./wordmark.svg") center / contain no-repeat; opacity: .78; }
 .filebar:empty { display: none; }
 .view-status { font-family: var(--mono); font-size: 10px; padding: 9px 16px; }
 .access-trigger { background: transparent; color: var(--fg-dim); border-color: var(--line); }

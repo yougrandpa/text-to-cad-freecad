@@ -28,6 +28,8 @@ async (page) => {
     await page.mouse.move(rect.x + rect.width / 2 + delta, rect.y + 80, { steps: 8 });
     if (cancel) await rail.press('Escape');
     await page.mouse.up();
+    check(await rail.evaluate(node => document.activeElement !== node && getComputedStyle(node).outlineStyle === 'none'),
+      'Pointer release left a focus outline on the rail');
     if (!cancel && Math.abs(delta) <= 30) await checkHighlights([index]);
     await page.mouse.move(10, 10);
     await checkHighlights([]);
@@ -58,6 +60,11 @@ async (page) => {
     await page.mouse.move(10, 10);
     await checkHighlights([]);
     const defaults = await sizes();
+    // The composer starts in keyboard focus mode. A plain mouse click on the
+    // separator must not leave that inherited dashed focus outline behind.
+    await page.locator('#input').focus();
+    await page.keyboard.press('ArrowLeft');
+    await drag(1, 0);
     for (let index = 0; index < 3; index++) {
       const before = await sizes();
       await drag(index, 30);
@@ -78,6 +85,8 @@ async (page) => {
     check(await page.locator('#layout').getAttribute('class').then(value => !value.includes('is-resizing')), 'Drag cursor stuck');
     const middle = page.locator('.pane-resizer').nth(1);
     await middle.press('Home');
+    check(await middle.evaluate(node => node.matches(':focus-visible') && getComputedStyle(node).outlineStyle === 'dashed'),
+      'Keyboard resizing must retain its focus indication');
     await checkHighlights([]);
     check(Math.abs((await sizes())[1] - 240) < 1, 'Keyboard minimum not respected');
     await middle.press('End');

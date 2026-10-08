@@ -1,15 +1,34 @@
 // Calm, bounded boids that periodically return to the actual drawn wordmark.
-export const CYCLE_SECONDS = 23;
+export const CYCLE_SECONDS = 68;
 const TAU = Math.PI * 2;
 const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
 const smooth = value => { const t = clamp(value, 0, 1); return t * t * (3 - 2 * t); };
+const edgeBand = extent => Math.min(90, extent * .24);
+
+export function edgeRepulsion(position, velocity, extent) {
+  const band = edgeBand(extent);
+  const left = smooth(1 - position / band);
+  const right = smooth(1 - (extent - position) / band);
+  // Pressure increases toward each wall, with braking only for outward travel.
+  return (left - right) * 180
+    - Math.min(velocity, 0) * left * 6 - Math.max(velocity, 0) * right * 6;
+}
+
+function edgeVelocity(position, velocity, extent, limit, freedom) {
+  const distance = velocity < 0 ? position : extent - position;
+  const clearance = clamp((distance - 3) / edgeBand(extent), 0, 1);
+  // A smooth outward speed envelope also prevents dense neighbors or the
+  // cursor from overpowering the wall. Inward and tangential flight stay free.
+  const outwardLimit = limit * (1 - freedom + freedom * clearance * clearance);
+  return Math.sign(velocity) * Math.min(Math.abs(velocity), outwardLimit);
+}
 
 export function cycleState(seconds) {
   const time = ((seconds % CYCLE_SECONDS) + CYCLE_SECONDS) % CYCLE_SECONDS;
   if (time < 2.5) return { phase: "wordmark", attraction: 1, release: 0 };
   if (time < 6) return { phase: "scatter", attraction: 1 - smooth((time - 2.5) / 1.8), release: smooth((time - 2.5) / 2) };
-  if (time < 15) return { phase: "flock", attraction: 0, release: 0 };
-  if (time < 20) return { phase: "gather", attraction: smooth((time - 15) / 5), release: 0 };
+  if (time < 60) return { phase: "flock", attraction: 0, release: 0 };
+  if (time < 65) return { phase: "gather", attraction: smooth((time - 60) / 5), release: 0 };
   return { phase: "wordmark", attraction: 1, release: 0 };
 }
 
@@ -139,11 +158,6 @@ export class ParticleFlock {
         ay += Math.sin(curl * 1.8) * 13 - ny * 28;
         ax += Math.cos(particle.seed) * state.release * 18;
         ay += Math.sin(particle.seed) * state.release * 18;
-        const margin = 26;
-        if (particle.x < margin) ax += (margin - particle.x) * 1.8;
-        if (particle.x > this.width - margin) ax -= (particle.x - this.width + margin) * 1.8;
-        if (particle.y < margin) ay += (margin - particle.y) * 1.8;
-        if (particle.y > this.height - margin) ay -= (particle.y - this.height + margin) * 1.8;
       }
       particle.ax = ax * (1 - pull) + ((tx - particle.x) * 28 - particle.vx * 10.6) * pull;
       particle.ay = ay * (1 - pull) + ((ty - particle.y) * 28 - particle.vy * 10.6) * pull;
@@ -152,6 +166,9 @@ export class ParticleFlock {
         particle.ax += (distance > .01 ? dx / distance : Math.cos(particle.seed)) * avoidance * 220;
         particle.ay += (distance > .01 ? dy / distance : Math.sin(particle.seed)) * avoidance * 220;
       }
+      particle.freedom = 1 - pull;
+      particle.ax += edgeRepulsion(particle.x, particle.vx, this.width) * particle.freedom;
+      particle.ay += edgeRepulsion(particle.y, particle.vy, this.height) * particle.freedom;
     }
     for (const particle of this.particles) {
       particle.vx += particle.ax * dt;
@@ -159,6 +176,8 @@ export class ParticleFlock {
       const speed = Math.hypot(particle.vx, particle.vy);
       const limit = 46 + state.attraction * 190;
       if (speed > limit) { particle.vx *= limit / speed; particle.vy *= limit / speed; }
+      particle.vx = edgeVelocity(particle.x, particle.vx, this.width, limit, particle.freedom);
+      particle.vy = edgeVelocity(particle.y, particle.vy, this.height, limit, particle.freedom);
       particle.x = clamp(particle.x + particle.vx * dt, 3, Math.max(3, this.width - 3));
       particle.y = clamp(particle.y + particle.vy * dt, 3, Math.max(3, this.height - 3));
     }

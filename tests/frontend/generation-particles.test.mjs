@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { CYCLE_SECONDS, cycleState, sampleWordmark, ParticleFlock, GenerationParticles } from '../../tcad/server/ui/generation-particles.mjs';
+import { CYCLE_SECONDS, cycleState, edgeRepulsion, sampleWordmark, ParticleFlock, GenerationParticles } from '../../tcad/server/ui/generation-particles.mjs';
 
 const targets = Array.from({ length: 180 }, (_, index) => ({
   x: index < 174 ? (index % 30) / 32 - .46 : .46,
@@ -17,16 +17,16 @@ const distanceToLogo = flock => flock.particles.reduce((sum, p) => sum + Math.hy
   p.y - flock.height * .47 - p.target.y * flock.wordHeight), 0) / flock.particles.length;
 
 test('each calm cycle disperses, flocks, gathers and holds the wordmark across the loop boundary', () => {
-  assert.equal(CYCLE_SECONDS, 23);
+  assert.equal(CYCLE_SECONDS, 68);
   assert.equal(cycleState(0).phase, 'wordmark');
   assert.equal(cycleState(4).phase, 'scatter');
   assert.equal(cycleState(8).phase, 'flock');
-  assert.equal(cycleState(14.99).phase, 'flock');
-  assert.equal(cycleState(15).phase, 'gather');
-  assert.equal(cycleState(17).phase, 'gather');
-  assert.equal(cycleState(22).phase, 'wordmark');
+  assert.equal(cycleState(59.99).phase, 'flock');
+  assert.equal(cycleState(60).phase, 'gather');
+  assert.equal(cycleState(62).phase, 'gather');
+  assert.equal(cycleState(67).phase, 'wordmark');
   assert.deepEqual(cycleState(CYCLE_SECONDS), cycleState(0));
-  for (const boundary of [2.5, 6, 15, 20, CYCLE_SECONDS]) {
+  for (const boundary of [2.5, 6, 60, 65, CYCLE_SECONDS]) {
     assert.ok(Math.abs(cycleState(boundary - .001).attraction - cycleState(boundary + .001).attraction) < .01);
   }
 });
@@ -45,9 +45,9 @@ test('particles scatter widely but return to their letter positions after a comp
   const flock = new ParticleFlock(targets, { count: 160, random: seededRandom() });
   flock.resize(600, 420);
   assert.ok(distanceToLogo(flock) < .001);
-  for (let step = 1; step <= 450; step++) flock.advance(1 / 30, step / 30);
+  for (let step = 1; step <= 1800; step++) flock.advance(1 / 30, step / 30);
   assert.ok(distanceToLogo(flock) > 35, 'Flock did not visibly disperse');
-  for (let step = 451; step <= CYCLE_SECONDS * 30; step++) flock.advance(1 / 30, step / 30);
+  for (let step = 1801; step <= CYCLE_SECONDS * 30; step++) flock.advance(1 / 30, step / 30);
   assert.ok(distanceToLogo(flock) < .5, 'Wordmark remained scattered at the loop end');
   assert.ok(flock.particles.filter(p => p.target.accent).length >= 8);
 });
@@ -90,6 +90,39 @@ test('coincident birds separate instead of remaining locked together', () => {
   for (let step = 0; step < 30; step++) flock.advance(1 / 30, 9);
   const [a, b] = flock.particles;
   assert.ok(Math.hypot(a.x - b.x, a.y - b.y) > 5, 'Coincident birds did not separate');
+});
+
+test('a crowded flock flying at a wall turns inward before reaching the clipping boundary', () => {
+  for (const [width, height, count] of [[600, 420, 640], [180, 96, 280]]) {
+    const flock = new ParticleFlock(targets, { count, random: seededRandom() });
+    flock.resize(width, height);
+    flock.particles.forEach((p, index) => Object.assign(p, {
+      x: width - 10 - index % 10, y: height * .25 + Math.floor(index / 10) / Math.ceil(count / 10) * height * .4,
+      vx: 46, vy: 0,
+    }));
+    let clipped = 0;
+    for (let step = 0; step < 240; step++) {
+      flock.advance(1 / 30, 9);
+      clipped += flock.particles.filter(p => p.x >= width - 3 || p.x <= 3 || p.y >= height - 3 || p.y <= 3).length;
+    }
+    assert.equal(clipped, 0, `Birds piled up at the ${width}×${height} clipping boundary`);
+    assert.ok(flock.particles.reduce((sum, p) => sum + p.x, 0) / flock.particles.length < width - Math.min(45, width * .2),
+      'Crowded flock did not move back into the canvas');
+  }
+});
+
+test('wall pressure grows toward every edge and brakes outward flight without resisting inward flight', () => {
+  for (const size of [96, 180, 600]) {
+    const band = Math.min(90, size * .24);
+    const outer = edgeRepulsion(band * .75, 0, size);
+    const middle = edgeRepulsion(band * .5, 0, size);
+    const inner = edgeRepulsion(band * .25, 0, size);
+    assert.ok(inner > middle && middle > outer && outer > 0);
+    assert.equal(edgeRepulsion(size / 2, 0, size), 0);
+    assert.ok(edgeRepulsion(band * .5, -46, size) > middle);
+    assert.equal(edgeRepulsion(band * .5, 46, size), middle);
+    assert.ok(Math.abs(edgeRepulsion(size - band * .5, 46, size) + edgeRepulsion(band * .5, -46, size)) < 1e-9);
+  }
 });
 
 test('resize and stalled frames keep particle positions finite and inside the drawing surface', () => {

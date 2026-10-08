@@ -116,7 +116,7 @@ export class PaneResizeController {
   begin(handle, key, event) {
     if (event.button !== 0 || this.drag) return;
     event.preventDefault();
-    handle.focus();
+    handle.focus({ preventScroll: true });
     this.drag = { handle, id: event.pointerId, x: event.clientX, widths: [...this.widths],
       index: this.visible.findIndex(pane => pane.key === key) };
     handle.setPointerCapture(event.pointerId);
@@ -137,6 +137,9 @@ export class PaneResizeController {
     else { this.widths = drag.widths; this.apply(); }
     this.layout.classList.remove("is-resizing");
     if (drag.handle.hasPointerCapture(drag.id)) drag.handle.releasePointerCapture(drag.id);
+    // Pointer focus can inherit :focus-visible from the composer. Release it
+    // after dragging; keyboard-only resizing keeps its own focus indication.
+    if (this.layout.ownerDocument.activeElement === drag.handle) drag.handle.blur();
   }
 
   keydown(key, event) {

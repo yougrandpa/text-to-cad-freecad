@@ -55,7 +55,7 @@ async (page) => {
     return route.fulfill({ status: 404, json: { detail: 'no geometry in browser fixture' } });
   };
   await page.route('http://127.0.0.1:8000/**', routeApi);
-  const phase = name => page.waitForFunction(name => document.querySelector('#generationParticles').dataset.phase === name, name, { timeout: 25000 });
+  const phase = name => page.waitForFunction(name => document.querySelector('#generationParticles').dataset.phase === name, name, { timeout: 70000 });
   const pixels = () => page.locator('#generationCanvas').evaluate(canvas => {
     const data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
     let visible = 0, accent = 0;
@@ -114,19 +114,45 @@ async (page) => {
     await page.locator('#sendBtn').waitFor();
     await page.waitForFunction(() => document.querySelector('#threadLabel').textContent === 'flock-test');
     check(await page.locator('#generationParticles').isHidden(), 'Idle view must not animate');
+    await page.locator('#viewPlaceholder').waitFor({ state: 'visible' });
+    const idleLogo = await page.locator('#viewPlaceholder').evaluate(node => {
+      const style = getComputedStyle(node, '::before');
+      return { image: style.backgroundImage, animation: style.animationName, width: parseFloat(style.width), height: parseFloat(style.height) };
+    });
+    check(idleLogo.image.includes('wordmark.svg') && idleLogo.animation === 'none' && idleLogo.width > 0 && idleLogo.height > 0,
+      'Empty session must show the static tcad logo');
+    await page.locator('#viewport').screenshot({ path: 'output/playwright/particle-idle.png', timeout: 10000 });
     await page.locator('#input').fill('创建一个安装底板');
+    const began = await page.evaluate(() => performance.now());
     await page.locator('#sendBtn').click();
     await page.waitForFunction(() => document.querySelector('#generationParticles').dataset.mode === 'full'
       && document.querySelector('#generationParticles').dataset.phase === 'wordmark');
     const initial = await pixels();
     check(initial.visible > 1000 && initial.accent > 20, `Wordmark pixels missing: ${JSON.stringify(initial)}`);
     check(await page.locator('#generationParticles').evaluate(root => getComputedStyle(root).pointerEvents === 'none'), 'Animation must not consume pointer input');
-    check(await page.locator('#viewPlaceholder').evaluate(node => getComputedStyle(node).visibility === 'hidden'), 'Idle cube must yield to particles');
+    check(await page.locator('#viewPlaceholder').evaluate(node => getComputedStyle(node).visibility === 'hidden'), 'Idle logo must yield to particles');
     await page.locator('#viewport').screenshot({ path: 'output/playwright/particle-wordmark.png', timeout: 10000 });
     await phase('flock');
     await page.locator('#viewport').screenshot({ path: 'output/playwright/particle-flock.png', timeout: 10000 });
     const flockPixels = await pixels();
     check(flockPixels.visible > 1000, 'Flocking canvas became empty');
+    await page.waitForFunction(began => performance.now() - began >= 45000, began, { timeout: 50000 });
+    check(await page.locator('#generationParticles').getAttribute('data-phase') === 'flock', 'Birds must still be flocking at 45 seconds');
+    const edgePixels = await page.locator('#generationCanvas').evaluate(canvas => {
+      const data = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+      const margin = 8 * Math.min(devicePixelRatio, 2);
+      let visible = 0, edge = 0;
+      for (let y = 0; y < canvas.height; y++) {
+        for (let x = 0; x < canvas.width; x++) {
+          if (data[(y * canvas.width + x) * 4 + 3] <= 15) continue;
+          visible++;
+          if (x < margin || x >= canvas.width - margin || y < margin || y >= canvas.height - margin) edge++;
+        }
+      }
+      return { visible, edge };
+    });
+    check(edgePixels.visible > 1000 && edgePixels.edge / edgePixels.visible < .01, 'Late flock piled up at the canvas edge');
+    await page.locator('#viewport').screenshot({ path: 'output/playwright/particle-late-flock.png', timeout: 10000 });
     await phase('gather');
     await phase('wordmark');
     await page.locator('#viewport').screenshot({ path: 'output/playwright/particle-return.png', timeout: 10000 });
@@ -176,9 +202,10 @@ async (page) => {
     await page.waitForFunction(() => document.querySelector('#threadLabel').textContent === 'flock-next');
     finish?.();
     await page.waitForFunction(() => document.querySelector('#generationParticles').hidden);
+    check(await page.locator('#viewPlaceholder').isVisible(), 'New session must restore the static logo');
     check(!await page.locator('#sendBtn').isDisabled(), 'New session must accept input after cancelling the old turn');
     check(errors.length === 0, `Browser errors: ${errors.join('; ')}`);
-    return { layouts, initial, flockPixels, turns: started, checked: ['complete cycle', 'real SVG wordmark', 'mouse avoidance', 'smaller upper-right layout', 'geometry remains interactive', 'reduced motion', 'stop cleanup', 'session switch cleanup'] };
+    return { layouts, initial, flockPixels, edgePixels, turns: started, checked: ['one-minute cycle', 'soft edge avoidance', 'real SVG wordmark', 'mouse avoidance', 'smaller upper-right layout', 'geometry remains interactive', 'reduced motion', 'stop cleanup', 'session switch cleanup'] };
   } finally {
     finish?.();
     await page.unroute('http://127.0.0.1:8000/**', routeApi);
