@@ -288,3 +288,12 @@ def test_a_placed_cut_that_misses_the_material_is_refused_by_name(worker, tmp_pa
     assert err.kind == "compile", err.kind
     assert err.feature_id == "ft_prim"
     assert "did not change the solid" in err.message
+
+
+def test_embedded_additive_primitive_explains_containment(worker, tmp_path):
+    ir = plate_with('embedded_boss', pos(40, 25, 1), op='additive_cylinder',
+                    params={'radius':2,'height':4})
+    with pytest.raises(WorkerCallFailed, match='fully inside existing material') as error:
+        compile_ir(worker, ir, tmp_path)
+    assert 'ft_prim' in str(error.value)
+    assert 'bearing bore/cavity clearance' in str(error.value)

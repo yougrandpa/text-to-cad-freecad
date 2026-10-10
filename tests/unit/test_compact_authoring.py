@@ -247,3 +247,14 @@ def test_an_assembly_mismatch_patch_hint_names_clear_rebuild_reconfigure():
     assert 'assembly references unknown bodies' in error.message
     assert 'set_assembly' in error.hint and 'null' in error.hint
     assert 'reconfigure' in error.hint
+
+
+def test_refinement_error_identifies_the_recipe_and_requires_each_addition():
+    from tcad.ir.schema import IrDocument, BodySpec, FeatureSpec
+    from tcad.tools.authoring import _check_body_rules
+    ir=IrDocument(model_id='m',bodies=[BodySpec(id='housing',name='housing',
+        features=[FeatureSpec(id='base',name='base',op='additive_box')])])
+    with pytest.raises(ValueError) as exc:
+        _check_body_rules(SimpleNamespace(id='second_ring',body_id='housing',shape='tube'),ir,{})
+    assert 'second_ring' in str(exc.value)
+    assert 'EACH new additive recipe' in str(exc.value)

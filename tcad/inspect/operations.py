@@ -81,7 +81,8 @@ def saved_assembly(services, ctx, args):
     source = json.loads(reader.read_file(manifest, root, "ir.json"))
     result["assembly_definition"] = assembly_definition(source.get("assembly") or {})
     result["motion_summary"] = measure_saved_motion(scene.animation, scene.mesh.vertices,
-        track_points=args.get("track_points", ()), sample_frames=args.get("sample_frames"))
+        track_points=args.get("track_points", ()), sample_frames=args.get("sample_frames"),
+        assembly=source.get("assembly"))
     if args.get("check_pairs"):
         response = services.worker.request("check_saved_motion", {
             **document_params(reader, manifest, root), "frames": scene.animation["frames"],
@@ -131,3 +132,20 @@ def export_saved_animation(services, ctx, args):
         candidate.replace(target)
     return {**summary, "path": str(target), "artifact_id": result["artifact_id"],
             'mode': mode, 'scope': result['scope']}
+
+
+def measure_source_pairs(services, ctx, args):
+    """Static BRep separation/intersection from a pinned source document."""
+    reader, manifest, root = resolve_context(services, ctx, args)
+    response = services.worker.request('check_saved_motion', {
+        **document_params(reader, manifest, root), 'angles':[0],
+        'pairs':args['pairs'], 'measure_distance':True}, timeout_s=120)
+    if not response.get('ok'):
+        raise ValueError(response.get('error', {}).get('message', 'artifact pair measurement failed'))
+    return {'artifact_id':manifest.artifact_id,
+            'pair_measurements':response['result']['pair_measurements'],
+            'pair_scope':'Compiled source Body BReps before assembly solve: minimum separation and '
+                         'intersection volume only. min_distance_mm is zero for overlapping solids; '
+                         'min_surface_distance_mm may be positive for containment. Positive solid separation needs '
+                         'support or intentional clearance. Zero separation does not prove a valid joint. '
+                         'Check saved motion separately for moving clearance.'}

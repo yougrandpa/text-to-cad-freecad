@@ -186,6 +186,8 @@ async def test_a_malformed_call_never_reaches_the_handler():
     assert outcome.result.error.kind == ToolErrorKind.SCHEMA
     assert "arguments.views" in outcome.result.error.message
     assert called == [], "a rejected call must not execute"
+    assert 'ENTIRE call was rejected' in outcome.result.error.hint
+    assert 'COMPLETE corrected batch' in outcome.result.error.hint
 
 
 async def test_a_well_formed_call_still_runs():

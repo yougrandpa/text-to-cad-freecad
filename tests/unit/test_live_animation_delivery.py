@@ -46,3 +46,36 @@ def test_static_native_assembly_can_deliver_assembly_presentation_but_motion_can
     assert not delivery_passed(summary, required_mode='assemble')
     # Geometry-only runs retain their independent delivery criterion.
     assert delivery_passed(summary)
+
+
+def test_standing_fan_case_requires_motion_media_without_extra_cli_flags():
+    summary = {'state': 'draft', 'current_build': True, 'http_scene_status': 200,
+               'http_artifact_status': {'fan.FCStd': 200},
+               'gif_paths': [], 'animation_modes': [], 'http_animation_status': {}}
+    assert delivery_passed(summary)
+    assert not delivery_passed(summary, case='standing-fan')
+    summary.update(gif_paths=['fan.gif'], animation_modes=['assemble'],
+                   http_animation_status={'fan.gif': 200})
+    assert not delivery_passed(summary, case='standing-fan', required_mode='assemble')
+    summary['animation_modes'] = ['motion']
+    assert delivery_passed(summary, case='standing-fan')
+    summary['http_animation_status']['fan.gif'] = 404
+    assert not delivery_passed(summary, case='standing-fan')
+
+
+def test_resume_copies_cad_state_without_settings_or_mutating_source(tmp_path):
+    from tools.run_model_e2e import copy_saved_model
+    source = tmp_path/'source'
+    saved = source/'models'/'e2e-model'/'v24.json'
+    saved.parent.mkdir(parents=True)
+    saved.write_text('{"version":24}')
+    (source/'settings.json').write_text('private provider settings')
+    destination = tmp_path/'continuation'
+    copy_saved_model(source, destination)
+    copy = destination/'models'/'e2e-model'/'v24.json'
+    assert copy.read_text() == saved.read_text()
+    assert not (destination/'settings.json').exists()
+    copy.write_text('{"version":25}')
+    assert saved.read_text() == '{"version":24}'
+    with pytest.raises(ValueError, match='separate'):
+        copy_saved_model(source, source/'nested')

@@ -19,7 +19,8 @@ class PolarCopies(BaseModel):
     axis: list[float] = Field(default_factory=lambda: [0, 1, 0], min_length=3, max_length=3)
     step_deg: float | None = None
     rotate: bool = True
-    separate_bodies: bool = True
+    separate_bodies: bool = Field(default=True,
+        description='Default true creates count INDEPENDENT bodies requiring assembly connections. Set false for repeated ribs/spokes within body_id; all copies must connect to its material into one solid.')
     anchor: list[float] | None = Field(default=None, min_length=3, max_length=3)
 
 
@@ -74,7 +75,8 @@ class PartRecipe(BaseModel):
     center: list[float] | None = Field(default=None, min_length=3, max_length=3)
     size: list[float] | None = Field(default=None, min_length=3, max_length=3)
     start: list[float] | None = Field(default=None, min_length=3, max_length=3)
-    end: list[float] | None = Field(default=None, min_length=3, max_length=3)
+    end: list[float] | None = Field(default=None, min_length=3, max_length=3,
+        description='World endpoint. Choose either start+end OR start+align+length; never supply end with align/length.')
     radius: float | None = Field(default=None, gt=0)
     inner_radius: float | None = Field(default=None, gt=0)
     width: float | None = Field(default=None, gt=0)

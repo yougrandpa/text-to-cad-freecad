@@ -53,3 +53,26 @@ overlap is not evidence of an intentional mating fit.
 overlap on the pinned artifact. A clear sample set does not prove continuous
 clearance, contact forces, gear meshing or material removal. State that scope and
 keep unresolved functional requirements visible.
+
+For nested motion, attach each moving part to its actual moving carrier, with the
+support grounded. Verify each rotating joint relative to its parent using
+`assembly_simulate` motion_summary.joints; inherited carrier motion alone does
+not establish relative spin. Oscillation needs interior extrema and direction
+reversals, not just a changing pose. Use a slow illustrative speed and enough
+samples to avoid stroboscopic aliasing. A time-dependent driver with zero sampled
+relative path produces a warning: reduce speed/step, recommit and inspect again.
+
+Before configuring motion, commit the static parts and use
+`geo_measure(pairs=[[support,carrier],[carrier,rotor]])` for actual BRep minimum
+separation and overlap. Inspect each declared connection and any intermediate
+support: a joint origin cannot bridge missing material, and a shaft declared
+inside a solid housing does not create a bearing cavity. Repair the physical
+neck/bracket, bore and clearance, then recommit. Static gaps/overlap alone do not
+prove a valid joint; saved motion still needs sampled clearance checks.
+
+Recheck all physical connections after ANY geometry change, including Fixed
+and grounded supports. A grounded flag fixes a body in the simulation but does
+not clamp a loose sleeve, fill radial gaps, or create a motor shaft. Distinguish
+intentional bearing clearance from a rotor floating across an empty cavity.
+Review lateral sections and shaft/bore lengths; a distant closest blade tip is
+not evidence that the hub has a physical bearing.
