@@ -87,8 +87,16 @@ export class StructureController {
   update(ir, { artifactId = null, status = null, sourceVersion = null } = {}) {
     const identity = ir ? `${ir.model_id}:${artifactId || "source"}:${ir.version}` : null;
     if (identity !== this.identity) {
-      this.selected = null;
-      this.onSelect(null, null);
+      // A live turn advances the source version on every write. Keeping the
+      // user's selection across those advances — and only across them — is what
+      // lets features appear without the highlight jumping off the object the
+      // user is looking at. A different model or a different build still clears
+      // it: the old selection names a feature that build may not contain.
+      const sameOrigin = Boolean(ir) && this.modelId === ir.model_id && this.artifactId === artifactId;
+      if (!sameOrigin) {
+        this.selected = null;
+        this.onSelect(null, null);
+      }
       if (!ir || this.modelId !== ir.model_id) {
         this.openState.clear();
         this.search.value = "";

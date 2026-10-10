@@ -125,12 +125,13 @@ const source = (await readFile(new URL('../../tcad/server/ui/app.js', import.met
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 function appHarness() {
   const drawn = [], messages = [], pending = [];
-  const panel = { artifactId: null, update: (ir, options) => drawn.push([ir, options]),
+  const panel = { artifactId: null, ir: null,
+    update(ir, options) { this.ir = ir; drawn.push([ir, options]); },
     message: value => messages.push(value), render() {}, setSourceVersion() {} };
   const context = vm.createContext({ console, document: {} });
   vm.runInContext(source + `
     globalThis.testing = { state, syncDisplayedStructure, displayStructureArtifact, clearDisplayedStructure,
-      stub(panel, fetcher, ir) { structure=panel; api=fetcher; sourceIr=ir; }};`, context);
+      syncLiveStructure, stub(panel, fetcher, ir) { structure=panel; api=fetcher; sourceIr=ir; }};`, context);
   const h = context.testing;
   h.state.modelId = "plate";
   h.stub(panel, url => { const item = deferred(); pending.push({ ...item, url }); return item.promise; }, { ...ir, version: 4 });
@@ -164,4 +165,42 @@ test("wrong-model and wrong-version frozen IR are reported without showing misle
     h.pending[0].resolve(bad); await new Promise(r => setImmediate(r));
     assert.equal(h.drawn.length, 0); assert.match(h.messages.at(-1), /结构与画布构建不匹配/);
   }
+});
+
+test("a live source-version advance keeps the selection while a new build clears it", () => {
+  const { c } = controller();
+  const pad = () => c.walk().find(n => n.id === "pad");
+  c.update(ir);
+  c.select(pad());
+  assert.equal(c.selected, pad().key);
+  // The loop wrote another feature into the same source: the face the user is
+  // looking at is still there, so the highlight must not jump off it.
+  c.update({ ...ir, version: 4 });
+  assert.equal(c.selected, pad().key);
+  // A build takes over the view: the selection names a feature that build may
+  // not contain, so it is dropped.
+  c.update({ ...ir, version: 4 }, { artifactId: "b1" });
+  assert.equal(c.selected, null);
+});
+
+test("the tree follows the loop's IR writes while the turn is still running", async () => {
+  const h = appHarness();
+  h.state.turn = { requestId: "r1" };
+  const first = h.syncLiveStructure();
+  assert.match(h.pending.at(-1).url, /\/models\/plate\/ir$/);
+  h.pending.at(-1).resolve({ ...ir, version: 5 });
+  await first;
+  assert.equal(h.drawn.length, 1);
+  assert.equal(h.drawn.at(-1)[0].version, 5);
+
+  // A read-only step leaves the version untouched: nothing repaints.
+  const again = h.syncLiveStructure();
+  h.pending.at(-1).resolve({ ...ir, version: 5 });
+  await again;
+  assert.equal(h.drawn.length, 1);
+
+  // No turn in flight: an idle refresh must not drive the tree.
+  h.state.turn = null;
+  await h.syncLiveStructure();
+  assert.equal(h.drawn.length, 1);
 });

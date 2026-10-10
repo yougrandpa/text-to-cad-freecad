@@ -30,6 +30,7 @@ let generationParticles = null;
 let sourceIr = null;
 let displayedArtifact = null;
 let structureRequest = 0;
+let liveStructureRequest = 0;
 let treeHighlighter = null;
 let attachmentInput = null;
 let composerPending = false;
@@ -76,6 +77,42 @@ function displayStructureArtifact(modelId, artifactId, version, status) {
   displayedArtifact = { modelId, artifactId, version, status };
   syncDisplayedStructure();
 }
+
+/** Mirror the loop's own IR writes into the tree while it is still working.
+ *
+ * The model authors a part through ``ir_patch`` — directly, or through the
+ * recipe tools built on it — and every write persists a new source version
+ * before anything is compiled. Waiting for the turn's result to paint the tree
+ * leaves the panel empty for the whole build. Reading the source IR the loop
+ * just wrote shows each feature the moment it exists: the declared history as
+ * it stands, making no claim about geometry a commit has not produced yet.
+ *
+ * The source *version* is the whole trigger. A read-only tool call leaves it
+ * untouched, so nothing repaints for it, while any write — including the recipe
+ * helpers that patch internally — is picked up without the UI having to know
+ * which tool names write.
+ */
+async function syncLiveStructure() {
+  if (!structure || !state.turn) return;
+  const token = sessionToken();
+  if (!token.modelId) return;
+  const request = ++liveStructureRequest;
+  let ir;
+  try {
+    ir = await api(`/models/${encodeURIComponent(token.modelId)}/ir`);
+  } catch {
+    return;   // no model yet, or the read raced a write: the turn's result is authoritative
+  }
+  if (stale(token) || request !== liveStructureRequest || !state.turn) return;
+  // Already showing this exact source version — a read-only step, or a commit
+  // whose build the viewport has already painted. Repainting would only reset
+  // the selection the user is looking at.
+  if (structure.ir?.model_id === ir.model_id && structure.ir.version === ir.version) return;
+  state.version = ir.version;
+  sourceIr = ir;
+  structure.update(ir);
+}
+
 function referenceUI() {
   if (!references) references = new ReferenceController($("referenceChips"), {
     onChange: refs => {
@@ -891,6 +928,11 @@ function handleAgentEvent(d) {
   if (d.name === "ir_commit" && d.ok && d.gate && d.gate.passed) {
     loadView(false, { version: d.gate.ir_version });
   }
+
+  // A write tool leaves a new source version behind; a read-only one does not.
+  // Letting the version decide means the tree follows every authored feature
+  // without this having to enumerate which tool names write.
+  if (d.ok) syncLiveStructure();
 }
 
 // ══════════════════════════════════════════════════════════════════════════
