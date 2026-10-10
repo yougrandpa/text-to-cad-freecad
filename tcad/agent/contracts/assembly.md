@@ -72,7 +72,7 @@ prove a valid joint; saved motion still needs sampled clearance checks.
 
 Recheck all physical connections after ANY geometry change, including Fixed
 and grounded supports. A grounded flag fixes a body in the simulation but does
-ot clamp a loose sleeve, fill radial gaps, or create a motor shaft. Distinguish
+not clamp a loose sleeve, fill radial gaps, or create a motor shaft. Distinguish
 intentional bearing clearance from a rotor floating across an empty cavity.
 Review lateral sections and shaft/bore lengths; a distant closest blade tip is
 not evidence that the hub has a physical bearing.
